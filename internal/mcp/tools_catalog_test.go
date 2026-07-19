@@ -398,6 +398,7 @@ func TestRegisteredToolAnnotations(t *testing.T) {
 		"patch_resource":  true,
 		"manage_node":     true,
 	}
+	instrumentTools := map[string]bool{"inspect_pod_runtime": true}
 
 	seenWriteTools := map[string]bool{}
 	for _, tool := range tools {
@@ -419,13 +420,22 @@ func TestRegisteredToolAnnotations(t *testing.T) {
 		}
 		// diagnose is read-only EXCEPT its optional in_cluster=true arg, which creates
 		// ONE transient, self-destructing probe pod - so it is non-read-only but NOT
-		// destructive (additive + self-deleting). It is the only such tool.
+		// destructive (additive + self-deleting).
 		if tool.Name == "diagnose" {
 			if tool.Annotations.ReadOnlyHint {
 				t.Errorf("diagnose must NOT set readOnlyHint=true - in_cluster=true creates a transient pod")
 			}
 			if tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint {
 				t.Errorf("diagnose should set destructiveHint=false (the probe pod self-deletes; nothing existing is mutated)")
+			}
+			continue
+		}
+		if instrumentTools[tool.Name] {
+			if tool.Annotations.ReadOnlyHint {
+				t.Errorf("instrumentation tool %q should not set readOnlyHint=true", tool.Name)
+			}
+			if tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint {
+				t.Errorf("instrumentation tool %q should set destructiveHint=false", tool.Name)
 			}
 			continue
 		}
@@ -448,6 +458,7 @@ func TestRegisteredToolAnnotations(t *testing.T) {
 var writeToolNames = []string{
 	"manage_workload", "manage_rollout", "manage_cronjob", "manage_gitops",
 	"apply_resource", "patch_resource", "manage_node",
+	"inspect_pod_runtime",
 }
 
 // TestReadOnlyServerExcludesWriteTools is the load-bearing guarantee of the

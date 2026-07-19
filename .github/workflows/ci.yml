@@ -25,7 +25,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./...
+        run: go test -tags withoutebpf ./...
 
       - name: Evaluate workload PromQL in Prometheus
         env:
@@ -33,7 +33,7 @@ jobs:
         run: go test ./prom -run '^TestWorkload(History)?PromQL$' -count=1
 
       - name: Build
-        run: go build ./...
+        run: go build -tags withoutebpf ./...
 
   backend:
     name: Backend
@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Run tests
-        run: go test ./...
+        run: go test -tags withoutebpf ./...
 
       - name: Evaluate PVC scope PromQL in Prometheus
         env:
@@ -90,7 +90,7 @@ jobs:
         run: go test ./internal/timeline ./internal/k8s
 
       - name: Build
-        run: go build -o explorer ./cmd/explorer
+        run: go build -tags withoutebpf -o explorer ./cmd/explorer
 
   frontend:
     name: Frontend

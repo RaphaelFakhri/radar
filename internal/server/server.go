@@ -49,6 +49,7 @@ import (
 	"github.com/skyhook-io/radar/internal/connectionruntime"
 	"github.com/skyhook-io/radar/internal/connections"
 	"github.com/skyhook-io/radar/internal/helm"
+	"github.com/skyhook-io/radar/internal/igdebug"
 	"github.com/skyhook-io/radar/internal/images"
 	"github.com/skyhook-io/radar/internal/investigationrefs"
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -183,6 +184,7 @@ type Server struct {
 	aiDiagnoser *ai.Diagnoser
 	// aiRuns owns investigations as durable server-side jobs (survive panel close
 	// / navigation / refresh). nil exactly when aiDiagnoser is.
+	igDebug igDebugService
 	aiRuns *ai.RunManager
 	// aiInvestigationRefs and aiHistoryDB are what the engine is built with,
 	// kept so it can be built after startup.
@@ -265,6 +267,7 @@ func New(cfg Config) *Server {
 		yamlSchemaCache:         make(map[string][]byte),
 		yamlSchemaPathCache:     make(map[string]yamlSchemaPathCacheEntry),
 		yamlSchemaBundleCache:   make(map[string]yamlSchemaBundleCacheEntry),
+		igDebug: igdebug.Default(),
 	}
 	if len(cfg.TrustedOrigins) > 0 {
 		s.trustedOrigins = make(map[string]struct{}, len(cfg.TrustedOrigins))
@@ -300,6 +303,7 @@ func New(cfg Config) *Server {
 	// Cancel + stale AI investigations BEFORE the client repoints at the new
 	// cluster, so an in-flight agent (especially an apply) can't write to it.
 	k8s.OnBeforeContextSwitch(func(_ string) {
+		s.igDebug.OnContextSwitch()
 		if runs := s.aiRunManager(); runs != nil {
 			runs.OnContextSwitch()
 		}
@@ -516,6 +520,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 		// AI investigation event stream via SSE — long-lived; lives outside the
 		// 60s timeout group. The run keeps going server-side after disconnect.
 		r.Get("/diagnose/runs/{id}/stream", s.handleDiagnoseRunStream)
+		r.Get("/ig/runs/{id}/stream", s.handleIGRunStream)
 
 		// Node drain — outside 60s timeout group (drain may need minutes for PDB backoff)
 		r.Post("/nodes/{name}/drain", s.handleDrainNode)
@@ -534,6 +539,11 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Use(middleware.Timeout(60 * time.Second))
 
 			r.Get("/health", s.handleHealth)
+			r.Get("/ig/status", s.handleIGStatus)
+			r.Post("/ig/snapshots", s.handleIGSnapshot)
+			r.Post("/ig/runs", s.handleIGStart)
+			r.Get("/ig/runs/{id}", s.handleIGGetRun)
+			r.Post("/ig/runs/{id}/stop", s.handleIGStopRun)
 			r.Get("/agents", s.handleListAgents)
 			// AI investigations as durable server-side jobs (start/list/turn/stop).
 			r.Post("/diagnose/runs", s.handleDiagnoseStart)
