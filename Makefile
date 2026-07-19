@@ -160,7 +160,7 @@ test:
 
 # Run e2e tests against the current kubeconfig cluster (on-demand, not in CI)
 test-e2e:
-	go test -tags "$(GO_TAGS) e2e" -v -timeout 5m ./internal/k8s/
+	go test -tags "$(GO_TAGS),e2e" -v -timeout 5m ./internal/k8s/
 
 # Smoke-test the Helm chart's template rendering (requires `helm` on PATH)
 test-chart:
@@ -475,7 +475,7 @@ desktop: frontend embed desktop-binary
 # Build desktop binary only (assumes frontend is already in internal/static/dist)
 desktop-binary:
 	@echo "Building desktop binary..."
-	CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build -tags "production $(GO_TAGS)" -ldflags "$(LDFLAGS)" -o radar-desktop ./cmd/desktop
+	CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build -tags "production,$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o radar-desktop ./cmd/desktop
 
 # Run desktop app in Wails dev mode with Go hot reload.
 # wails.json lives in cmd/desktop/ (Wails requires it next to the main package).

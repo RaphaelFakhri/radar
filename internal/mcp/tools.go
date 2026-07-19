@@ -3468,11 +3468,7 @@ func handleInspectPodRuntime(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if user := pkgauth.UserFromContext(ctx); user != nil {
 		owner.User = user.Username
 	}
-	deadline := 35 * time.Second
-	if aspect == igdomain.AspectDNS {
-		deadline += duration
-	}
-	toolCtx, cancel := context.WithTimeout(ctx, deadline)
+	toolCtx, cancel := context.WithTimeout(ctx, 95*time.Second)
 	defer cancel()
 	service := internalig.Default()
 	run, err := service.Start(toolCtx, igdomain.Request{
