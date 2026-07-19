@@ -21,6 +21,8 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const [selectedContainer, setSelectedContainer] = useState(defaultContainer)
   const [run, setRun] = useState<LiveDebugRun>()
   const [error, setError] = useState<string>()
+  const runID = run?.id
+  const runState = run?.state
   const statusQuery = useQuery({
     queryKey: ['ig', 'status'],
     queryFn: fetchIGStatus,
@@ -35,11 +37,11 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   }, [namespace, pod, defaultContainer])
 
   useEffect(() => {
-    if (!run || ['complete', 'stopped', 'failed', 'partial'].includes(run.state)) return
+    if (!runID || !runState || ['complete', 'stopped', 'failed', 'partial'].includes(runState)) return
     let cancelled = false
     const poll = async () => {
       try {
-        const next = await fetchIGRun(run.id)
+        const next = await fetchIGRun(runID)
         if (!cancelled) setRun(next)
       } catch (pollError) {
         if (!cancelled) setError(pollError instanceof Error ? pollError.message : String(pollError))
@@ -51,7 +53,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [run?.id, run?.state])
+  }, [runID, runState])
 
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null
 
