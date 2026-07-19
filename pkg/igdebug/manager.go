@@ -291,9 +291,7 @@ func (m *Manager) reporterResult(id string, result Result) {
 	}
 	run.view.Result = &result
 	run.view.UpdatedAt = time.Now().UTC()
-	if run.view.Aspect != AspectDNS {
-		run.view.State = StateStopping
-	}
+	run.view.State = StateStopping
 	run.dataReadyOnce.Do(func() { close(run.dataReady) })
 	m.broadcastLocked(run, StreamEvent{Type: "result", Run: runView(run)})
 }

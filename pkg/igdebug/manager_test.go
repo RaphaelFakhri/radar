@@ -49,6 +49,32 @@ func TestSnapshotDataReadyDoesNotWaitForCleanup(t *testing.T) {
 	waitForState(t, manager, run.ID, owner, StateComplete)
 }
 
+func TestDNSDataReadyMovesToStoppingUntilExecutorReturns(t *testing.T) {
+	manager := NewManager(DefaultLimits())
+	owner := Owner{User: "alice", Context: "test"}
+	cleanup := make(chan struct{})
+	run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(_ context.Context, req Request, reporter Reporter) error {
+		reporter.Started(req.Target)
+		reporter.Result(Result{DNS: []DNSGroup{{Name: "example.com", Count: 1}}})
+		<-cleanup
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	view, err := manager.WaitData(waitCtx, run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != StateStopping || view.Result == nil || len(view.Result.DNS) != 1 {
+		t.Fatalf("unexpected data-ready view: %#v", view)
+	}
+	close(cleanup)
+	waitForState(t, manager, run.ID, owner, StateComplete)
+}
+
 func TestConcurrencyCapsAreTotalAndPerOwner(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxConcurrent = 2

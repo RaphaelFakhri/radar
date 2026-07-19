@@ -69,6 +69,7 @@ export function LiveDebugSection({
   const [aspect, setAspect] = useState<LiveDebugAspect>('processes')
   const [duration, setDuration] = useState(10)
   const active = run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state)
+  const canStop = active && run.aspect === 'dns' && run.state !== 'stopping'
   const preparing = run?.state === 'starting'
 
   return (
@@ -120,7 +121,7 @@ export function LiveDebugSection({
                   <option value={60}>60s</option>
                 </select>
               )}
-              {active && run.aspect === 'dns' ? (
+              {canStop ? (
                 <button type="button" onClick={onStop} className="btn-brand-muted inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs">
                   <Square className="h-3 w-3" /> Stop
                 </button>
