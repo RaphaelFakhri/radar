@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getDefaultContainerName } from '@skyhook-io/k8s-ui'
+import { getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
 import {
   LiveDebugSection as BaseLiveDebugSection,
   type LiveDebugAspect,
@@ -16,8 +16,17 @@ interface LiveDebugSectionProps {
 export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const namespace = data.metadata?.namespace || ''
   const pod = data.metadata?.name || ''
-  const containers = useMemo(() => (data.spec?.containers || []).map((container: any) => container.name as string), [data.spec?.containers])
-  const defaultContainer = getDefaultContainerName(data) || containers[0] || ''
+  const containers = useMemo(() => {
+    const running = new Set(
+      (data.status?.containerStatuses || [])
+        .filter((status: any) => status.state?.running != null)
+        .map((status: any) => status.name),
+    )
+    return (data.spec?.containers || [])
+      .map((container: any) => container.name as string)
+      .filter((name: string) => running.has(name))
+  }, [data.spec?.containers, data.status?.containerStatuses])
+  const defaultContainer = getDefaultRunningContainerName(data) || ''
   const [selectedContainer, setSelectedContainer] = useState(defaultContainer)
   const [run, setRun] = useState<LiveDebugRun>()
   const [error, setError] = useState<string>()

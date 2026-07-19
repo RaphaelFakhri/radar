@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	domain "github.com/skyhook-io/radar/pkg/igdebug"
@@ -36,8 +37,10 @@ type Status struct {
 }
 
 type Service struct {
-	manager  *domain.Manager
-	registry string
+	manager           *domain.Manager
+	registry          string
+	sharedClient      func() kubernetes.Interface
+	clientFromContext func(context.Context) kubernetes.Interface
 }
 
 var (
@@ -65,14 +68,35 @@ func Default() *Service {
 }
 
 func NewService(registry string) *Service {
-	return &Service{manager: domain.NewManager(domain.DefaultLimits()), registry: strings.TrimSuffix(strings.TrimSpace(registry), "/")}
+	return &Service{
+		manager:  domain.NewManager(domain.DefaultLimits()),
+		registry: strings.TrimSuffix(strings.TrimSpace(registry), "/"),
+		sharedClient: func() kubernetes.Interface {
+			if client := k8s.GetClient(); client != nil {
+				return client
+			}
+			return nil
+		},
+		clientFromContext: k8s.ClientFromContext,
+	}
 }
 
 func (s *Service) Status(ctx context.Context) Status {
-	client := k8s.GetClient()
-	if client == nil {
-		return Status{State: StateUnknown, Message: "Cluster connection is not ready"}
+	status := Status{State: StateUnknown, Message: "Cluster connection is not ready"}
+	if client := s.sharedClient(); client != nil {
+		status = statusWithClient(ctx, client)
+		if status.State != StateUnknown {
+			return status
+		}
 	}
+	client := s.clientFromContext(ctx)
+	if client == nil {
+		return status
+	}
+	return statusWithClient(ctx, client)
+}
+
+func statusWithClient(ctx context.Context, client kubernetes.Interface) Status {
 	dsList, err := client.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{LabelSelector: "k8s-app=gadget"})
 	if err != nil {
 		return Status{State: StateUnknown, Message: fmt.Sprintf("Unable to verify Inspektor Gadget: %v", err)}
