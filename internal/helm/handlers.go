@@ -589,7 +589,15 @@ func (h *Handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auth.AuditLog(r, namespace, name)
+	done, err := BeginReleaseAction(namespace, name)
+	if err != nil {
+		writeReleaseActionError(w, err)
+		return
+	}
+	defer done()
+	noHooks, keepHistory := false, false
+	audit := auth.AuditActionDetails{Action: "helm_rollback", Namespace: namespace, Name: name, Source: "rest", Outcome: "failed", Revision: revision, NoHooks: &noHooks, KeepHistory: &keepHistory}
+	defer func() { auth.AuditLogAction(r, audit) }()
 	var rollbackErr error
 	if user := auth.UserFromContext(r.Context()); user != nil {
 		rollbackErr = client.RollbackAsUser(namespace, name, revision, user.Username, user.Groups)
@@ -601,10 +609,11 @@ func (h *Handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "insufficient permissions to rollback Helm release")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeReleaseActionError(w, err)
 		return
 	}
 
+	audit.Outcome = "accepted"
 	writeJSON(w, map[string]string{"status": "success", "message": "Rollback completed"})
 }
 
@@ -635,6 +644,11 @@ func (h *Handlers) handleRollbackStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	done, err := BeginReleaseAction(namespace, name)
+	if err != nil {
+		writeReleaseActionError(w, err)
+		return
+	}
 	// Set up SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -643,22 +657,30 @@ func (h *Handlers) handleRollbackStream(w http.ResponseWriter, r *http.Request) 
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		done()
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
 	progressCh := make(chan InstallProgress, 10)
-	defer close(progressCh)
 
-	auth.AuditLog(r, namespace, name)
+	noHooks, keepHistory := false, false
+	audit := auth.AuditActionDetails{Action: "helm_rollback", Namespace: namespace, Name: name, Source: "rest", Outcome: "failed", Revision: revision, NoHooks: &noHooks, KeepHistory: &keepHistory}
 	user := auth.UserFromContext(r.Context())
 	resultCh := make(chan error, 1)
 	go func() {
+		defer done()
+		var err error
 		if user != nil {
-			resultCh <- client.RollbackWithProgressAsUser(namespace, name, revision, user.Username, user.Groups, progressCh)
-			return
+			err = client.RollbackWithProgressAsUser(namespace, name, revision, user.Username, user.Groups, progressCh)
+		} else {
+			err = client.RollbackWithProgress(namespace, name, revision, progressCh)
 		}
-		resultCh <- client.RollbackWithProgress(namespace, name, revision, progressCh)
+		if err == nil {
+			audit.Outcome = "accepted"
+		}
+		auth.AuditLogAction(r, audit)
+		resultCh <- err
 	}()
 
 	for {
@@ -712,7 +734,13 @@ func (h *Handlers) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !requireHelmWrite(w, r, chi.URLParam(r, "namespace")) {
+	namespace, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+	audit := auth.AuditActionDetails{Action: "helm_uninstall", Namespace: namespace, Name: name, Source: "rest", Outcome: "failed", Revision: 0, NoHooks: &options.NoHooks, KeepHistory: &options.KeepHistory}
+	if options.DryRun {
+		audit.Outcome = "preview_failed"
+	}
+	defer func() { auth.AuditLogAction(r, audit) }()
+	if !requireHelmWrite(w, r, namespace) {
 		return
 	}
 	client := GetClient()
@@ -720,32 +748,44 @@ func (h *Handlers) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
 		return
 	}
-	namespace, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+	if !options.DryRun {
+		done, err := BeginReleaseAction(namespace, name)
+		if err != nil {
+			writeReleaseActionError(w, err)
+			return
+		}
+		defer done()
+	}
 	username, groups := userCreds(r)
+	cfg, err := client.GetActionConfigForUser(namespace, username, groups)
+	if err != nil {
+		writeReleaseActionError(w, err)
+		return
+	}
+	current, err := cfg.Releases.Last(name)
+	if err != nil {
+		writeReleaseActionError(w, err)
+		return
+	}
+	audit.Revision = current.Version
 	if options.DryRun {
-		cfg, cfgErr := client.GetActionConfigForUser(namespace, username, groups)
-		if cfgErr != nil {
-			writeReleaseReadError(w, cfgErr)
+		preview, err := PreviewReleaseAction(cfg, name, ReleaseActionOptions{Action: "uninstall", NoHooks: options.NoHooks, KeepHistory: options.KeepHistory})
+		if err == nil {
+			err = EnrichReleaseActionPreview(r.Context(), cfg, namespace, preview)
+		}
+		if err != nil {
+			writeReleaseActionError(w, err)
 			return
 		}
-		preview, previewErr := PreviewReleaseAction(cfg, name, ReleaseActionOptions{Action: "uninstall", NoHooks: options.NoHooks, KeepHistory: options.KeepHistory})
-		if previewErr != nil {
-			writeReleaseReadError(w, previewErr)
-			return
-		}
+		audit.Outcome = "preview"
 		writeJSON(w, map[string]any{"status": "success", "dry_run": true, "preview": preview})
 		return
 	}
-	auth.AuditLog(r, namespace, name)
-	if err := client.UninstallWithOptionsAsUser(namespace, name, username, groups, options); err != nil {
-		if IsForbiddenError(err) {
-			writeError(w, http.StatusForbidden, "insufficient permissions to uninstall Helm release")
-			return
-		}
-		log.Printf("[helm] Failed to uninstall %s/%s: %v", namespace, name, err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := uninstallWithOptions(cfg, name, options); err != nil {
+		writeReleaseActionError(w, err)
 		return
 	}
+	audit.Outcome = "accepted"
 	writeJSON(w, map[string]string{"status": "success", "message": "Release uninstalled"})
 }
 
@@ -1399,40 +1439,51 @@ type installResult struct {
 // Without auth Helm runs as the service account, which needs rbac.helm=true;
 // secrets/create is the sentinel for that grant.
 func requireHelmWrite(w http.ResponseWriter, r *http.Request, namespace string) bool {
-	if user := auth.UserFromContext(r.Context()); user != nil {
-		if namespace == "" {
-			return true
+	if err := CheckHelmWrite(r.Context(), namespace); err != nil {
+		var gate *helmWriteError
+		if errors.As(err, &gate) {
+			writeError(w, gate.status, gate.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
 		}
-		caps, err := k8s.CheckNamespaceCapabilitiesForUser(r.Context(), user.Username, user.Groups, namespace)
-		if err != nil {
-			log.Printf("[helm] Failed to check Helm permissions for %s in %q: %v", k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(namespace), err)
-			writeError(w, http.StatusInternalServerError, "failed to check permissions: "+err.Error())
-			return false
-		}
-		if caps == nil || caps.Errors.HelmWrite {
-			writeError(w, http.StatusServiceUnavailable, "couldn't verify your Kubernetes permissions for Helm; try again")
-			return false
-		}
-		if !caps.HelmWrite {
-			log.Printf("[helm] Denied %s %s for %s: cannot create secrets in %q", r.Method, r.URL.Path, k8s.SanitizeForLog(user.Username), k8s.SanitizeForLog(namespace))
-			writeError(w, http.StatusForbidden, fmt.Sprintf("You don't have permission to manage Helm releases in namespace %q. Helm stores each release as a Secret there, and your Kubernetes RBAC doesn't allow creating Secrets in it.", namespace))
-			return false
-		}
-		return true
-	}
-
-	caps, err := k8s.CheckCapabilities(r.Context())
-	if err != nil {
-		log.Printf("[helm] Failed to check capabilities for %s %s: %v", r.Method, r.URL.Path, err)
-		writeError(w, http.StatusInternalServerError, "failed to check capabilities: "+err.Error())
-		return false
-	}
-	if !caps.HelmWrite {
-		log.Printf("[helm] Denied %s %s: helmWrite capability not available", r.Method, r.URL.Path)
-		writeError(w, http.StatusForbidden, "Helm write operations require additional RBAC permissions. Set rbac.helm=true in the Radar Helm chart values.")
 		return false
 	}
 	return true
+}
+
+type helmWriteError struct {
+	status  int
+	message string
+}
+
+func (e *helmWriteError) Error() string { return e.message }
+
+// CheckHelmWrite uses the same release-storage capability gate for REST and MCP.
+func CheckHelmWrite(ctx context.Context, namespace string) error {
+	if user := auth.UserFromContext(ctx); user != nil {
+		if namespace == "" {
+			return nil
+		}
+		caps, err := k8s.CheckNamespaceCapabilitiesForUser(ctx, user.Username, user.Groups, namespace)
+		if err != nil {
+			return &helmWriteError{http.StatusInternalServerError, "failed to check permissions: " + err.Error()}
+		}
+		if caps == nil || caps.Errors.HelmWrite {
+			return &helmWriteError{http.StatusServiceUnavailable, "couldn't verify your Kubernetes permissions for Helm; try again"}
+		}
+		if !caps.HelmWrite {
+			return &helmWriteError{http.StatusForbidden, fmt.Sprintf("You don't have permission to manage Helm releases in namespace %q. Helm stores each release as a Secret there, and your Kubernetes RBAC doesn't allow creating Secrets in it.", namespace)}
+		}
+		return nil
+	}
+	caps, err := k8s.CheckCapabilities(ctx)
+	if err != nil {
+		return &helmWriteError{http.StatusInternalServerError, "failed to check capabilities: " + err.Error()}
+	}
+	if !caps.HelmWrite {
+		return &helmWriteError{http.StatusForbidden, "Helm write operations require additional RBAC permissions. Set rbac.helm=true in the Radar Helm chart values."}
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, data any) {
