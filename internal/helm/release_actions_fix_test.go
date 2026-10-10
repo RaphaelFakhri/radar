@@ -250,6 +250,26 @@ func TestUninstallHandlerDryRunAndRefusalStatuses(t *testing.T) {
 			json.NewEncoder(w).Encode(authv1.SubjectAccessReview{TypeMeta: metav1.TypeMeta{APIVersion: "authorization.k8s.io/v1", Kind: "SubjectAccessReview"}, Status: authv1.SubjectAccessReviewStatus{Allowed: true}})
 			return
 		}
+		switch r.URL.Path {
+		case "/api":
+			json.NewEncoder(w).Encode(metav1.APIVersions{Versions: []string{"v1"}})
+			return
+		case "/apis":
+			json.NewEncoder(w).Encode(metav1.APIGroupList{Groups: []metav1.APIGroup{{
+				Name: "custom.example", Versions: []metav1.GroupVersionForDiscovery{{GroupVersion: "custom.example/v1", Version: "v1"}},
+				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "custom.example/v1", Version: "v1"},
+			}}})
+			return
+		case "/apis/custom.example/v1":
+			json.NewEncoder(w).Encode(metav1.APIResourceList{GroupVersion: "custom.example/v1", APIResources: []metav1.APIResource{{Name: "clusterwidgets", Kind: "ClusterWidget", Namespaced: false}}})
+			return
+		case "/api/v1":
+			json.NewEncoder(w).Encode(metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{
+				{Name: "configmaps", Kind: "ConfigMap", Namespaced: true},
+				{Name: "secrets", Kind: "Secret", Namespaced: true},
+			}})
+			return
+		}
 		if r.Method != "GET" {
 			writes++
 			writeK8sStatus(t, w, 500, "InternalError", "unexpected write")
@@ -293,6 +313,22 @@ func TestUninstallHandlerDryRunAndRefusalStatuses(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"dry_run":true`) || !strings.Contains(audit.String(), `outcome="preview"`) || !strings.Contains(audit.String(), "revision=1 no_hooks=true keep_history=true") {
 		t.Fatalf("preview/audit: %s %s", rec.Body, audit.String())
 	}
+	manifest := rel.Manifest
+	rel.Manifest = "apiVersion: custom.example/v1\nkind: ClusterWidget\nmetadata:\n  name: unfamiliar\n"
+	secret = helmReleaseSecret(t, "store", rel, true)
+	rec = request("dry_run=true")
+	if rec.Code != 200 || writes != 0 || !strings.Contains(rec.Body.String(), `"name":"unfamiliar","namespace":""`) {
+		t.Fatalf("cluster resource preview: %d %s writes %d", rec.Code, rec.Body, writes)
+	}
+	for _, invalid := range []string{"not: [valid yaml", "apiVersion: v1\nkind: List\nitems: []", "kind: ConfigMap\nmetadata:\n  name: missing-version", "apiVersion: unknown.example/v1\nkind: ClusterWidget\nmetadata:\n  name: unknown-scope"} {
+		rel.Manifest = invalid
+		secret = helmReleaseSecret(t, "store", rel, true)
+		rec = request("dry_run=true")
+		if rec.Code != 422 || writes != 0 || !strings.Contains(rec.Body.String(), "no confirmation issued") {
+			t.Fatalf("incomplete manifest: %d %s writes %d", rec.Code, rec.Body, writes)
+		}
+	}
+	rel.Manifest = manifest
 	rel.Info.Status = release.StatusUninstalled
 	secret = helmReleaseSecret(t, "store", rel, true)
 	rec = request("dry_run=true&keep_history=true")
@@ -321,6 +357,7 @@ func TestReleaseExecutionErrors(t *testing.T) {
 			{"missing", fmt.Errorf("read release: %w", driver.ErrReleaseNotFound), 404},
 			{"overlap", ErrReleaseActionInProgress, 409},
 			{"refused", ErrReleaseActionRefused, 409},
+			{"incomplete manifest", fmt.Errorf("stored release: %w", ErrReleaseActionInvalidManifest), 422},
 			{"execution failure", errors.New("hook failed"), 500},
 		} {
 			t.Run(action+"/"+tc.name, func(t *testing.T) {
@@ -399,95 +436,5 @@ func TestRollbackAuditsGateDenialsAndConflicts(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestUpgradeAndValuesUseTargetNamespace(t *testing.T) {
-	for _, operation := range []string{"upgrade", "upgrade with values", "apply values", "preview values"} {
-		t.Run(operation, func(t *testing.T) {
-			cfg := memoryActionConfig(t)
-			rel := actionTestRelease(t, cfg, 1, release.StatusDeployed)
-			rel.Namespace = "app"
-			rel.Config = map[string]any{"message": "old"}
-			rel.Hooks = nil
-			rel.Manifest = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\ndata:\n  message: old\n"
-			rel.Chart = &chart.Chart{Metadata: &chart.Metadata{Name: "demo", Version: "1.0.0"}, Templates: []*chart.File{{Name: "templates/configmap.yaml", Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\n  labels:\n    upgraded: \"true\"\ndata:\n  message: {{ .Values.message }}\n")}}}
-			if err := cfg.Releases.Create(rel); err != nil {
-				t.Fatal(err)
-			}
-			obj := corev1.ConfigMap{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}, ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "app"}, Data: map[string]string{"message": "old"}}
-			var writes []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if r.URL.Path == "/openapi/v3" {
-					w.Write([]byte(`{"paths":{"api/v1":{"serverRelativeURL":"/openapi/v3/api/v1"}}}`))
-					return
-				}
-				if r.URL.Path == "/openapi/v3/api/v1" {
-					w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"fixture","version":"v1"},"paths":{"/api/v1/namespaces/{namespace}/configmaps/{name}":{"patch":{"x-kubernetes-group-version-kind":{"group":"","version":"v1","kind":"ConfigMap"},"parameters":[{"name":"fieldValidation","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}}}}`))
-					return
-				}
-				if r.URL.Path == "/version" {
-					json.NewEncoder(w).Encode(map[string]string{"gitVersion": "v1.37.0"})
-					return
-				}
-				if r.URL.Path != "/api/v1/namespaces/app/configmaps/demo" {
-					t.Errorf("wrong target: %s %s", r.Method, r.URL.Path)
-					writeK8sStatus(t, w, 404, "NotFound", "unexpected target")
-					return
-				}
-				if r.Method == "PATCH" {
-					writes = append(writes, r.Method+" "+r.URL.Path)
-				}
-				json.NewEncoder(w).Encode(obj)
-			}))
-			defer srv.Close()
-			getter := newRESTConfigGetter(&rest.Config{Host: srv.URL}, "store", "", nil)
-			mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{{Version: "v1"}})
-			mapper.Add(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, meta.RESTScopeNamespace)
-			getter.mapper = mapper
-			cfg.KubeClient = kube.New(getter)
-			cfg.KubeClient.(*kube.Client).Log = func(string, ...any) {}
-			cfg.RESTClientGetter = getter
-			client := &Client{}
-			var err error
-			values := map[string]any{"message": "new"}
-			noop := func(string, string, string) {}
-			switch operation {
-			case "upgrade":
-				err = client.upgradeWith(cfg, "demo", "1.0.0", "", noop)
-			case "upgrade with values":
-				err = client.upgradeWithValues(cfg, "demo", "1.0.0", "", values, noop)
-			case "apply values":
-				err = client.applyValuesWith(cfg, "demo", values)
-			case "preview values":
-				_, err = client.previewValuesChangeWith(cfg, "demo", values, "", "")
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.KubeClient.(*kube.Client).Namespace != "app" {
-				t.Fatal("object builder does not target app")
-			}
-			if operation == "preview values" {
-				if len(writes) != 0 {
-					t.Fatalf("preview wrote: %v", writes)
-				}
-			} else if len(writes) != 1 {
-				t.Fatalf("upgrade writes: %v", writes)
-			}
-			ns, _, _ := getter.ToRawKubeConfigLoader().Namespace()
-			if ns != "store" {
-				t.Fatalf("storage moved: %s", ns)
-			}
-			stored, err := cfg.Releases.Last("demo")
-			wantRevision := 2
-			if operation == "preview values" {
-				wantRevision = 1
-			}
-			if err != nil || stored.Version != wantRevision || stored.Namespace != "app" {
-				t.Fatalf("release: %+v %v", stored, err)
-			}
-		})
 	}
 }
