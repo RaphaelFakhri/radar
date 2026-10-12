@@ -582,6 +582,16 @@ it does not scale it. These references carry API group and namespace identity,
 are filtered by the caller's reference permissions, and do not establish that
 a controller has successfully reconciled the dependency.
 
+All resource-context dependency and dependent lists are deduplicated and limited
+to 20 readable references. Lists below the reference cap are sorted by exact identity; reference-capped
+lists take turns across candidate kinds in that order, so a large claim population
+cannot hide every volume. Permission-denied references consume no slots.
+Authorization checks are memoized per group/kind/namespace and bounded to 80
+scopes per collection. Kinds take turns even when candidates are denied, so a large
+denied claim population cannot prevent checking a volume. Already authorized
+scopes remain usable after this limit. `omitted: budget_exceeded` identifies a
+partial list caused by either limit, not its total size.
+
 Resource context exposes routing direction through `exposedBy` (upstream
 resources routing to this resource, including entrypoints reached through a
 selecting Service) and `backends` (resources this routes to). The compatibility
@@ -615,6 +625,16 @@ Resource context's `ingressSummary.tlsSecrets` lists named TLS Secrets in the
 Ingress's namespace. A Secret's `referencedBy` includes readable Ingresses with
 the path `spec.tls[].secretName`. Resource-view topology links only observed,
 visible TLS Secrets. Empty Secret names do not resolve controller defaults.
+
+Storage context reuses the same cached relationships shown in drawers:
+PVC `dependencies` identify its declared PV and StorageClass; PV context names
+its StorageClass and claim; StorageClass `dependents` include PVs and PVCs,
+including Pending claims that already declare that class. Exact API groups and
+target permissions are preserved. Class declarations follow Kubernetes' class
+reader, including its supported storage-class annotation precedence. These are
+declared relationships, not evidence that provisioning, binding or mounting
+succeeded. Provider-derived storage chains are context
+facts; this does not add PV/StorageClass graph nodes or neighborhood edges.
 
 ### Write Tools
 
