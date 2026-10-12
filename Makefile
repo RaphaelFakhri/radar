@@ -246,7 +246,7 @@ crossplane-demo-status:
 LOADTEST_PORT ?= 9281
 PODS ?= 50000
 loadtest: frontend embed
-	go run ./cmd/testserver -port $(LOADTEST_PORT) -pods $(PODS)
+	go run -tags "$(GO_TAGS)" ./cmd/testserver -port $(LOADTEST_PORT) -pods $(PODS)
 
 # Bootstrap a kind cluster pre-loaded with curated Velero fixtures (all 13
 # Backup phases, the supersession series, a paused+invalid Schedule, an

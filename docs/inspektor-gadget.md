@@ -33,6 +33,12 @@ rules:
     verbs: ["create"]
 ```
 
+Installation discovery requires cluster-wide `list daemonsets` on the Radar
+identity. In local mode that is the kubeconfig identity; in an authenticated
+shared installation it is the Radar service account, independently of the
+acting capture user. A namespace-restricted Radar without that grant can report
+`unknown` and cannot start a capture.
+
 Bind this only to operators who may collect node-level kernel evidence. Radar
 also needs ordinary `get pods` access in the target workload namespace to pin
 the Pod UID, node, container name, and runtime container ID.
@@ -80,5 +86,6 @@ Gadget events. Peer enrichment lists at most 2,000 Pods and 2,000 Services with
 the acting identity and a five-second budget; a namespace fallback or pagination
 marks labels as partial. Process captures do not load those inventories. HTTP
 DNS runs accept at most 60 seconds; the full MCP tool accepts at most 30 seconds.
-The tool is excluded from read-only investigation endpoints and available only
-on a confirmed write turn or through a write-capable MCP client.
+The tool is excluded from investigation turns, including confirmed Apply.
+It is available through the full MCP endpoint for clients that confirm
+instrumentation explicitly; a proposed resource fix does not authorize it.

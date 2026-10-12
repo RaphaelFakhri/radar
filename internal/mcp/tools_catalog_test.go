@@ -695,3 +695,15 @@ func TestDiagnoserAllowlistCoversAllReadTools(t *testing.T) {
 		t.Errorf("investigation.ReadOnlyTools names tools that are not registered: %v", stale)
 	}
 }
+
+func TestRuntimeInstrumentationIsNotAnInvestigationApproval(t *testing.T) {
+	if investigation.IsReadOnlyTool("inspect_pod_runtime") || investigation.IsWriteTool("inspect_pod_runtime") {
+		t.Fatal("runtime instrumentation must not inherit a resource fix's approval")
+	}
+	for _, tool := range listRegisteredTools(t) {
+		if tool.Name == "inspect_pod_runtime" {
+			return
+		}
+	}
+	t.Fatal("runtime instrumentation is missing from the full external catalog")
+}
