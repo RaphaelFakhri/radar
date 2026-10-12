@@ -63,7 +63,7 @@ func TestReleaseActionRetryAndPendingGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Deleted == nil || preview.LastDeployed == nil || !strings.Contains(preview.Hooks[0].StatusMeaning, "last recorded phase") || !strings.Contains(strings.Join(preview.Warnings, " "), "AlreadyExists") {
+	if preview.Deleted == nil || preview.LastDeployed == nil || !strings.Contains(preview.StatusMeaning, "last recorded phase") || !strings.Contains(strings.Join(preview.Warnings, " "), "AlreadyExists") {
 		t.Fatalf("retry preview: %+v", preview)
 	}
 	if err := EnrichReleaseActionPreview(context.Background(), cfg, "store", preview); err != nil {
@@ -76,8 +76,8 @@ func TestReleaseActionRetryAndPendingGuidance(t *testing.T) {
 	if err != nil || strings.Contains(strings.Join(skipped.Warnings, " "), "AlreadyExists") {
 		t.Fatalf("skipped hook retry guidance: %+v %v", skipped, err)
 	}
-	if !strings.Contains(strings.Join(preview.Warnings, " "), "A GitOps controller may reconcile this release back") {
-		t.Fatalf("missing generic GitOps guidance: %+v", preview)
+	if strings.Contains(strings.Join(preview.Warnings, " "), "GitOps") {
+		t.Fatalf("unowned release has a speculative GitOps warning: %+v", preview)
 	}
 	rel.Info.Status = release.StatusPendingUpgrade
 	cfg.Releases.Update(rel)
@@ -213,6 +213,9 @@ func TestReleaseActionPreviewAndRunUseTargetNamespace(t *testing.T) {
 		if effects[n] != want {
 			t.Fatalf("effect %s=%s, want %s", n, effects[n], want)
 		}
+	}
+	if want := "rollback creates 1 resource, updates 1 resource, deletes 1 resource, keeps 1 resource, does not delete 1 resource, creates a new revision from revision 1"; preview.Summary != want {
+		t.Fatalf("live rollback summary = %q, want %q", preview.Summary, want)
 	}
 	if err := RunReleaseAction(cfg, "demo", preview.Options, preview.Fingerprint); err != nil {
 		t.Fatal(err)

@@ -65,11 +65,11 @@ type ReleaseActionResource struct {
 
 type ReleaseActionHook struct {
 	HelmHook
-	Effect        string `json:"effect"`
-	StatusMeaning string `json:"statusMeaning"`
+	Effect string `json:"effect"`
 }
 
 type ReleaseActionPreview struct {
+	Summary                  string                  `json:"summary"`
 	Name                     string                  `json:"name"`
 	Namespace                string                  `json:"namespace"`
 	Status                   string                  `json:"status"`
@@ -78,6 +78,8 @@ type ReleaseActionPreview struct {
 	Resources                []ReleaseActionResource `json:"resources"`
 	Hooks                    []ReleaseActionHook     `json:"hooks"`
 	Warnings                 []string                `json:"warnings"`
+	Limits                   []string                `json:"limits"`
+	StatusMeaning            string                  `json:"statusMeaning,omitempty"`
 	Deleted                  *time.Time              `json:"deleted,omitempty"`
 	LastDeployed             *time.Time              `json:"lastDeployed,omitempty"`
 	ManagedByFluxHelmRelease string                  `json:"managedByFluxHelmRelease,omitempty"`
@@ -123,7 +125,8 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 		Name: name, Namespace: current.Namespace, Status: current.Info.Status.String(), Revision: current.Version,
 		Options: options, Fingerprint: fmt.Sprintf("%x", sha256.Sum256(raw)),
 		Resources: []ReleaseActionResource{}, Hooks: []ReleaseActionHook{},
-		Warnings: []string{
+		Warnings: []string{},
+		Limits: []string{
 			"This is a stored-manifest plan, not a Kubernetes server-side dry run. Write permissions, hooks, live finalizers, and controller cleanup are not simulated. Resources created by controllers and chart CRDs outside the release manifest are not enumerated.",
 			"Helm does not provide atomic release preconditions. Release state is rechecked before execution; concurrent Helm operations can still race. Avoid concurrent management of this release.",
 		},
@@ -140,11 +143,9 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 		if current.Info.Status.IsPending() {
 			preview.Warnings = append(preview.Warnings, "Rolling back a pending release can race an active install, upgrade, or rollback. Helm v3.22 does not lock pending releases for rollback; verify the other operation has stopped.")
 		}
-		preview.Warnings = append(preview.Warnings, "Rollback creates a new revision. Resource effects are checked against live objects before confirmation; live state can change before execution.")
+		preview.Limits = append(preview.Limits, "Resource effects are checked against live objects before confirmation; live state can change before execution.")
 	} else {
-		if options.KeepHistory {
-			preview.Warnings = append(preview.Warnings, "Release history will be retained; this does not retain the release's Kubernetes resources.")
-		} else {
+		if !options.KeepHistory {
 			preview.Warnings = append(preview.Warnings, "Uninstall purges Helm release history by default, including earlier revisions.")
 		}
 		if current.Info.Status == release.StatusUninstalling {
@@ -154,7 +155,6 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 			if options.KeepHistory {
 				return nil, fmt.Errorf("%w: release is already uninstalled; keep_history=true has no action to perform", ErrReleaseActionRefused)
 			}
-			preview.Warnings = append(preview.Warnings, "Release is already uninstalled: only its stored Helm history will be purged; resources and hooks will not be processed again.")
 		}
 	}
 	rendered, err := enumerableReleaseResources(cfg, target.Manifest, current.Namespace)
@@ -219,16 +219,82 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 		} else if options.Action == "uninstall" && current.Info.Status == release.StatusUninstalled {
 			effect = "skip (already uninstalled)"
 		}
-		preview.Hooks = append(preview.Hooks, ReleaseActionHook{HelmHook: hook, Effect: effect, StatusMeaning: "last recorded phase; Running can persist after hook creation or waiting failed"})
+		preview.Hooks = append(preview.Hooks, ReleaseActionHook{HelmHook: hook, Effect: effect})
 	}
-	if current.Info.Status == release.StatusUninstalling && !options.NoHooks {
+	if len(preview.Hooks) > 0 {
+		preview.StatusMeaning = "Hook status is the last recorded phase; Running can persist after hook creation or waiting failed"
+	}
+	for _, hook := range preview.Hooks {
+		if hook.Effect == "run" && len(hook.DeletePolicies) > 0 && !slices.Contains(hook.DeletePolicies, "before-hook-creation") {
+			preview.Warnings = append(preview.Warnings, fmt.Sprintf("Hook %s/%s has no before-hook-creation delete policy. A surviving Job or Pod can make execution fail with AlreadyExists. Inspect get_helm_release hook diagnostics; explicitly approve deleting that hook object after inspecting it, or use no_hooks after reviewing skipped cleanup.", hook.Namespace, hook.Name))
+		}
+	}
+	preview.Summary = releaseActionSummary(preview)
+	return preview, nil
+}
+
+func releaseActionSummary(preview *ReleaseActionPreview) string {
+	counts := make(map[string]int)
+	for _, resource := range preview.Resources {
+		counts[strings.SplitN(resource.Effect, " (", 2)[0]]++
+	}
+	parts := []string{}
+	for _, effect := range []struct{ key, verb string }{
+		{"create", "creates"}, {"update", "updates"}, {"delete", "deletes"}, {"keep", "keeps"},
+		{"not deleted", "does not delete"}, {"not processed", "does not process"},
+	} {
+		if count := counts[effect.key]; count > 0 {
+			noun := "resources"
+			if count == 1 {
+				noun = "resource"
+			}
+			parts = append(parts, fmt.Sprintf("%s %d %s", effect.verb, count, noun))
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "affects 0 manifest resources")
+	}
+	events := []string{"pre-delete", "post-delete"}
+	if preview.Options.Action == "rollback" {
+		events = []string{"pre-rollback", "post-rollback"}
+	}
+	for _, event := range events {
+		run, skip := 0, 0
 		for _, hook := range preview.Hooks {
-			if len(hook.DeletePolicies) > 0 && !slices.Contains(hook.DeletePolicies, "before-hook-creation") {
-				preview.Warnings = append(preview.Warnings, fmt.Sprintf("Hook %s/%s has no before-hook-creation delete policy. A surviving failed Job or Pod can make retry fail with AlreadyExists. Inspect get_helm_release hook diagnostics; explicitly approve deleting that hook object after inspecting it, or use no_hooks after reviewing skipped cleanup.", hook.Namespace, hook.Name))
+			if !slices.Contains(hook.Events, event) {
+				continue
+			}
+			if hook.Effect == "run" {
+				run++
+			} else {
+				skip++
+			}
+		}
+		for _, effect := range []struct {
+			verb  string
+			count int
+		}{{"runs", run}, {"skips", skip}} {
+			if effect.count > 0 {
+				noun := "hooks"
+				if effect.count == 1 {
+					noun = "hook"
+				}
+				parts = append(parts, fmt.Sprintf("%s %d %s %s", effect.verb, effect.count, event, noun))
 			}
 		}
 	}
-	return preview, nil
+	if preview.Options.Action == "rollback" {
+		parts = append(parts, fmt.Sprintf("creates a new revision from revision %d", preview.Options.Revision))
+	} else if preview.Options.KeepHistory {
+		parts = append(parts, "retains history")
+	} else {
+		parts = append(parts, "purges history")
+	}
+	summary := preview.Options.Action + " " + strings.Join(parts, ", ")
+	if preview.ManagedByFluxHelmRelease != "" {
+		summary += "; owned by Flux HelmRelease " + preview.ManagedByFluxHelmRelease
+	}
+	return summary
 }
 
 func RunReleaseAction(cfg *action.Configuration, name string, options ReleaseActionOptions, fingerprint string) error {
@@ -322,11 +388,13 @@ func releaseActionResourceIdentity(ref ResourceRef) resourceid.Ref {
 }
 
 func EnrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview) error {
-	preview.ManagedByFluxHelmRelease = applyFluxOwnership(preview.Name, storageNamespace, fluxHelmReleaseMap(ctx))
+	return enrichReleaseActionPreview(ctx, cfg, storageNamespace, preview, fluxHelmReleaseMap(ctx))
+}
+
+func enrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview, fluxMap map[string]string) error {
+	preview.ManagedByFluxHelmRelease = applyFluxOwnership(preview.Name, storageNamespace, fluxMap)
 	if preview.ManagedByFluxHelmRelease != "" {
 		preview.Warnings = append(preview.Warnings, fmt.Sprintf("Flux HelmRelease %s owns this release and may reconcile it back. Change its source of truth before managing it directly.", preview.ManagedByFluxHelmRelease))
-	} else {
-		preview.Warnings = append(preview.Warnings, "A GitOps controller may reconcile this release back. Check its source of truth before managing it directly.")
 	}
 	hooks := make([]HelmHook, 0, len(preview.Hooks))
 	for _, h := range preview.Hooks {
@@ -336,6 +404,7 @@ func EnrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, 
 	EnrichHookDiagnosticsWithClusterEvidence(ctx, detail, k8s.ClientFromContext(ctx))
 	preview.HookDiagnostics = detail.HookDiagnostics
 	if preview.Options.Action != "rollback" {
+		preview.Summary = releaseActionSummary(preview)
 		return nil
 	}
 	if err := useReleaseTargetNamespace(cfg, preview.Name); err != nil {
@@ -375,6 +444,7 @@ func EnrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, 
 			r.Effect = "keep (live helm.sh/resource-policy)"
 		}
 	}
+	preview.Summary = releaseActionSummary(preview)
 	return nil
 }
 

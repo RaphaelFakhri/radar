@@ -347,6 +347,26 @@ Inspect controller cleanup first; `patch_resource` is a separate explicit step
 for finalizer intervention, which can orphan resources. Batch deletion and Helm
 release operations are separate follow-ups.
 
+## Helm action previews
+
+`manage_helm_release` previews start with a one-line `summary` of manifest resource
+effects, hooks that run or are skipped, history policy, and the owning Flux
+HelmRelease when detected. For example: `uninstall deletes 14 resources, keeps 2
+resources, runs 1 pre-delete hook, purges history; owned by Flux HelmRelease
+flux-system/app`. Rollback summaries reflect the enriched live resource plan and
+state that a new revision is created from the selected revision.
+
+`warnings` contains only release-specific concerns: a detected Flux owner that may
+reconcile the action back, a pending-release rollback race, uninstall retry
+guidance, running hooks whose explicit delete policies omit before-hook-creation,
+and history purge. No owner warning is emitted when none is detected; this does
+not prove that the release is unmanaged. Helm defaults an empty hook delete-policy
+list to before-hook-creation, so it does not trigger that warning. `limits` holds
+standing caveats about stored-manifest planning, unenumerated controller-created
+resources, permissions and cleanup that are not simulated, and concurrent external
+Helm operations. With hooks, `statusMeaning` explains their last recorded phase once
+at preview level, rather than repeating it on every hook.
+
 ## `diagnose` evidence limits
 
 For workload `diagnose` responses, `logCoverage.selectedPods` counts pods selected for log requests, not pods whose logs were successfully read. Per-container errors and `logsError` describe failed collection. `logCoverage.totalLines` counts diagnostic-filter output before the aggregate response cap (including fallback tail lines); `shownLines` counts the lines retained after that cap. Neither describes a container's complete log history. `totalPods` and `shownPods` count pods contributing at least one line before and after that cap—not all selected pods or successful empty reads. `eventsTotalGroups`, recent-change coverage/error fields, and log sampling/truncation must remain qualifications even when an agent reports no problem.
@@ -362,6 +382,15 @@ Collecting vitals costs one Prometheus round trip on every `diagnose` of a pod-b
 One call combines cached Kubernetes resource state, historical events/changes, and live log requests. Its completion time records when the call finished, not a shared observation time or freshness guarantee for those sources. Event/change timestamps retain their source-specific meaning.
 
 These public MCP fields are available to consumers running the updated Radar server. The investigation contract that turns them into Findings — the prompt suite, the verdict, its parser and the citation binder — lives in `pkg/investigation` and is shared by the OSS engine and Radar Hub; each product supplies its own evidence issuance, run orchestration and store, and declares on its `/agents` entry whether it performs Apply (`apply`) and the verification turn after it (`verification`).
+
+When an Apply caller supplies the exact fix the user confirmed, that confirmation
+approves a preview→confirm tool workflow for exactly that fix. The agent must first
+preview, then execute with the returned token only if the preview matches the fix.
+Additional objects, dependents beyond the fix, unapproved Namespace/CRD scope, or
+an owner that would revert the action require stopping and reporting instead of
+confirming. Standing preview limits (observed, non-exhaustive dependent counts;
+stored-manifest caveats) are expected and are not a reason to stop. The empty-fix fallback prompt grants
+no such approval. A preview alone does not count as an applied change.
 
 The investigation's final JSON also carries the agent's case: `evidence` (up to 8 items of `ref`, `role`, optional one-sentence `claim` — required for `benign`, `demoted` and `rules_out` — and optional `subject`) and `ruled_out` (up to 5 hypotheses pointing at an evidence item by index). The server binds each item's ref against the run's retained ledger exactly like `root_cause_evidence_refs`: a ref from the current turn must match the exact private-transport payload; a ref from an earlier turn of the same run is accepted on the persisted `radarEvidence` flag its own validator wrote, so a revised assessment can keep resting on a result it can no longer re-read. A failing item is dropped on its own as `unlinked`, and binding runs for every assessment, healthy and inconclusive included. The server-authored `evidence` / `ruledOut` fields are `omitempty`, so a diagnosis with no bindable case carries neither: consumers must treat both as optional.
 
