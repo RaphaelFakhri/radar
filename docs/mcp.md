@@ -629,6 +629,22 @@ including Pending ones (using Kubernetes' class-annotation precedence). These ar
 declarations, not proof that provisioning, binding or mounting succeeded, and
 they appear in resource context only, not as topology or neighborhood edges.
 
+ServiceAccount `serviceAccountSummary` separates declared `secretRefs` from
+`imagePullSecrets`, with target permissions and the same bounded reference
+handling. Secret `referencedBy` can identify the declaring ServiceAccount and
+field paths. These associations do not establish that an existing Pod reads
+the Secret. Projected bound tokens are not Secret objects, and no token Secret
+is manufactured for an account with empty declarations. The drawer's existing
+Secret sections provide navigation to named objects without reading their data.
+
+Capped `referencedBy` results take turns across readable kinds so a busy Secret
+retains account declarations alongside workload references. `total` still counts
+all observed readable consumers; `truncated` qualifies the displayed subset.
+ServiceAccount inventory errors report `referencedBy: unavailable`. This generic
+reason does not classify the cause of a typed provider's error. An empty reverse
+context describes observed cache contents, not proof that no account declares
+the Secret.
+
 ### Write Tools
 
 | Tool | Description | Parameters |
