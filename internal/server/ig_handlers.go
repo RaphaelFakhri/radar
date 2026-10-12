@@ -189,7 +189,8 @@ func (s *Server) igOwner(r *http.Request) domain.Owner {
 	if user := auth.UserFromContext(r.Context()); user != nil {
 		username = user.Username
 	}
-	return domain.Owner{User: username, Context: k8s.GetContextName()}
+	_, contextName := k8s.GetConfigSnapshot()
+	return domain.Owner{User: username, Context: contextName}
 }
 
 func (s *Server) writeIGError(w http.ResponseWriter, err error) {

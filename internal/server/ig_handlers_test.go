@@ -177,3 +177,12 @@ func TestIGRejectsLongDNSWindow(t *testing.T) {
 		t.Fatalf("status=%d request=%#v", recorder.Code, fake.startInput)
 	}
 }
+
+func TestIGOwnerUsesInClusterIdentityWithoutAKubeconfigContext(t *testing.T) {
+	previous := k8s.SetTestContextName("")
+	t.Cleanup(func() { k8s.SetTestContextName(previous) })
+	owner := (&Server{}).igOwner(httptest.NewRequest(http.MethodGet, "/api/ig/status", nil))
+	if owner.Context != "in-cluster" {
+		t.Fatalf("owner cannot match the in-cluster config snapshot: %#v", owner)
+	}
+}

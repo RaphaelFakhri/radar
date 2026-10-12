@@ -3464,7 +3464,8 @@ func handleInspectPodRuntime(ctx context.Context, _ *mcp.CallToolRequest, input 
 	} else if input.Duration != 0 {
 		return nil, nil, fmt.Errorf("duration is only valid for the dns aspect")
 	}
-	owner := igdomain.Owner{User: "local", Context: k8s.GetContextName()}
+	_, contextName := k8s.GetConfigSnapshot()
+	owner := igdomain.Owner{User: "local", Context: contextName}
 	if user := pkgauth.UserFromContext(ctx); user != nil {
 		owner.User = user.Username
 	}
