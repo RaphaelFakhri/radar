@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -40,6 +41,34 @@ type deleteConfirmation struct {
 	Finalizers      []string
 	ResourceVersion string `json:",omitempty"`
 	Propagation     metav1.DeletionPropagation
+}
+
+type deleteResourceResult struct {
+	Summary                    string                        `json:"summary,omitempty"`
+	Status                     string                        `json:"status"`
+	DryRun                     bool                          `json:"dry_run"`
+	Kind                       string                        `json:"kind"`
+	Group                      string                        `json:"group"`
+	Namespace                  string                        `json:"namespace"`
+	Name                       string                        `json:"name"`
+	UID                        types.UID                     `json:"uid"`
+	ResourceVersion            string                        `json:"resourceVersion"`
+	Generation                 int64                         `json:"generation"`
+	Propagation                metav1.DeletionPropagation    `json:"propagation"`
+	Confirm                    string                        `json:"confirm,omitempty"`
+	Finalizers                 *[]string                     `json:"finalizers,omitempty"`
+	Cascade                    map[string]any                `json:"cascade,omitempty"`
+	Message                    string                        `json:"message"`
+	FinalizerGuidance          string                        `json:"finalizerGuidance,omitempty"`
+	NamespaceFinalizers        *[]string                     `json:"namespaceFinalizers,omitempty"`
+	NamespaceFinalizerGuidance string                        `json:"namespaceFinalizerGuidance,omitempty"`
+	Observation                *k8score.DeleteResourceResult `json:"observation,omitempty"`
+}
+
+type deleteDependentCounts struct {
+	ByKind map[string]int `json:"byKind"`
+	Total  int            `json:"total"`
+	Basis  string         `json:"basis"`
 }
 
 func handleDeleteResource(ctx context.Context, req *mcp.CallToolRequest, input deleteResourceInput) (*mcp.CallToolResult, any, error) {
@@ -155,43 +184,62 @@ func handleDeleteResource(ctx context.Context, req *mcp.CallToolRequest, input d
 		}
 		return nil, nil, fmt.Errorf("failed to delete resource: %w", err)
 	}
-	result := map[string]any{"status": "ok", "dry_run": dryRun, "kind": obj.GetKind(), "group": gvr.Group, "namespace": namespace, "name": name, "uid": uid, "resourceVersion": rv, "generation": obj.GetGeneration(), "propagation": propagation}
+	result := deleteResourceResult{Status: "ok", DryRun: dryRun, Kind: obj.GetKind(), Group: gvr.Group, Namespace: namespace, Name: name, UID: uid, ResourceVersion: rv, Generation: obj.GetGeneration(), Propagation: propagation}
 	if dryRun {
-		result["confirm"] = token
-		result["finalizers"] = obj.GetFinalizers()
-		result["cascade"] = deleteCascadePreview(ctx, obj, propagation)
-		result["message"] = "Deletion preview validated by the API server; no deletion was persisted. Review the cascade limits before confirming."
+		result.Confirm = token
+		finalizers := obj.GetFinalizers()
+		result.Finalizers = &finalizers
+		result.Cascade = deleteCascadePreview(ctx, obj, propagation)
+		result.Summary = deletePreviewSummary(obj, propagation, result.Cascade)
+		result.Message = "Deletion preview validated by the API server; no deletion was persisted. Review the cascade limits before confirming."
 		if len(obj.GetFinalizers()) > 0 {
-			result["finalizerGuidance"] = "Finalizers may keep this object deleting while controllers finish cleanup. This tool never removes finalizers. Inspect cleanup before using patch_resource as a separate, explicit step; removing finalizers can orphan resources."
+			result.FinalizerGuidance = "Finalizers may keep this object deleting while controllers finish cleanup. This tool never removes finalizers. Inspect cleanup before using patch_resource as a separate, explicit step; removing finalizers can orphan resources."
 		}
 		if gvr.Group == "" && gvr.Resource == "namespaces" {
 			finalizers, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "finalizers")
-			result["namespaceFinalizers"] = finalizers
+			result.NamespaceFinalizers = &finalizers
 			if len(finalizers) > 0 {
-				result["namespaceFinalizerGuidance"] = "Namespace lifecycle finalizers may keep this Namespace deleting until its contents are cleaned up. Inspect status.conditions and remaining contents; this tool does not clear namespace lifecycle finalizers."
+				result.NamespaceFinalizerGuidance = "Namespace lifecycle finalizers may keep this Namespace deleting until its contents are cleaned up. Inspect status.conditions and remaining contents; this tool does not clear namespace lifecycle finalizers."
 			}
 		}
 	} else {
-		result["message"] = "Deletion accepted; completion is asynchronous."
-		result["observation"] = k8score.ObserveResourceDeletion(ctx, client, name, uid)
+		result.Message = "Deletion accepted; completion is asynchronous."
+		result.Observation = k8score.ObserveResourceDeletion(ctx, client, name, uid)
 	}
 	return toJSONResult(result)
 }
 
 func deleteCascadePreview(ctx context.Context, obj *unstructured.Unstructured, propagation metav1.DeletionPropagation) map[string]any {
 	dependents := []topology.ResourceRef{}
-	result := map[string]any{"approximation": true, "dependents": dependents, "coverage": "unknown", "notEnumerated": []string{"namespace contents", "CRD instances", "controller-finalizer cleanup"}}
+	counts := &deleteDependentCounts{ByKind: map[string]int{}, Basis: "observed (not exhaustive)"}
+	result := map[string]any{"approximation": true, "dependents": dependents, "dependentCounts": counts, "coverage": "unknown"}
+	notEnumerated := []string{}
+	if len(obj.GetFinalizers()) > 0 {
+		notEnumerated = append(notEnumerated, "controller-finalizer cleanup")
+	}
 	if auth.UserFromContext(ctx) != nil {
 		result["visibilityNote"] = "Dependents you can't read are not listed."
 	}
 	switch {
 	case obj.GetKind() == "Namespace" && obj.GetAPIVersion() == "v1":
+		notEnumerated = append(notEnumerated, "namespace contents")
 		result["scopeWarning"] = "Deleting this Namespace deletes ALL namespace contents, including resources not shown here. Contents are not enumerated; their count is unknown. Orphan propagation does not prevent namespace cleanup."
 	case obj.GetKind() == "CustomResourceDefinition" && obj.GetAPIVersion() == "apiextensions.k8s.io/v1":
+		notEnumerated = append(notEnumerated, "CRD instances")
 		result["scopeWarning"] = "Deleting this CRD deletes ALL instances of the CRD across the cluster. Instances are not enumerated; their count is unknown. Orphan propagation does not preserve CRD instances."
+	default:
+		if obj.GetNamespace() == "" {
+			notEnumerated = append(notEnumerated, "cluster-scoped cascades outside cached topology")
+		}
+	}
+	if len(notEnumerated) > 0 {
+		result["notEnumerated"] = notEnumerated
 	}
 	if propagation == metav1.DeletePropagationOrphan {
-		result["propagationEffect"] = "Owner-reference garbage collection will orphan dependents. Namespace, CRD, and controller-finalizer cleanup can still delete resources."
+		result["propagationEffect"] = "Owner-reference garbage collection will orphan dependents."
+		if len(notEnumerated) > 0 {
+			result["propagationEffect"] = "Owner-reference garbage collection will orphan dependents; cleanup listed in notEnumerated may still delete resources."
+		}
 	}
 	cache := k8s.GetResourceCache()
 	if cache == nil {
@@ -220,12 +268,14 @@ func deleteCascadePreview(ctx context.Context, obj *unstructured.Unstructured, p
 		return result
 	}
 	result["coverage"] = "partial"
-	result["reason"] = "Cached topology management edges approximate possible dependents; absence from this list does not prove no cascade."
+	result["reason"] = "Observed caller-readable dependents from cached topology; counts are not exhaustive."
 	for _, ref := range preview.Dependents {
 		gvr, _, err := resolveMutationGVR(ref.Kind, ref.Group)
 		if err != nil || !canReadInNamespace(ctx, gvr.Group, gvr.Resource, ref.Namespace, "get") {
 			continue
 		}
+		counts.ByKind[ref.Kind]++
+		counts.Total++
 		if len(dependents) < 100 {
 			dependents = append(dependents, ref)
 		} else {
@@ -234,4 +284,48 @@ func deleteCascadePreview(ctx context.Context, obj *unstructured.Unstructured, p
 	}
 	result["dependents"] = dependents
 	return result
+}
+
+func deletePreviewSummary(obj *unstructured.Unstructured, propagation metav1.DeletionPropagation, cascade map[string]any) string {
+	name := obj.GetName()
+	if obj.GetNamespace() != "" {
+		name = obj.GetNamespace() + "/" + name
+	}
+	summary := fmt.Sprintf("Deletes %s %s", obj.GetKind(), name)
+	switch {
+	case obj.GetKind() == "Namespace" && obj.GetAPIVersion() == "v1":
+		summary += " and all namespace contents (count unknown)"
+	case obj.GetKind() == "CustomResourceDefinition" && obj.GetAPIVersion() == "apiextensions.k8s.io/v1":
+		summary += " and all CRD instances (count unknown)"
+	}
+	counts := cascade["dependentCounts"].(*deleteDependentCounts)
+	if cascade["coverage"] == "unknown" {
+		summary += "; dependents unknown"
+	} else if counts.Total == 0 {
+		summary += "; no caller-readable dependents observed"
+	} else {
+		kinds := make([]string, 0, len(counts.ByKind))
+		for kind := range counts.ByKind {
+			kinds = append(kinds, kind)
+		}
+		slices.Sort(kinds)
+		parts := make([]string, 0, len(kinds))
+		for _, kind := range kinds {
+			parts = append(parts, fmt.Sprintf("%s: %d", kind, counts.ByKind[kind]))
+		}
+		effect := "observed dependents"
+		if propagation == metav1.DeletePropagationOrphan {
+			effect = "orphans observed dependents"
+		}
+		summary += fmt.Sprintf("; %s: %s (%d total, not exhaustive)", effect, strings.Join(parts, ", "), counts.Total)
+	}
+	finalizers := obj.GetFinalizers()
+	if obj.GetKind() == "Namespace" && obj.GetAPIVersion() == "v1" {
+		namespaceFinalizers, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "finalizers")
+		finalizers = append(finalizers, namespaceFinalizers...)
+	}
+	if len(finalizers) > 0 {
+		summary += "; may wait on finalizers: " + strings.Join(finalizers, ", ")
+	}
+	return summary
 }

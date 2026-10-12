@@ -312,9 +312,10 @@ The Docker image's primary use is [in-cluster deployment](in-cluster.md) with a 
 `delete_resource` deletes one object under the caller's Kubernetes identity. It
 requires `get` and `delete` permission on the target. Omit `dry_run` (or set it to
 `true`) to validate a server-side `DryRun=All` delete without persisting it. The
-preview includes UID, generation, resourceVersion, finalizers, propagation, and a `confirm`
-token valid for five minutes. Review the preview, then repeat the same target and
-propagation with `dry_run: false` and that token. Tokens are bound to the caller
+preview starts with a one-line `summary` and includes UID, generation,
+resourceVersion, finalizers, propagation, and a `confirm` token valid for five
+minutes. Review the preview, then repeat the same target and propagation with
+`dry_run: false` and that token. Tokens are bound to the caller
 and cluster context through a caller digest. A replaced UID, changed generation,
 or changed finalizer set requires a new preview. For kinds with generation,
 status-only reconciliation does not invalidate confirmation. Kinds without
@@ -326,10 +327,15 @@ generation/finalizers are not atomic API-server preconditions.
 
 `propagation` accepts `background` (default, like kubectl), `foreground`, or
 `orphan`. Cached topology management edges provide an **approximation**, bounded
-to 100 caller-readable dependents. Namespace contents, CRD instances, and
-controller-finalizer cleanup are **not enumerated**; their count is unknown,
-never inferred from an empty dependent list. Deleting a Namespace removes all
-its contents; deleting a CRD removes all its instances, including with orphan
+to a list of 100 caller-readable dependents. `cascade.dependentCounts` reports
+`byKind` and `total` from **all authorized observed dependents before truncation**,
+with `basis: "observed (not exhaustive)"`; `cascade.truncated` signals a capped
+list. When coverage is unknown, zero observed counts do not establish that there
+are no dependents. `cascade.notEnumerated` appears only for applicable categories:
+Namespace contents, CRD instances, controller cleanup for objects with finalizers,
+or cluster-scoped cascades outside cached topology. These categories' counts are
+unknown, never inferred from an empty dependent list. Deleting a Namespace removes
+all its contents; deleting a CRD removes all its instances, including with orphan
 propagation. Owner-reference orphaning does not prevent controller-finalizer
 cleanup.
 

@@ -5,10 +5,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
@@ -62,7 +66,7 @@ func TestDeleteResourceMandatoryPreviewAndPreconditions(t *testing.T) {
 		t.Fatalf("preview: %+v", got)
 	}
 	cascade := got["cascade"].(map[string]any)
-	if cascade["approximation"] != true || len(cascade["notEnumerated"].([]any)) != 3 {
+	if cascade["approximation"] != true || len(cascade["notEnumerated"].([]any)) != 1 || cascade["notEnumerated"].([]any)[0] != "controller-finalizer cleanup" {
 		t.Fatalf("cascade overclaimed: %+v", cascade)
 	}
 	token := got["confirm"].(string)
@@ -150,12 +154,13 @@ func TestDeleteResourcePreviewDenialAndRace(t *testing.T) {
 }
 
 func TestDeleteCascadeScopeWarnings(t *testing.T) {
-	for _, tc := range []struct{ kind, version, want string }{{"Namespace", "v1", "ALL namespace contents"}, {"CustomResourceDefinition", "apiextensions.k8s.io/v1", "ALL instances"}} {
+	for _, tc := range []struct{ kind, version, want, category string }{{"Namespace", "v1", "ALL namespace contents", "namespace contents"}, {"CustomResourceDefinition", "apiextensions.k8s.io/v1", "ALL instances", "CRD instances"}} {
 		obj := &unstructured.Unstructured{}
 		obj.SetKind(tc.kind)
 		obj.SetAPIVersion(tc.version)
+		obj.SetName("target")
 		result := deleteCascadePreview(context.Background(), obj, metav1.DeletePropagationOrphan)
-		if !strings.Contains(result["scopeWarning"].(string), tc.want) || result["propagationEffect"] == nil {
+		if !strings.Contains(result["scopeWarning"].(string), tc.want) || result["propagationEffect"] == nil || !reflect.DeepEqual(result["notEnumerated"], []string{tc.category}) {
 			t.Fatalf("scope warning: %+v", result)
 		}
 	}
@@ -183,10 +188,21 @@ func TestDeleteCascadeWithholdsUnreadableDependents(t *testing.T) {
 	if len(refs) != 1 || refs[0].Name != "web-pod" || result["withheld"] != nil || result["visibilityNote"] != "Dependents you can't read are not listed." {
 		t.Fatalf("caller visibility: %+v", result)
 	}
+	counts := result["dependentCounts"].(*deleteDependentCounts)
+	if counts.Total != 1 || !reflect.DeepEqual(counts.ByKind, map[string]int{"Pod": 1}) {
+		t.Fatalf("counts disclosed unreadable ReplicaSet: %+v", counts)
+	}
+	summary := deletePreviewSummary(obj, metav1.DeletePropagationBackground, result)
+	if strings.Contains(summary, "ReplicaSet") || !strings.Contains(summary, "Pod: 1") {
+		t.Fatalf("summary disclosed unreadable ReplicaSet: %s", summary)
+	}
 	perms.SetCanI("get", "apps", "replicasets", "demo", true)
 	readable := deleteCascadePreview(ctx, obj, metav1.DeletePropagationBackground)
 	if len(readable["dependents"].([]topology.ResourceRef)) != 2 || readable["withheld"] != nil || readable["visibilityNote"] != result["visibilityNote"] {
 		t.Fatalf("readable dependents changed coverage disclosure: %+v", readable)
+	}
+	if counts := readable["dependentCounts"].(*deleteDependentCounts); counts.Total != 2 || !reflect.DeepEqual(counts.ByKind, map[string]int{"ReplicaSet": 1, "Pod": 1}) {
+		t.Fatalf("readable counts: %+v", counts)
 	}
 	obj.SetName("not-in-topology")
 	missing := deleteCascadePreview(ctx, obj, metav1.DeletePropagationBackground)
@@ -361,5 +377,147 @@ func TestDeleteCascadeLargeClusterSkipsGraphBuild(t *testing.T) {
 	})
 	if err != nil || !guarded.RequiresNamespaceFilter || len(guarded.Nodes) != 0 || len(guarded.Edges) != 0 {
 		t.Fatalf("large cluster built a graph: %+v, %v", guarded, err)
+	}
+}
+
+func TestDeleteResourcePreviewSummaryAndDependentCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		replicaSets, pods int
+		propagation       metav1.DeletionPropagation
+		wantSummary       string
+	}{
+		{"deployment", 3, 12, metav1.DeletePropagationBackground, "Deletes Deployment demo/web; observed dependents: Pod: 12, ReplicaSet: 3 (15 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
+		{"truncated", 3, 105, metav1.DeletePropagationForeground, "Deletes Deployment demo/web; observed dependents: Pod: 105, ReplicaSet: 3 (108 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
+		{"orphan", 1, 1, metav1.DeletePropagationOrphan, "Deletes Deployment demo/web; orphans observed dependents: Pod: 1, ReplicaSet: 1 (2 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousMemo := summaryCtxTopoMemo
+			summaryCtxTopoMemo = topology.NewMemoizer(5 * time.Second)
+			t.Cleanup(func() { summaryCtxTopoMemo = previousMemo })
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "demo", UID: "dep"}}
+			objects := []runtime.Object{deployment}
+			for i := 0; i < tc.replicaSets; i++ {
+				objects = append(objects, &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("web-rs-%d", i), Namespace: "demo", UID: types.UID(fmt.Sprintf("rs-%d", i)), OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: "web", UID: "dep"}}}})
+			}
+			for i := 0; i < tc.pods; i++ {
+				owner := i % tc.replicaSets
+				objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("web-pod-%d", i), Namespace: "demo", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: fmt.Sprintf("web-rs-%d", owner), UID: types.UID(fmt.Sprintf("rs-%d", owner))}}}})
+			}
+			if err := k8s.InitTestResourceCache(kubefake.NewClientset(objects...)); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(k8s.ResetTestState)
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "web", "namespace": "demo", "uid": "dep", "resourceVersion": "1", "generation": int64(1)}}}
+			obj.SetFinalizers([]string{"example.com/cleanup"})
+			dyn := setupMCPDynamicResource(t, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "DeploymentList", k8s.APIResource{Group: "apps", Version: "v1", Kind: "Deployment", Name: "deployments", Namespaced: true}, obj).(*dynamicfake.FakeDynamicClient)
+			dyn.PrependReactor("delete", "deployments", func(a clienttesting.Action) (bool, runtime.Object, error) {
+				if opts := a.(clienttesting.DeleteAction).GetDeleteOptions(); !slices.Equal(opts.DryRun, []string{metav1.DryRunAll}) {
+					t.Fatalf("preview persisted: %+v", opts)
+				}
+				return true, nil, nil
+			})
+			res, _, err := handleDeleteResource(context.Background(), nil, deleteResourceInput{Kind: "Deployment", Namespace: "demo", Name: "web", Propagation: string(tc.propagation)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := decodeToolResult(t, res)
+			if got["summary"] != tc.wantSummary {
+				t.Fatalf("summary = %v, want %s", got["summary"], tc.wantSummary)
+			}
+			if !strings.HasPrefix(res.Content[0].(*mcpsdk.TextContent).Text, `{"summary":`) {
+				t.Fatal("summary must lead the preview")
+			}
+			cascade := got["cascade"].(map[string]any)
+			counts := cascade["dependentCounts"].(map[string]any)
+			if counts["total"] != float64(tc.replicaSets+tc.pods) || counts["basis"] != "observed (not exhaustive)" || !reflect.DeepEqual(counts["byKind"], map[string]any{"ReplicaSet": float64(tc.replicaSets), "Pod": float64(tc.pods)}) {
+				t.Fatalf("dependent counts: %+v", counts)
+			}
+			wantListed := min(100, tc.replicaSets+tc.pods)
+			if len(cascade["dependents"].([]any)) != wantListed || (cascade["truncated"] == true) != (counts["total"].(float64) > 100) {
+				t.Fatalf("dependent list cap: %+v", cascade)
+			}
+		})
+	}
+}
+
+func TestDeleteCascadeNotEnumeratedOnlyWhenApplicable(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, version, namespace string
+		finalizers, want               []string
+	}{
+		{"configmap", "ConfigMap", "v1", "demo", nil, nil},
+		{"configmap with finalizer", "ConfigMap", "v1", "demo", []string{"example.com/cleanup"}, []string{"controller-finalizer cleanup"}},
+		{"cluster-scoped", "ClusterRole", "rbac.authorization.k8s.io/v1", "", nil, []string{"cluster-scoped cascades outside cached topology"}},
+		{"namespace with metadata finalizer", "Namespace", "v1", "", []string{"example.com/cleanup"}, []string{"controller-finalizer cleanup", "namespace contents"}},
+		{"colliding namespace kind", "Namespace", "example.com/v1", "demo", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetKind(tc.kind)
+			obj.SetAPIVersion(tc.version)
+			obj.SetNamespace(tc.namespace)
+			obj.SetFinalizers(tc.finalizers)
+			result := deleteCascadePreview(context.Background(), obj, metav1.DeletePropagationBackground)
+			if tc.want == nil {
+				if _, exists := result["notEnumerated"]; exists {
+					t.Fatalf("irrelevant warning: %+v", result)
+				}
+			} else if !reflect.DeepEqual(result["notEnumerated"], tc.want) {
+				t.Fatalf("notEnumerated = %v, want %v", result["notEnumerated"], tc.want)
+			}
+		})
+	}
+}
+
+func TestDeletePreviewSummaryUnknownAndNamespaceFinalizers(t *testing.T) {
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "demo"}, "spec": map[string]any{"finalizers": []any{"kubernetes"}}}}
+	cascade := map[string]any{"coverage": "unknown", "dependentCounts": &deleteDependentCounts{ByKind: map[string]int{}, Basis: "observed (not exhaustive)"}}
+	if summary := deletePreviewSummary(obj, metav1.DeletePropagationOrphan, cascade); summary != "Deletes Namespace demo and all namespace contents (count unknown); dependents unknown; may wait on finalizers: kubernetes" {
+		t.Fatalf("namespace summary: %s", summary)
+	}
+	obj.SetKind("ConfigMap")
+	obj.SetNamespace("demo")
+	obj.SetName("settings")
+	if summary := deletePreviewSummary(obj, metav1.DeletePropagationBackground, cascade); summary != "Deletes ConfigMap demo/settings; dependents unknown" {
+		t.Fatalf("unknown dependents reported as absent: %s", summary)
+	}
+	cascade["coverage"] = "partial"
+	if summary := deletePreviewSummary(obj, metav1.DeletePropagationBackground, cascade); summary != "Deletes ConfigMap demo/settings; no caller-readable dependents observed" {
+		t.Fatalf("empty observed dependents: %s", summary)
+	}
+}
+
+func TestDeleteResourcePreviewFinalizerFields(t *testing.T) {
+	for _, kind := range []string{"ConfigMap", "Namespace"} {
+		t.Run(kind, func(t *testing.T) {
+			namespace, resource := "demo", "configmaps"
+			if kind == "Namespace" {
+				namespace, resource = "", "namespaces"
+			}
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": kind, "metadata": map[string]any{"name": "target", "namespace": namespace, "uid": "uid", "resourceVersion": "1"}}}
+			if kind == "Namespace" {
+				obj.Object["spec"] = map[string]any{"finalizers": []any{"kubernetes"}}
+			}
+			gvr := schema.GroupVersionResource{Version: "v1", Resource: resource}
+			dyn := setupMCPDynamicResource(t, gvr, kind+"List", k8s.APIResource{Version: "v1", Kind: kind, Name: resource, Namespaced: namespace != ""}, obj).(*dynamicfake.FakeDynamicClient)
+			dyn.PrependReactor("delete", resource, func(clienttesting.Action) (bool, runtime.Object, error) { return true, nil, nil })
+			res, _, err := handleDeleteResource(context.Background(), nil, deleteResourceInput{Kind: kind, Namespace: namespace, Name: "target"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := decodeToolResult(t, res)
+			if finalizers, exists := got["finalizers"]; !exists || finalizers != nil || got["finalizerGuidance"] != nil {
+				t.Fatalf("metadata finalizer shape changed: %+v", got)
+			}
+			cascade := got["cascade"].(map[string]any)
+			if kind == "Namespace" {
+				if !reflect.DeepEqual(got["namespaceFinalizers"], []any{"kubernetes"}) || got["namespaceFinalizerGuidance"] == nil || !reflect.DeepEqual(cascade["notEnumerated"], []any{"namespace contents"}) || !strings.Contains(got["summary"].(string), "may wait on finalizers: kubernetes") {
+					t.Fatalf("namespace lifecycle finalizers lost: %+v", got)
+				}
+			} else if cascade["notEnumerated"] != nil || got["namespaceFinalizers"] != nil || got["namespaceFinalizerGuidance"] != nil {
+				t.Fatalf("unrelated cleanup fields: %+v", got)
+			}
+		})
 	}
 }
