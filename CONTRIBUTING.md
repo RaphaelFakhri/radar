@@ -78,7 +78,7 @@ make deps
 
 # Run in development mode
 # Terminal 1: Backend
-go run ./cmd/explorer --dev --no-browser
+go run -tags withoutebpf ./cmd/explorer --dev --no-browser
 
 # Terminal 2: Frontend with hot reload
 cd web

@@ -95,6 +95,7 @@ type DNSGroup struct {
 }
 
 type Result struct {
+	Enrichment        string        `json:"enrichment,omitempty"`
 	Aspect            Aspect        `json:"aspect"`
 	Target            Target        `json:"target"`
 	CapturedAt        time.Time     `json:"capturedAt"`

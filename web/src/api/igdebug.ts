@@ -1,5 +1,4 @@
-import { apiUrl } from './config'
-import { apiFetch } from './client'
+import { fetchJSON } from './client'
 import type { LiveDebugAspect, LiveDebugRun } from '@skyhook-io/k8s-ui/components/resources/renderers/LiveDebugSection'
 
 export interface IGStatus {
@@ -9,35 +8,31 @@ export interface IGStatus {
   message?: string
 }
 
-async function responseJSON<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`)
-  return body as T
-}
-
 export async function fetchIGStatus(): Promise<IGStatus> {
-  return responseJSON<IGStatus>(await apiFetch(apiUrl('/ig/status')))
+  return fetchJSON<IGStatus>('/ig/status')
 }
 
 export async function startIGCapture(input: {
   namespace: string
   pod: string
+  podUid: string
+  containerId: string
   container: string
   aspect: LiveDebugAspect
   durationSeconds: number
 }): Promise<LiveDebugRun> {
   const path = input.aspect === 'dns' ? '/ig/runs' : '/ig/snapshots'
-  return responseJSON<LiveDebugRun>(await apiFetch(apiUrl(path), {
+  return fetchJSON<LiveDebugRun>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
-  }))
+  })
 }
 
 export async function fetchIGRun(id: string): Promise<LiveDebugRun> {
-  return responseJSON<LiveDebugRun>(await apiFetch(apiUrl(`/ig/runs/${encodeURIComponent(id)}`)))
+  return fetchJSON<LiveDebugRun>(`/ig/runs/${encodeURIComponent(id)}`)
 }
 
 export async function stopIGRun(id: string): Promise<LiveDebugRun> {
-  return responseJSON<LiveDebugRun>(await apiFetch(apiUrl(`/ig/runs/${encodeURIComponent(id)}/stop`), { method: 'POST' }))
+  return fetchJSON<LiveDebugRun>(`/ig/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' })
 }

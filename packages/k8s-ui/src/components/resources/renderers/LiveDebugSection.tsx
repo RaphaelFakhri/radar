@@ -13,8 +13,19 @@ export interface LiveDebugEndpoint {
   resource?: { kind?: string; namespace?: string; name?: string }
 }
 
+export interface LiveDebugTarget {
+  namespace: string
+  pod: string
+  podUid?: string
+  node?: string
+  container: string
+  containerId?: string
+}
+
 export interface LiveDebugResult {
+  target: LiveDebugTarget
   aspect: LiveDebugAspect
+  enrichment?: string
   capturedAt: string
   captureDurationMs: number
   eventCount: number
@@ -27,6 +38,7 @@ export interface LiveDebugResult {
 }
 
 export interface LiveDebugRun {
+  target: LiveDebugTarget
   id: string
   aspect: LiveDebugAspect
   state: LiveDebugState
@@ -36,6 +48,8 @@ export interface LiveDebugRun {
 }
 
 interface LiveDebugSectionProps {
+  captureUnavailableReason?: string
+  pending?: boolean
   status: 'installed' | 'unknown'
   statusMessage?: string
   containers: string[]
@@ -56,6 +70,8 @@ const aspects: Array<{ value: LiveDebugAspect; label: string; description: strin
 
 export function LiveDebugSection({
   status,
+  pending = false,
+  captureUnavailableReason,
   statusMessage,
   containers,
   selectedContainer,
@@ -68,12 +84,12 @@ export function LiveDebugSection({
 }: LiveDebugSectionProps) {
   const [aspect, setAspect] = useState<LiveDebugAspect>('processes')
   const [duration, setDuration] = useState(10)
-  const active = run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state)
-  const canStop = active && run.aspect === 'dns' && run.state !== 'stopping'
-  const preparing = run?.state === 'starting'
+  const active = pending || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))
+  const canStop = active && run?.aspect === 'dns' && run.state !== 'stopping'
+  const preparing = pending || run?.state === 'starting'
 
   return (
-    <Section title="Live Debug" icon={Activity} defaultExpanded>
+    <Section title="Live Debug" icon={Activity} defaultExpanded={false}>
       {status === 'unknown' ? (
         <div className="card-inner-lg text-xs text-theme-text-secondary">
           <div className="font-medium text-theme-text-primary">Inspektor Gadget could not be verified</div>
@@ -129,7 +145,7 @@ export function LiveDebugSection({
                 <button
                   type="button"
                   onClick={() => onCapture(aspect, aspect === 'dns' ? duration : 0)}
-                  disabled={!!active || !selectedContainer}
+                  disabled={!!active || !selectedContainer || !!captureUnavailableReason}
                   className="btn-brand inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs disabled:opacity-50"
                 >
                   <Play className="h-3 w-3" /> {run?.result && run.aspect === aspect ? 'Run again' : 'Capture'}
@@ -138,6 +154,7 @@ export function LiveDebugSection({
             </div>
           </div>
 
+          {captureUnavailableReason && <div className="card-inner text-xs text-theme-text-secondary">{captureUnavailableReason}</div>}
           <div className="text-xs text-theme-text-tertiary">
             {aspects.find(item => item.value === aspect)?.description}. Capture explicitly loads short-lived kernel instrumentation on this Pod&apos;s node, then unloads it.
           </div>
@@ -145,11 +162,11 @@ export function LiveDebugSection({
           {(preparing || run?.state === 'running' || run?.state === 'stopping') && (
             <div className="card-inner flex items-center gap-2 text-xs text-theme-text-secondary">
               <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              {preparing ? 'Preparing the pinned gadget…' : run.state === 'running' ? 'Capturing kernel events…' : 'Capture ready; unloading instrumentation…'}
+              {preparing ? 'Preparing the pinned gadget…' : run?.state === 'running' ? 'Capturing kernel events…' : 'Capture ready; unloading instrumentation…'}
             </div>
           )}
           {(error || run?.error || run?.reason) && (
-            <AlertBanner variant="error" title="Live Debug capture failed" message={error || run?.error || run?.reason} />
+            <AlertBanner variant={run?.state === 'partial' ? 'warning' : 'error'} title={run?.state === 'partial' ? 'Live Debug capture is partial' : 'Live Debug capture failed'} message={error || run?.error || run?.reason} />
           )}
           {run?.result && run.aspect === aspect && <ResultView result={run.result} onNavigate={onNavigate} />}
           {!run && <div className="card-inner py-5 text-center text-xs text-theme-text-tertiary">Choose an answer and capture when you need live runtime evidence.</div>}
@@ -168,6 +185,11 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
         <span>{result.eventCount} {noun}{result.eventCount === 1 ? '' : 's'}</span>
         <span>Captured at {captured}{result.captureDurationMs > 0 ? ` · ${(result.captureDurationMs / 1000).toFixed(1)}s` : ''}</span>
       </div>
+      <div className="break-all text-xs text-theme-text-tertiary">
+        {result.target.namespace}/{result.target.pod} · {result.target.container}
+        <div>Pod UID: {result.target.podUid} · Node: {result.target.node}</div>
+        <div>Container ID: {result.target.containerId}</div>
+      </div>
       {result.aspect === 'processes' && (
         <div className="max-h-72 overflow-auto table-divide-subtle">
           {(result.processes || []).map(process => (
@@ -176,7 +198,7 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
               <div className="font-mono text-theme-text-secondary">PID {process.pid}{process.parentPid ? ` · PPID ${process.parentPid}` : ''}</div>
             </div>
           ))}
-          {result.processes?.length === 0 && <EmptyResult text="No processes were observed for the pinned container." />}
+          {(result.processes?.length ?? 0) === 0 && <EmptyResult text="No processes were observed for the pinned container." />}
         </div>
       )}
       {result.aspect === 'connections' && (
@@ -191,7 +213,7 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
               </div>
             </div>
           ))}
-          {result.connections?.length === 0 && <EmptyResult text="No current sockets were observed for the pinned container." />}
+          {(result.connections?.length ?? 0) === 0 && <EmptyResult text="No current sockets were observed for the pinned container." />}
         </div>
       )}
       {result.aspect === 'dns' && (
@@ -217,9 +239,10 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
               <span>No response was observed for these queries in this capture window.</span>
             </div>
           )}
-          {result.dns?.length === 0 && <EmptyResult text="No DNS responses were observed in this capture window." />}
+          {(result.dns?.length ?? 0) === 0 && <EmptyResult text="No DNS responses were observed in this capture window." />}
         </div>
       )}
+      {result.enrichment === 'partial' && <div className="text-xs text-theme-text-tertiary">Peer resource labels cover a limited Pod and Service inventory; unlabeled addresses may still be Kubernetes resources.</div>}
       {(result.truncated || result.eventLoss) && (
         <div className="text-[11px] text-theme-text-tertiary">
           {result.truncated ? 'Radar capped the captured rows. ' : ''}

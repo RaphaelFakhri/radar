@@ -22,8 +22,8 @@ import (
 	"github.com/skyhook-io/radar/internal/connections"
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/helm"
-	"github.com/skyhook-io/radar/internal/investigationrefs"
 	"github.com/skyhook-io/radar/internal/igdebug"
+	"github.com/skyhook-io/radar/internal/investigationrefs"
 	"github.com/skyhook-io/radar/internal/k8s"
 	mcppkg "github.com/skyhook-io/radar/internal/mcp"
 	internalopencost "github.com/skyhook-io/radar/internal/opencost"
@@ -102,7 +102,7 @@ type AppConfig struct {
 	HubAPIURL                   string // Hub API origin override ("" = hosted default)
 	HubAppURL                   string // Hub frontend origin override ("" = derived)
 	CloudTunnelConfigured       bool   // --cloud-url was set on this process
-	IGGadgetRegistry string
+	IGGadgetRegistry            string
 }
 
 // SetGlobals applies debug/test flags to global state.
@@ -501,7 +501,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		ReachabilityImage:         cfg.ReachabilityImage,
 		MCP:                       &cfg.MCPEnabled,
 		RestoreLastDesktopContext: &restoreLastDesktopContext,
-		IGGadgetRegistry: cfg.IGGadgetRegistry,
+		IGGadgetRegistry:          cfg.IGGadgetRegistry,
 	}
 
 	serverCfg := server.Config{

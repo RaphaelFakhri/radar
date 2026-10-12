@@ -55,7 +55,10 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 		return err
 	}
 	request.Target = target
-	enricher := loadVisibleEnricher(ctx, client, target)
+	var enricher *visibleEnricher
+	if request.Aspect != domain.AspectProcesses {
+		enricher = loadVisibleEnricher(ctx, client, target)
+	}
 
 	runCtx, cancelRun := context.WithCancelCause(ctx)
 	defer cancelRun(nil)
@@ -120,7 +123,7 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 	}
 	if err := runtime.RunGadget(gadgetCtx, runtimeParams, params); err != nil {
 		if resultPublished.Load() {
-			return nil
+			reporter.Partial(fmt.Sprintf("capture ended before runtime cleanup could be confirmed: %v", err))
 		}
 		if cause := context.Cause(runCtx); cause != nil && !errors.Is(cause, context.Canceled) {
 			return cause
@@ -173,6 +176,9 @@ func resolveTarget(ctx context.Context, client kubernetes.Interface, gadgetNames
 	if err != nil {
 		return domain.Target{}, fmt.Errorf("get target Pod %s/%s: %w", requested.Namespace, requested.Pod, err)
 	}
+	if requested.PodUID != "" && requested.PodUID != string(pod.UID) {
+		return domain.Target{}, domain.ErrTargetChanged
+	}
 	if pod.Spec.NodeName == "" {
 		return domain.Target{}, fmt.Errorf("Pod %s/%s is not scheduled to a node", requested.Namespace, requested.Pod)
 	}
@@ -182,6 +188,9 @@ func resolveTarget(ctx context.Context, client kubernetes.Interface, gadgetNames
 			return domain.Target{}, fmt.Errorf("Pod %s/%s has no running containers", requested.Namespace, requested.Pod)
 		}
 		return domain.Target{}, fmt.Errorf("container %q is not running in Pod %s/%s", requested.Container, requested.Namespace, requested.Pod)
+	}
+	if requested.ContainerID != "" && trimRuntimePrefix(requested.ContainerID) != containerID {
+		return domain.Target{}, domain.ErrTargetChanged
 	}
 	gadgetPods, err := client.CoreV1().Pods(gadgetNamespace).List(ctx, metav1.ListOptions{LabelSelector: "k8s-app=gadget", FieldSelector: "spec.nodeName=" + pod.Spec.NodeName})
 	if err != nil {
@@ -326,6 +335,7 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 							return err
 						}
 						result.Connections = enricher.connections(rows)
+						result.Enrichment = enricher.coverage
 						result.EventCount = len(rows)
 					}
 					reporter.Result(result)
@@ -368,11 +378,8 @@ func dnsOperator(target domain.Target, duration time.Duration, enricher *visible
 				if err := source.Subscribe(func(_ datasource.DataSource, data datasource.Data) error {
 					raw := append(json.RawMessage(nil), formatter.Marshal(data)...)
 					mu.Lock()
-					accepted, err := aggregator.Add(raw)
+					_, err := aggregator.Add(raw)
 					mu.Unlock()
-					if accepted {
-						reporter.Event(raw)
-					}
 					return err
 				}, operatorPriority); err != nil {
 					return err
@@ -400,7 +407,7 @@ func dnsOperator(target domain.Target, duration time.Duration, enricher *visible
 			}
 			reporter.Result(domain.Result{
 				Aspect: domain.AspectDNS, Target: target, CapturedAt: time.Now().UTC(), CaptureDuration: captureDuration,
-				EventCount: events, Truncated: truncated, EventLoss: "unmeasurable", UnmatchedQueries: unmatched, DNS: groups,
+				Enrichment: enricher.coverage, EventCount: events, Truncated: truncated, EventLoss: "unmeasurable", UnmatchedQueries: unmatched, DNS: groups,
 			})
 			markCompleted()
 			return nil
@@ -411,25 +418,34 @@ func dnsOperator(target domain.Target, duration time.Duration, enricher *visible
 type visibleEnricher struct {
 	services []corev1.Service
 	pods     []corev1.Pod
+	coverage string
 }
 
 func loadVisibleEnricher(ctx context.Context, client kubernetes.Interface, target domain.Target) *visibleEnricher {
 	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	result := &visibleEnricher{}
-	services, err := client.CoreV1().Services("").List(lookupCtx, metav1.ListOptions{})
+	result := &visibleEnricher{coverage: "complete"}
+	services, err := client.CoreV1().Services("").List(lookupCtx, metav1.ListOptions{Limit: 2000})
 	if err != nil {
-		services, _ = client.CoreV1().Services(target.Namespace).List(lookupCtx, metav1.ListOptions{})
+		result.coverage = "partial"
+		services, _ = client.CoreV1().Services(target.Namespace).List(lookupCtx, metav1.ListOptions{Limit: 2000})
 	}
 	if services != nil {
 		result.services = services.Items
+		if services.Continue != "" {
+			result.coverage = "partial"
+		}
 	}
-	pods, err := client.CoreV1().Pods("").List(lookupCtx, metav1.ListOptions{})
+	pods, err := client.CoreV1().Pods("").List(lookupCtx, metav1.ListOptions{Limit: 2000})
 	if err != nil {
-		pods, _ = client.CoreV1().Pods(target.Namespace).List(lookupCtx, metav1.ListOptions{})
+		result.coverage = "partial"
+		pods, _ = client.CoreV1().Pods(target.Namespace).List(lookupCtx, metav1.ListOptions{Limit: 2000})
 	}
 	if pods != nil {
 		result.pods = pods.Items
+		if pods.Continue != "" {
+			result.coverage = "partial"
+		}
 	}
 	return result
 }

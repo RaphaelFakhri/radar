@@ -176,3 +176,33 @@ func (r *captureReporter) Started(domain.Target) {}
 func (r *captureReporter) Event(json.RawMessage) {}
 func (r *captureReporter) Result(domain.Result)  {}
 func (r *captureReporter) Partial(reason string) { r.partial <- reason }
+
+func TestResolveTargetRejectsAChangedIncarnationBeforeInstrumenting(t *testing.T) {
+	pod := targetPod("new-uid", "containerd://new-id", "")
+	for _, target := range []domain.Target{
+		{Namespace: "app", Pod: "api", Container: "first", PodUID: "old-uid"},
+		{Namespace: "app", Pod: "api", Container: "first", PodUID: "new-uid", ContainerID: "containerd://old-id"},
+	} {
+		client := fake.NewSimpleClientset(pod)
+		_, err := resolveTarget(context.Background(), client, "gadget", target)
+		if !errors.Is(err, domain.ErrTargetChanged) {
+			t.Fatalf("changed target = %v", err)
+		}
+		for _, action := range client.Actions() {
+			if action.GetVerb() != "get" || action.GetResource().Resource != "pods" {
+				t.Fatalf("accessed Gadget before validating the target: %#v", action)
+			}
+		}
+	}
+}
+
+func TestEnrichmentMarksPaginationAsPartial(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("list", "pods", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, &corev1.PodList{ListMeta: metav1.ListMeta{Continue: "next-page"}}, nil
+	})
+	result := loadVisibleEnricher(context.Background(), client, domain.Target{Namespace: "app"})
+	if result.coverage != "partial" {
+		t.Fatalf("a capped inventory claimed complete enrichment: %#v", result)
+	}
+}

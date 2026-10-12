@@ -12,6 +12,7 @@ import (
 )
 
 var (
+	ErrTargetChanged  = errors.New("target Pod or container changed before capture")
 	ErrNotFound       = errors.New("live debug run not found")
 	ErrForbidden      = errors.New("live debug run belongs to another user or cluster context")
 	ErrCapacity       = errors.New("live debug concurrency limit reached")
@@ -166,6 +167,23 @@ func (m *Manager) WaitData(ctx context.Context, id string, owner Owner) (*Run, e
 	return &view, nil
 }
 
+func (m *Manager) WaitDone(ctx context.Context, id string, owner Owner) (*Run, error) {
+	m.mu.Lock()
+	run, err := m.authorizeLocked(id, owner)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	done := run.done
+	m.mu.Unlock()
+	select {
+	case <-done:
+		return m.Get(id, owner)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (m *Manager) Stop(id string, owner Owner) (*Run, error) {
 	m.mu.Lock()
 	run, err := m.authorizeLocked(id, owner)
@@ -276,6 +294,14 @@ func (m *Manager) reporterResult(id string, result Result) {
 	if run == nil || run.view.State.Terminal() {
 		return
 	}
+	if len(result.Processes) > m.limits.MaxEvents {
+		result.Processes = result.Processes[:m.limits.MaxEvents]
+		result.Truncated = true
+	}
+	if len(result.Connections) > m.limits.MaxEvents {
+		result.Connections = result.Connections[:m.limits.MaxEvents]
+		result.Truncated = true
+	}
 	result.Target = run.view.Target
 	result.Aspect = run.view.Aspect
 	if result.CapturedAt.IsZero() {
@@ -320,6 +346,9 @@ func (m *Manager) finishLocked(run *managedRun) {
 	run.view.UpdatedAt = time.Now().UTC()
 	m.active--
 	m.byOwner[run.owner]--
+	if m.byOwner[run.owner] == 0 {
+		delete(m.byOwner, run.owner)
+	}
 	run.dataReadyOnce.Do(func() { close(run.dataReady) })
 	run.doneOnce.Do(func() { close(run.done) })
 	m.broadcastLocked(run, StreamEvent{Type: "state", Run: runView(run)})

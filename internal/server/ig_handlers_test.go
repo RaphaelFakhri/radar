@@ -54,6 +54,7 @@ func (f *fakeIGDebugService) Subscribe(_ string, owner domain.Owner) (<-chan dom
 }
 
 func (f *fakeIGDebugService) OnContextSwitch() {}
+func (f *fakeIGDebugService) OnContextReady()  {}
 
 func TestIGSnapshotReturnsDataReadyResultAndForwardsOwner(t *testing.T) {
 	connectedForIGTest(t)
@@ -143,4 +144,36 @@ func connectedForIGTest(t *testing.T) {
 	previous := k8s.GetConnectionStatus()
 	k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
 	t.Cleanup(func() { k8s.SetConnectionStatus(previous) })
+}
+
+func TestIGRejectsOversizedAndTrailingRequestsBeforeStarting(t *testing.T) {
+	connectedForIGTest(t)
+	for _, test := range []struct {
+		name, body string
+		status     int
+	}{
+		{"oversized", `{"namespace":"` + strings.Repeat("x", 17<<10) + `"}`, http.StatusRequestEntityTooLarge},
+		{"trailing", `{"namespace":"app","pod":"api","container":"api","aspect":"processes"} {}`, http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeIGDebugService{}
+			s := &Server{igDebug: fake}
+			recorder := httptest.NewRecorder()
+			s.handleIGSnapshot(recorder, httptest.NewRequest(http.MethodPost, "/api/ig/snapshots", strings.NewReader(test.body)))
+			if recorder.Code != test.status || fake.startInput.Target.Pod != "" {
+				t.Fatalf("status=%d request=%#v body=%s", recorder.Code, fake.startInput, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestIGRejectsLongDNSWindow(t *testing.T) {
+	connectedForIGTest(t)
+	fake := &fakeIGDebugService{}
+	s := &Server{igDebug: fake}
+	recorder := httptest.NewRecorder()
+	s.handleIGStart(recorder, httptest.NewRequest(http.MethodPost, "/api/ig/runs", strings.NewReader(`{"namespace":"app","pod":"api","container":"api","aspect":"dns","durationSeconds":120}`)))
+	if recorder.Code != http.StatusBadRequest || fake.startInput.Target.Pod != "" {
+		t.Fatalf("status=%d request=%#v", recorder.Code, fake.startInput)
+	}
 }

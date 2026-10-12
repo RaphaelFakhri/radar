@@ -185,7 +185,7 @@ type Server struct {
 	// aiRuns owns investigations as durable server-side jobs (survive panel close
 	// / navigation / refresh). nil exactly when aiDiagnoser is.
 	igDebug igDebugService
-	aiRuns *ai.RunManager
+	aiRuns  *ai.RunManager
 	// aiInvestigationRefs and aiHistoryDB are what the engine is built with,
 	// kept so it can be built after startup.
 	aiInvestigationRefs *investigationrefs.Registry
@@ -267,7 +267,7 @@ func New(cfg Config) *Server {
 		yamlSchemaCache:         make(map[string][]byte),
 		yamlSchemaPathCache:     make(map[string]yamlSchemaPathCacheEntry),
 		yamlSchemaBundleCache:   make(map[string]yamlSchemaBundleCacheEntry),
-		igDebug: igdebug.Default(),
+		igDebug:                 igdebug.Default(),
 	}
 	if len(cfg.TrustedOrigins) > 0 {
 		s.trustedOrigins = make(map[string]struct{}, len(cfg.TrustedOrigins))
@@ -295,6 +295,7 @@ func New(cfg Config) *Server {
 	// for mcpPermCache.
 	k8s.OnContextSwitch(func(_ string) {
 		s.finalizePostContextSwitch()
+		s.igDebug.OnContextReady()
 		// Alongside the subsystem resets in PerformContextSwitch (prometheus,
 		// traffic, helm): the Argo CD connection references the previous
 		// cluster's endpoint/port-forward.
@@ -1363,6 +1364,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{
+		LiveDebug:             true,
 		YAMLReview:            true,
 		YAMLSchemas:           true,
 		WorkloadImages:        true,

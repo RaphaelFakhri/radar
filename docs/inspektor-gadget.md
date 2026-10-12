@@ -58,3 +58,27 @@ Every result records the pinned Pod UID, node, container ID, capture window,
 row/event count, Radar truncation, and whether IG-side event loss was measurable.
 DNS absence is phrased as "no response observed in the capture window," never as
 a proven timeout.
+
+## Building
+
+The embedded IG client uses the `withoutebpf` build tag to exclude its Linux-only
+host runtime. `make build`, `make test`, and distribution builds apply it. For
+direct Go commands use `GOFLAGS=-tags=withoutebpf` (including `go build ./...`
+and `go test ./internal/...`). Radar loads instrumentation only in the existing
+Gadget daemon, never on the machine running Radar.
+
+## Choosing evidence
+
+Live Debug is a collapsed, opt-in section in Pod details. Use it for pinned
+process/socket snapshots and short DNS windows on distroless workloads without
+adding a container. Debug opens an interactive shell; Traffic shows the traffic
+provider's retained or sampled flow evidence. These answer different questions.
+Captures are unavailable through Radar Cloud's read-only connection.
+
+DNS streams contain lifecycle state and filtered aggregate results, not raw
+Gadget events. Peer enrichment lists at most 2,000 Pods and 2,000 Services with
+the acting identity and a five-second budget; a namespace fallback or pagination
+marks labels as partial. Process captures do not load those inventories. HTTP
+DNS runs accept at most 60 seconds; the full MCP tool accepts at most 30 seconds.
+The tool is excluded from read-only investigation endpoints and available only
+on a confirmed write turn or through a write-capable MCP client.

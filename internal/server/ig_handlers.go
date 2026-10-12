@@ -23,6 +23,8 @@ import (
 type igStartRequest struct {
 	Namespace       string        `json:"namespace"`
 	Pod             string        `json:"pod"`
+	PodUID          string        `json:"podUid,omitempty"`
+	ContainerID     string        `json:"containerId,omitempty"`
 	Container       string        `json:"container"`
 	Aspect          domain.Aspect `json:"aspect"`
 	DurationSeconds int           `json:"durationSeconds,omitempty"`
@@ -36,6 +38,7 @@ type igDebugService interface {
 	Stop(string, domain.Owner) (*domain.Run, error)
 	Subscribe(string, domain.Owner) (<-chan domain.StreamEvent, func(), error)
 	OnContextSwitch()
+	OnContextReady()
 }
 
 func (s *Server) handleIGStatus(w http.ResponseWriter, r *http.Request) {
@@ -60,8 +63,13 @@ func (s *Server) handleIGCreate(w http.ResponseWriter, r *http.Request, snapshot
 		return
 	}
 	var body igStartRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	if err := decodeBoundedJSONBody(w, r, 16<<10, &body); err != nil {
+		status := http.StatusBadRequest
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		s.writeError(w, status, "Invalid request body: "+err.Error())
 		return
 	}
 	if body.Namespace == "" || body.Pod == "" || body.Container == "" || !body.Aspect.Valid() {
@@ -72,14 +80,23 @@ func (s *Server) handleIGCreate(w http.ResponseWriter, r *http.Request, snapshot
 		s.writeError(w, http.StatusBadRequest, "DNS is a bounded run, not a snapshot")
 		return
 	}
+	if body.Aspect == domain.AspectDNS && (body.DurationSeconds < 0 || body.DurationSeconds > 60) {
+		s.writeError(w, http.StatusBadRequest, "DNS duration must be between 1 and 60 seconds")
+		return
+	}
 	duration := time.Duration(body.DurationSeconds) * time.Second
 	if body.Aspect == domain.AspectDNS && duration == 0 {
 		duration = 10 * time.Second
 	}
+	if body.Aspect == domain.AspectDNS && (duration < time.Second || duration > time.Minute) {
+		s.writeError(w, http.StatusBadRequest, "DNS duration must be between 1 and 60 seconds")
+		return
+	}
 	request := domain.Request{
 		Owner: s.igOwner(r), Aspect: body.Aspect, Duration: duration,
-		Target: domain.Target{Namespace: body.Namespace, Pod: body.Pod, Container: body.Container},
+		Target: domain.Target{Namespace: body.Namespace, Pod: body.Pod, PodUID: body.PodUID, Container: body.Container, ContainerID: body.ContainerID},
 	}
+	auth.AuditLog(r, body.Namespace, body.Pod)
 	run, err := s.igDebug.Start(r.Context(), request)
 	if err != nil {
 		s.writeIGError(w, err)
@@ -185,9 +202,9 @@ func (s *Server) writeIGError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, domain.ErrNotFound), apierrors.IsNotFound(err):
 		s.writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, domain.ErrCapacity):
+	case errors.Is(err, domain.ErrCapacity), errors.Is(err, domain.ErrTargetChanged):
 		s.writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, internalig.ErrNotInstalled), errors.Is(err, internalig.ErrUnknown):
+	case errors.Is(err, internalig.ErrNotInstalled), errors.Is(err, internalig.ErrUnknown), errors.Is(err, internalig.ErrQuiescing):
 		s.writeError(w, http.StatusServiceUnavailable, err.Error())
 	default:
 		log.Printf("[ig] Failed to handle Live Debug request: %v", err)

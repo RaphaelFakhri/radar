@@ -35,8 +35,8 @@ import (
 	"github.com/skyhook-io/radar/internal/summarycontext"
 	"github.com/skyhook-io/radar/internal/timeline"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
-	"github.com/skyhook-io/radar/pkg/executioninsight"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
+	"github.com/skyhook-io/radar/pkg/executioninsight"
 	"github.com/skyhook-io/radar/pkg/health"
 	igdomain "github.com/skyhook-io/radar/pkg/igdebug"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
@@ -3478,7 +3478,7 @@ func handleInspectPodRuntime(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if err != nil {
 		return nil, nil, err
 	}
-	view, err := service.WaitData(toolCtx, run.ID, owner)
+	view, err := service.WaitDone(toolCtx, run.ID, owner)
 	if err != nil {
 		_, _ = service.Stop(run.ID, owner)
 		return nil, nil, fmt.Errorf("live debug capture did not become ready: %w", err)
@@ -3491,8 +3491,11 @@ func handleInspectPodRuntime(ctx context.Context, _ *mcp.CallToolRequest, input 
 	}
 	return toJSONResult(struct {
 		*igdomain.Result
-		Privacy string `json:"privacy,omitempty"`
-	}{Result: view.Result, Privacy: "DNS output is aggregated; raw packets and process arguments are not returned."})
+		State   igdomain.State `json:"state"`
+		Reason  string         `json:"reason,omitempty"`
+		Error   string         `json:"error,omitempty"`
+		Privacy string         `json:"privacy,omitempty"`
+	}{Result: view.Result, State: view.State, Reason: view.Reason, Error: view.Error, Privacy: "DNS output is aggregated; raw packets and process arguments are not returned."})
 }
 
 // searchResponseMCP embeds search.Result so the JSON shape stays identical

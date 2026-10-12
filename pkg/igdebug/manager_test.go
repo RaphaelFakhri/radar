@@ -299,3 +299,64 @@ func waitForState(t *testing.T, manager *Manager, id string, owner Owner, state 
 	t.Fatalf("run did not reach %s", state)
 	return nil
 }
+
+func TestWaitDonePreservesPartialReasonAfterDataReady(t *testing.T) {
+	manager := NewManager(DefaultLimits())
+	owner := Owner{User: "alice", Context: "test"}
+	cleanup := make(chan struct{})
+	run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(_ context.Context, req Request, reporter Reporter) error {
+		reporter.Started(req.Target)
+		reporter.Result(Result{DNS: []DNSGroup{{Name: "example.com", Count: 1}}})
+		<-cleanup
+		reporter.Partial("target was replaced")
+		return errors.New("runtime stopped")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := manager.WaitData(ctx, run.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	cancelWait()
+	if _, err := manager.WaitDone(waitCtx, run.ID, owner); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitDone returned before cleanup: %v", err)
+	}
+	close(cleanup)
+	view, err := manager.WaitDone(ctx, run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != StatePartial || view.Reason != "target was replaced" || view.Result == nil {
+		t.Fatalf("lost final capture state: %#v", view)
+	}
+	if _, err := manager.WaitDone(ctx, run.ID, Owner{User: "bob", Context: "test"}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("cross-user wait = %v", err)
+	}
+}
+
+func TestSnapshotRowsAreCappedWithoutLosingObservedCount(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxEvents = 1
+	manager := NewManager(limits)
+	owner := Owner{User: "alice", Context: "test"}
+	run, err := manager.Start(requestFor(owner, AspectProcesses), executorFunc(func(_ context.Context, req Request, reporter Reporter) error {
+		reporter.Started(req.Target)
+		reporter.Result(Result{EventCount: 2, Processes: []Process{{PID: 1}, {PID: 2}}})
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	view, err := manager.WaitDone(ctx, run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Result == nil || len(view.Result.Processes) != 1 || !view.Result.Truncated || view.Result.EventCount != 2 {
+		t.Fatalf("snapshot cap lost count or truncation: %#v", view.Result)
+	}
+}

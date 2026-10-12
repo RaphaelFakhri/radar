@@ -415,7 +415,7 @@ func main() {
 		HubAPIURL:                   hubAPIURL,
 		HubAppURL:                   hubAppURL,
 		CloudTunnelConfigured:       *cloudURL != "",
-		IGGadgetRegistry: *igGadgetRegistry,
+		IGGadgetRegistry:            *igGadgetRegistry,
 		AuthConfig: auth.Config{
 			Mode:                      *authMode,
 			Secret:                    *authSecret,

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/skyhook-io/radar/pkg/auth"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -17,6 +18,7 @@ import (
 )
 
 var (
+	ErrQuiescing    = errors.New("cluster connection is changing; retry after it is ready")
 	ErrNotInstalled = errors.New("Inspektor Gadget is not installed in this cluster")
 	ErrUnknown      = errors.New("unable to verify Inspektor Gadget installation")
 )
@@ -37,6 +39,9 @@ type Status struct {
 }
 
 type Service struct {
+	mu                sync.Mutex
+	quiescing         bool
+	generation        uint64
 	manager           *domain.Manager
 	registry          string
 	sharedClient      func() kubernetes.Interface
@@ -113,17 +118,31 @@ func statusWithClient(ctx context.Context, client kubernetes.Interface) Status {
 }
 
 func (s *Service) Start(ctx context.Context, request domain.Request) (*domain.Run, error) {
+	s.mu.Lock()
+	generation, quiescing := s.generation, s.quiescing
+	s.mu.Unlock()
+	if quiescing {
+		return nil, ErrQuiescing
+	}
 	if err := domain.ValidateDuration(request.Aspect, request.Duration); err != nil {
 		return nil, err
 	}
-	status := s.Status(ctx)
+	statusCtx, cancelStatus := context.WithTimeout(ctx, 5*time.Second)
+	status := s.Status(statusCtx)
+	cancelStatus()
 	if status.State != StateInstalled {
 		if status.State == StateNotInstalled {
 			return nil, ErrNotInstalled
 		}
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, status.Message)
 	}
-	config := k8s.ConfigFromContext(ctx)
+	config, contextName := k8s.GetConfigSnapshot()
+	if user := auth.UserFromContext(ctx); user != nil && config != nil {
+		config = auth.ImpersonatedConfig(config, user.Username, user.Groups)
+	}
+	if request.Owner.Context != contextName {
+		return nil, ErrQuiescing
+	}
 	if config == nil {
 		return nil, errors.New("unable to build Kubernetes credentials for the current user")
 	}
@@ -132,6 +151,14 @@ func (s *Service) Start(ctx context.Context, request domain.Request) (*domain.Ru
 		gadgetNamespace: status.Namespace,
 		registry:        s.registry,
 		startupTimeout:  30 * time.Second,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.quiescing || s.generation != generation {
+		return nil, ErrQuiescing
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return s.manager.Start(request, executor)
 }
@@ -144,6 +171,10 @@ func (s *Service) WaitData(ctx context.Context, id string, owner domain.Owner) (
 	return s.manager.WaitData(ctx, id, owner)
 }
 
+func (s *Service) WaitDone(ctx context.Context, id string, owner domain.Owner) (*domain.Run, error) {
+	return s.manager.WaitDone(ctx, id, owner)
+}
+
 func (s *Service) Stop(id string, owner domain.Owner) (*domain.Run, error) {
 	return s.manager.Stop(id, owner)
 }
@@ -153,7 +184,17 @@ func (s *Service) Subscribe(id string, owner domain.Owner) (<-chan domain.Stream
 }
 
 func (s *Service) OnContextSwitch() {
+	s.mu.Lock()
+	s.quiescing = true
+	s.generation++
+	s.mu.Unlock()
 	s.manager.OnContextSwitch()
+}
+
+func (s *Service) OnContextReady() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.quiescing = false
 }
 
 func chooseDaemonSet(items []appsv1.DaemonSet) appsv1.DaemonSet {

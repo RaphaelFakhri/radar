@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
+import { RadarUpgradeNote, getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
 import {
   LiveDebugSection as BaseLiveDebugSection,
   type LiveDebugAspect,
   type LiveDebugRun,
 } from '@skyhook-io/k8s-ui/components/resources/renderers/LiveDebugSection'
+import { useRadarFeature } from '../../../api/client'
+import { RadarFeatureUnsupportedError } from '../../../api/radarFeatures'
+import { getApiBase } from '../../../api/config'
+import { useCapabilitiesContext } from '../../../contexts/CapabilitiesContext'
+import { useConnection } from '../../../context/ConnectionContext'
 import { fetchIGRun, fetchIGStatus, startIGCapture, stopIGRun } from '../../../api/igdebug'
 
 interface LiveDebugSectionProps {
@@ -14,6 +19,10 @@ interface LiveDebugSectionProps {
 }
 
 export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
+  const apiBase = getApiBase()
+  const cloud = useCapabilitiesContext().deployment?.mode === 'cloud'
+  const feature = useRadarFeature('liveDebug')
+  const { connection } = useConnection()
   const namespace = data.metadata?.namespace || ''
   const pod = data.metadata?.name || ''
   const containers = useMemo(() => {
@@ -30,30 +39,62 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const [selectedContainer, setSelectedContainer] = useState(defaultContainer)
   const [run, setRun] = useState<LiveDebugRun>()
   const [error, setError] = useState<string>()
+  const activeRun = useRef<LiveDebugRun | undefined>(undefined)
+  activeRun.current = run
+  const currentConnection = useRef(connection.context)
+  currentConnection.current = connection.context
+  const [pending, setPending] = useState(false)
+  const generation = useRef(0)
+  const busy = useRef(false)
+  const containerID = data.status?.containerStatuses?.find((status: any) => status.name === selectedContainer)?.containerID
+  const targetKey = `${apiBase}:${connection.context}:${data.metadata?.uid}:${containerID}`
+  const currentTarget = useRef(targetKey)
+  currentTarget.current = targetKey
   const runID = run?.id
   const runState = run?.state
   const statusQuery = useQuery({
-    queryKey: ['ig', 'status'],
-    queryFn: fetchIGStatus,
+    queryKey: ['ig', 'status', apiBase, connection.context, ...feature.gatedKey],
+    queryFn: () => feature.guard(fetchIGStatus),
     staleTime: 15_000,
     retry: false,
   })
 
   useEffect(() => {
+    if (!containers.includes(selectedContainer)) setSelectedContainer(defaultContainer)
+  }, [containers, selectedContainer, defaultContainer])
+
+  useEffect(() => {
     setSelectedContainer(defaultContainer)
     setRun(undefined)
     setError(undefined)
-  }, [namespace, pod, defaultContainer])
+  }, [namespace, pod, data.metadata?.uid])
+
+  useEffect(() => {
+    generation.current++
+    busy.current = false
+    setPending(false)
+    setRun(undefined)
+    setError(undefined)
+    return () => {
+      generation.current++
+      const current = activeRun.current
+      if (current && !['complete', 'stopped', 'failed', 'partial'].includes(current.state)
+          && getApiBase() === apiBase && currentConnection.current === connection.context) {
+        void stopIGRun(current.id).catch(() => {})
+      }
+    }
+  }, [targetKey])
 
   useEffect(() => {
     if (!runID || !runState || ['complete', 'stopped', 'failed', 'partial'].includes(runState)) return
     let cancelled = false
+    const target = targetKey
     const poll = async () => {
       try {
         const next = await fetchIGRun(runID)
-        if (!cancelled) setRun(next)
+        if (!cancelled && currentTarget.current === target) setRun(next)
       } catch (pollError) {
-        if (!cancelled) setError(pollError instanceof Error ? pollError.message : String(pollError))
+        if (!cancelled && currentTarget.current === target) setError(pollError instanceof Error ? pollError.message : String(pollError))
       }
     }
     const timer = window.setInterval(poll, 1_000)
@@ -62,26 +103,47 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [runID, runState])
+  }, [runID, runState, targetKey])
+
+  if (statusQuery.error instanceof RadarFeatureUnsupportedError) {
+    return <RadarUpgradeNote requirement={statusQuery.error.radarUpgrade} />
+  }
 
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null
 
   const capture = async (aspect: LiveDebugAspect, durationSeconds: number) => {
+    if (cloud || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
+    busy.current = true
+    setPending(true)
+    const token = ++generation.current
+    const target = targetKey
     setError(undefined)
     setRun(undefined)
     try {
-      setRun(await startIGCapture({ namespace, pod, container: selectedContainer, aspect, durationSeconds }))
+      const next = await startIGCapture({ namespace, pod, podUid: data.metadata.uid, containerId: containerID, container: selectedContainer, aspect, durationSeconds })
+      if (generation.current === token && currentTarget.current === target) setRun(next)
+      else if (getApiBase() === apiBase && currentConnection.current === connection.context) {
+        void stopIGRun(next.id).catch(() => {})
+      }
     } catch (captureError) {
-      setError(captureError instanceof Error ? captureError.message : String(captureError))
+      if (generation.current === token && currentTarget.current === target) setError(captureError instanceof Error ? captureError.message : String(captureError))
+    } finally {
+      if (generation.current === token && currentTarget.current === target) {
+        busy.current = false
+        setPending(false)
+      }
     }
   }
 
   const stop = async () => {
     if (!run) return
+    const token = generation.current
+    const target = targetKey
     try {
-      setRun(await stopIGRun(run.id))
+      const next = await stopIGRun(run.id)
+      if (generation.current === token && currentTarget.current === target) setRun(next)
     } catch (stopError) {
-      setError(stopError instanceof Error ? stopError.message : String(stopError))
+      if (generation.current === token && currentTarget.current === target) setError(stopError instanceof Error ? stopError.message : String(stopError))
     }
   }
 
@@ -95,6 +157,8 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   return (
     <BaseLiveDebugSection
       status={status}
+      pending={pending}
+      captureUnavailableReason={cloud ? 'Live Debug captures require a direct Radar connection; this Cloud connection only permits reads.' : undefined}
       statusMessage={statusQuery.data?.message || (statusQuery.error as Error | undefined)?.message}
       containers={containers}
       selectedContainer={selectedContainer}

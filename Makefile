@@ -45,7 +45,7 @@ KIND_CLUSTER ?= test
 PROBE_IMAGE  ?= radar-probe:dev
 kind-load-probe:
 	@echo "Building probe binary for linux/$$(go env GOARCH)..."
-	GOOS=linux GOARCH=$$(go env GOARCH) CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o /tmp/radar-probe-bin ./cmd/explorer
+	GOOS=linux GOARCH=$$(go env GOARCH) CGO_ENABLED=0 go build -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o /tmp/radar-probe-bin ./cmd/explorer
 	@echo 'FROM gcr.io/distroless/static-debian12:nonroot' > /tmp/Dockerfile.probe
 	@echo 'COPY radar-probe-bin /radar' >> /tmp/Dockerfile.probe
 	@echo 'ENTRYPOINT ["/radar"]' >> /tmp/Dockerfile.probe

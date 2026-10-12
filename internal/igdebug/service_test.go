@@ -3,7 +3,9 @@ package igdebug
 import (
 	"context"
 	"errors"
+	domain "github.com/skyhook-io/radar/pkg/igdebug"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,5 +35,50 @@ func TestStatusRetriesWithActingUserWhenSharedDiscoveryIsDenied(t *testing.T) {
 
 	if status.State != StateInstalled || status.Namespace != "gadget" || status.Version != "v0.54.1" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestStartIsQuiescedUntilContextReady(t *testing.T) {
+	service := NewService("")
+	service.sharedClient = func() kubernetes.Interface { return fake.NewSimpleClientset() }
+	service.OnContextSwitch()
+	request := domain.Request{Aspect: domain.AspectProcesses}
+	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrQuiescing) {
+		t.Fatalf("Start during transition = %v", err)
+	}
+	service.OnContextReady()
+	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Start after transition = %v", err)
+	}
+}
+
+func TestContextSwitchDoesNotWaitForDiscovery(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	entered, release := make(chan struct{}), make(chan struct{})
+	client.PrependReactor("list", "daemonsets", func(ktesting.Action) (bool, runtime.Object, error) {
+		close(entered)
+		<-release
+		return true, &appsv1.DaemonSetList{}, nil
+	})
+	service := NewService("")
+	service.sharedClient = func() kubernetes.Interface { return client }
+	started := make(chan struct{})
+	go func() {
+		defer close(started)
+		_, _ = service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses})
+	}()
+	<-entered
+	quiesced := make(chan struct{})
+	go func() { service.OnContextSwitch(); close(quiesced) }()
+	select {
+	case <-quiesced:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("context switch waited for capture discovery")
+	}
+	close(release)
+	<-started
+	if _, err := service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses}); !errors.Is(err, ErrQuiescing) {
+		t.Fatalf("admitted a capture after teardown: %v", err)
 	}
 }
