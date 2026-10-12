@@ -244,9 +244,9 @@ func TestTrimmedToolsPreserveLoadBearingSteers(t *testing.T) {
 func TestToolCatalogContextBudget(t *testing.T) {
 	// These caps guard against description accretion, not against new tools or
 	// load-bearing routing and uncertainty contracts. The application evidence tool
-	// uses a bounded catalog allowance including the UID-bound target argument.
+	// adds 908 bytes to the existing catalog allowance, including the UID-bound target argument.
 	const (
-		maxCatalogBytes         = 59200
+		maxCatalogBytes         = 58750 + 908
 		maxToolDescriptionBytes = 3000
 	)
 
