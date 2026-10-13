@@ -2455,8 +2455,14 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, err = listPerNs(
-			func() (any, error) { return lister.List(labels.Everything()) },
-			func(ns string) (any, error) { return lister.Secrets(ns).List(labels.Everything()) },
+			func() (any, error) {
+				items, err := lister.List(labels.Everything())
+				return k8s.ServableSecrets(items), err
+			},
+			func(ns string) (any, error) {
+				items, err := lister.Secrets(ns).List(labels.Everything())
+				return k8s.ServableSecrets(items), err
+			},
 		)
 	case "events":
 		if cache.Events() == nil {
@@ -3076,7 +3082,26 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 			notReadyOrForbiddenGet("secrets")
 			return
 		}
-		resource, err = lister.Secrets(namespace).Get(name)
+		var cached *corev1.Secret
+		cached, err = lister.Secrets(namespace).Get(name)
+		if err == nil && k8score.IsHelmReleaseSecret(cached) {
+			// The cache holds digests in place of Helm release Secret values.
+			live, status, liveErr := s.getLiveSecret(r, namespace, name)
+			if liveErr != nil {
+				s.writeError(w, status, liveErr.Error())
+				return
+			}
+			if live.UID != cached.UID {
+				// Not the object the cache answered for: recreated since, or
+				// the cluster context switched mid-request. Retryable.
+				s.writeErrorCode(w, http.StatusServiceUnavailable, "cluster_connecting",
+					fmt.Sprintf("Secret %s/%s changed while it was being read, please retry", namespace, name))
+				return
+			}
+			resource = live
+		} else {
+			resource = cached
+		}
 	case "events", "event":
 		if cache.Events() == nil {
 			notReadyOrForbiddenGet("events")
@@ -3260,6 +3285,30 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, response)
+}
+
+// getLiveSecret reads one Secret from the API server as the caller. It
+// returns the HTTP status to answer with when the read fails.
+func (s *Server) getLiveSecret(r *http.Request, namespace, name string) (*corev1.Secret, int, error) {
+	client := s.getClientForRequest(r)
+	if client == nil {
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("cluster client not available")
+	}
+	secret, err := client.CoreV1().Secrets(namespace).Get(r.Context(), name, metav1.GetOptions{})
+	switch {
+	case err == nil:
+		// Same shape the cache serves for every other Secret.
+		secret.ManagedFields = nil
+		delete(secret.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		return secret, http.StatusOK, nil
+	case apierrors.IsNotFound(err):
+		return nil, http.StatusNotFound, err
+	case apierrors.IsForbidden(err):
+		return nil, http.StatusForbidden, err
+	default:
+		log.Printf("[resources] Failed to read Secret %s/%s: %v", namespace, name, err)
+		return nil, http.StatusInternalServerError, fmt.Errorf("failed to read Secret %s/%s: %w", namespace, name, err)
+	}
 }
 
 // handlePodMetrics fetches metrics for a specific pod from the metrics.k8s.io API
