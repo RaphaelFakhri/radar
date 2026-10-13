@@ -576,24 +576,18 @@ For permitted Secret reads, `GET /api/secrets/certificate-expiry` returns REST
 an empty map. Namespace-limited inventories return observed certificates within
 the requested scope.
 
-Admission webhook configuration context includes its declared in-cluster Service
-backends in `dependencies`, including readable references to absent Services.
-Service context scans already-watched cache objects to find readable
-cluster-scoped MutatingWebhookConfiguration and ValidatingWebhookConfiguration consumers in
-`dependents`. References retain the Service namespace and use the shared bounded
-permission filter. Unsynced or unobserved inventories report `cache_cold`, with
-partial observed matches retained. A Service whose dynamic provider is not yet
-available also reports `cache_cold`, retaining any other known dependents.
-Denied inventories report `rbac_denied`;
-failed cached reads, unsupported watch sources and SDK providers without the
-cache-only read capability report `unavailable`. Pending inventories report
-`cache_cold`. Reads do not start informers, wait for discovery or probe access.
-Producers must watch both configuration kinds; Radar includes them in background
-warmup. Reads use the existing read-only cache list and per-GVR observation,
-without copying webhook arrays or issuing object API Gets. URL targets
-are not Kubernetes references. This context does not establish API-server
-reachability, TLS validity or webhook health. CRD conversion webhooks and graph
-materialization are separate from this admission-context slice.
+Admission webhook configurations list declared in-cluster Service backends in
+`dependencies`, even when a readable target is absent. A core Service lists
+readable `MutatingWebhookConfiguration` and `ValidatingWebhookConfiguration`
+consumers from `admissionregistration.k8s.io` in `dependents`. URL targets and
+CRD conversion webhooks are excluded. These references do not establish
+reachability, TLS validity or webhook health.
+
+Incomplete admission webhook inventories mark `dependents` in `omitted` with
+`cache_cold` (loading or not yet observed), `rbac_denied` (access denied) or
+`unavailable` (failed or unsupported reads). Available matches remain listed;
+an empty result with an omission does not establish that no webhook uses the
+Service.
 
 Resource context distinguishes observed dependency references (`dependencies` and
 `dependents`) from autoscalers (`scaledBy`). A Certificate depends on its issuer;
