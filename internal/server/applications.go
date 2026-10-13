@@ -287,7 +287,7 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -317,7 +317,7 @@ func (s *Server) handleApplicationHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -565,16 +565,18 @@ type appGraph struct {
 // workload to its graph root + label overlay, and groups them into logical
 // apps. Add-on machinery is classified (not dropped); nothing is hidden.
 func ListApplications(ctx context.Context, namespaces []string) (*applicationsResponse, error) {
-	return listApplicationsForRequest(ctx, namespaces, true)
+	return listApplicationsForRequest(ctx, namespaces, namespaces, true)
 }
 
-func listApplicationsForRequest(ctx context.Context, namespaces []string, canListClusterWorkflowTemplates bool) (*applicationsResponse, error) {
+// namespaces selects workloads; graphNamespaces bounds readable relationship
+// evidence independently so a namespace pick does not hide a Flux manager.
+func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool) (*applicationsResponse, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, errResourceCacheUnavailable
 	}
 	applicationsCacheMu.Lock()
-	cacheKey := fmt.Sprintf("%d|%s", applicationsCacheGeneration, applicationsCacheKeyFor(namespaces, canListClusterWorkflowTemplates))
+	cacheKey := fmt.Sprintf("%d|%s|graph:%s", applicationsCacheGeneration, applicationsCacheKeyFor(namespaces, canListClusterWorkflowTemplates), applicationsCacheKeyFor(graphNamespaces, canListClusterWorkflowTemplates))
 	entry, hit := applicationsCache[cacheKey]
 	applicationsCacheMu.Unlock()
 	if hit && time.Since(entry.at) < applicationsCacheTTL {
@@ -595,7 +597,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces []string, canLis
 		g := entry.graph
 		graphAt := entry.graphAt
 		if g == nil || time.Since(graphAt) >= applicationsGraphCacheTTL {
-			g = buildAppGraph(cache, namespaces)
+			g = buildAppGraph(cache, graphNamespaces)
 			graphAt = time.Now()
 		}
 		wls := collectAppWorkloads(buildCtx, cache, namespaces, g, canListClusterWorkflowTemplates)
@@ -664,11 +666,18 @@ func buildAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
 	if provider == nil {
 		return g
 	}
+	if noNamespaceAccess(namespaces) {
+		return g
+	}
 	g.provider = provider
 	g.dp = k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
 	opts := topology.DefaultBuildOptions()
 	opts.Namespaces = namespaces
+	// Grouping requires resource-level ownership even when the readable
+	// scope is large. Summary/traffic topology cannot establish that boundary.
+	opts.ForRelationshipCache = true
+	opts.IncludeReplicaSets = true
 	b := topology.NewBuilder(provider)
 	if g.dp != nil {
 		b = b.WithDynamic(g.dp)

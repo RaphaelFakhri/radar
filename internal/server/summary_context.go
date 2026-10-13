@@ -35,7 +35,7 @@ func (s *Server) newResourceSummaryContextBuilder(r *http.Request, namespaces []
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
-	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), idx, idx)
+	return summarycontext.BuilderFromIndexes(r.Context(), s.broadcaster.GetCachedTopology(), idx, idx, s.newRequestScopedChecker(r))
 }
 
 // newSearchSummaryContextBuilder is the search-specific variant. Search
@@ -68,5 +68,5 @@ func (s *Server) newSearchSummaryContextBuilder(r *http.Request, scanNamespaces 
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
 	}
-	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), namespacedIdx, clusterIdx)
+	return summarycontext.BuilderFromIndexes(r.Context(), s.broadcaster.GetCachedTopology(), namespacedIdx, clusterIdx, s.newRequestScopedChecker(r))
 }

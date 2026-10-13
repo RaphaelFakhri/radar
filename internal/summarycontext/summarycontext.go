@@ -13,6 +13,7 @@
 package summarycontext
 
 import (
+	"context"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,7 +47,7 @@ type Builder func(obj runtime.Object, u *unstructured.Unstructured, group, kind,
 // its preferred source (REST: broadcaster cache; MCP: short-TTL
 // memoizer). nil topo is fine — managedBy is omitted but issueCount
 // still resolves.
-func BuilderFromIndexes(topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex) Builder {
+func BuilderFromIndexes(ctx context.Context, topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex, checker resourcecontext.RefAccessChecker) Builder {
 	resourceProvider := k8s.NewTopologyResourceProvider(k8s.GetResourceCache())
 	dynamicProvider := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
@@ -73,7 +74,18 @@ func BuilderFromIndexes(topo *topology.Topology, namespacedIdx, clusterIdx Issue
 				rawObj = u
 			}
 			rel := topology.GetRelationshipsWithObject(kind, namespace, name, rawObj, topo, resourceProvider, dynamicProvider, relIdx)
-			managedBy = ManagedByFromRelationships(rel)
+			if rel != nil {
+				ref := rel.Owner
+				if len(rel.ManagedBy) > 0 {
+					ref = &rel.ManagedBy[0]
+				}
+				// Inventory can resolve a manager outside the row's namespace.
+				// Authorize its exact identity before the compact projection drops
+				// the API group, just as the detail ResourceContext does.
+				if ref != nil && (checker == nil || checker.CanRead(ctx, ref.Group, ref.Kind, ref.Namespace)) {
+					managedBy = ManagedByFromRelationships(rel)
+				}
+			}
 		}
 		var source runtime.Object = obj
 		if source == nil && u != nil {
@@ -223,9 +235,8 @@ func BuildIssueIndex(p issues.Provider, filters issues.Filters) IssueIndex {
 
 // ManagedByFromRelationships extracts a compact ManagedByRef from
 // computed topology relationships. Preference order:
-//  1. Relationships.ManagedBy[0] — the server-synthesized topmost
-//     manager (ArgoCD Application > Flux Kustomization/HelmRelease >
-//     Helm release > topmost K8s owner). Walks the owner chain past
+//  1. Relationships.ManagedBy[0] — the server-synthesized nearest GitOps
+//     manager or topmost Kubernetes owner. Walks the owner chain past
 //     ReplicaSets to the controlling Deployment in one shot.
 //  2. Direct Owner — fallback for shapes ManagedBy synthesis declines
 //     (e.g. cluster-scoped roots where the topmost manager is the

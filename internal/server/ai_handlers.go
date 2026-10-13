@@ -503,8 +503,8 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 		families: s.readablePolicyReportFamilies(r, namespace),
 	}
 
-	if topo, prov, dyn, ok := s.topologyForContext(namespace); ok {
-		opts.Topology = topo
+	if topo, prov, dyn, ok := s.topologyForContext(); ok {
+		opts.Topology = s.relationshipTopologyForUser(r, topo)
 		opts.Provider = prov
 		opts.DynamicProv = dyn
 		// Relationships are computed inside Build via GetRelationshipsWithObject,
@@ -518,24 +518,27 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 	return resourcecontext.Build(r.Context(), obj, opts)
 }
 
-// topologyForContext builds (or fetches the memoized) topology scoped to the
-// resource's namespace. Cluster-scoped resources get an all-namespaces build.
+// topologyForContext fetches cluster-wide relationship evidence. A workload's
+// namespace is a view scope, not an ownership boundary: its Flux manager may
+// live in flux-system. The caller filters this shared graph before using it.
 // Returns ok=false when the cache isn't ready yet.
-func (s *Server) topologyForContext(namespace string) (*topology.Topology, topology.ResourceProvider, topology.DynamicProvider, bool) {
+func (s *Server) topologyForContext() (*topology.Topology, topology.ResourceProvider, topology.DynamicProvider, bool) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, nil, nil, false
 	}
-	opts := topology.DefaultBuildOptions()
-	if namespace != "" {
-		opts.Namespaces = []string{namespace}
+	provider := k8s.NewTopologyResourceProvider(cache)
+	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
+	if s.broadcaster != nil {
+		if topo := s.broadcaster.GetCachedTopology(); topo != nil {
+			return topo, provider, dyn, true
+		}
 	}
+
+	opts := topology.DefaultBuildOptions()
 	opts.IncludeReplicaSets = true
 	opts.IncludeSecrets = true
 	opts.ForRelationshipCache = true
-
-	provider := k8s.NewTopologyResourceProvider(cache)
-	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
 	topo, err := s.topoMemo.GetScoped(cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(provider).WithDynamic(dyn).Build(opts)
