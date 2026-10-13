@@ -925,6 +925,16 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		return listDynamicResources(ctx, cache, kind, group, listScope, clusterScoped, input.Context)
 	}
 
+	scopes := listScope
+	if len(scopes) == 0 {
+		scopes = []string{""}
+	}
+	for _, namespace := range scopes {
+		if err := typedResourceInventoryError(cache, kind, group, namespace); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	// Try typed cache first (group=="" → core/built-in lookup).
 	objs, err := k8s.FetchResourceList(cache, kind, listScope)
 	if err == k8s.ErrUnknownKind {
@@ -1060,6 +1070,10 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		if !canReadInNamespace(ctx, "", "secrets", namespace, "get") {
 			return nil, nil, fmt.Errorf("forbidden: no access to secrets in namespace %q", namespace)
 		}
+	}
+
+	if err := typedResourceInventoryError(cache, kind, group, namespace); err != nil {
+		return nil, nil, err
 	}
 
 	// Fetch the resource. When group is set, skip the typed cache and route

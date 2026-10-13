@@ -345,6 +345,7 @@ export interface Topology {
   nodes: TopologyNode[]
   edges: TopologyEdge[]
   warnings?: string[] // Warnings about resources that failed to load
+  incompleteInventories?: {resource: string; group?: string; state: "pending" | "failed" | "uncovered" | "unavailable"; namespace?: string; message: string}[]
   largeCluster?: boolean // True if cluster exceeds large cluster threshold
   hiddenKinds?: string[] // Resource kinds auto-hidden for performance
   requiresNamespaceFilter?: boolean // True if cluster is too large for all-namespace topology
@@ -643,6 +644,8 @@ export interface ResourceRef {
 export interface Relationships {
   /** Istio registry domain supplied by the producer; omitted when unknown. */
   istioServiceDomain?: string
+  incompleteInventories?: Topology["incompleteInventories"]
+  warnings?: string[]
   reflection?: {
     source?: ResourceRef
     sourceResourceVersion?: string

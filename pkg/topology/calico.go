@@ -890,12 +890,16 @@ func calicoKubernetesPodSelector(policy *unstructured.Unstructured) (labels.Sele
 	return selector, true
 }
 
-func calicoNamespaceLabels(provider ResourceProvider) map[string]map[string]string {
+func calicoNamespaceLabels(provider ResourceProvider, inventory ...*topologyInventoryTracker) map[string]map[string]string {
 	namespaceProvider, ok := provider.(NamespaceProvider)
 	if !ok {
 		return nil
 	}
-	namespaces, err := namespaceProvider.Namespaces()
+	var tracker *topologyInventoryTracker
+	if len(inventory) > 0 {
+		tracker = inventory[0]
+	}
+	namespaces, err := readTopologyInventory(tracker, "namespaces", namespaceProvider.Namespaces)
 	if err != nil {
 		return nil
 	}
@@ -1004,7 +1008,7 @@ func (b *Builder) addCalicoPolicyNodes(
 		return nodes, edges
 	}
 
-	namespaceLabels := calicoNamespaceLabels(b.provider)
+	namespaceLabels := calicoNamespaceLabels(b.provider, b.inventory)
 	serviceAccounts := calicoServiceAccounts(b.provider)
 	// Only this function creates Calico policy nodes, so an index it fills as it
 	// goes is complete, and the second API group's pass becomes a lookup rather
