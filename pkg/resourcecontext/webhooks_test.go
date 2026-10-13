@@ -99,8 +99,8 @@ func TestWebhookContextReverseExactBoundedAndCached(t *testing.T) {
 	rc = &ResourceContext{}
 	omitted = newOmittedTracker()
 	addWebhookContext(context.Background(), svc, Options{DynamicProv: p}, rc, omitted)
-	if len(rc.Dependents) != 0 || !slices.Contains(omitted.collect(), OmittedField{Field: "dependents", Reason: OmittedCacheCold}) {
-		t.Fatalf("cold cache: %+v %+v", rc, omitted.collect())
+	if len(rc.Dependents) != 0 || !slices.Contains(omitted.collect(), OmittedField{Field: "dependents", Reason: OmittedUnavailable}) {
+		t.Fatalf("failed cache lookup: %+v %+v", rc, omitted.collect())
 	}
 }
 
@@ -131,7 +131,8 @@ func TestWebhookContextDistinguishesUnavailableSources(t *testing.T) {
 	}{
 		{"denied", apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("denied")), OmittedRBACDenied},
 		{"unsupported", apierrors.NewMethodNotSupported(gvr.GroupResource(), "watch"), OmittedUnavailable},
-		{"read failure", errors.New("informer not ready"), OmittedCacheCold},
+		{"read failure", errors.New("informer read failed"), OmittedUnavailable},
+		{"pending", &topology.InventoryError{Resource: gvr.Resource, State: topology.InventoryPending}, OmittedCacheCold},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			p := &webhookContextProvider{err: scenario.err, objects: map[string][]*unstructured.Unstructured{"ValidatingWebhookConfiguration": nil}, lists: map[string]int{}}

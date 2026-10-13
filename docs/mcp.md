@@ -585,9 +585,9 @@ permission filter. Unsynced or unobserved inventories report `cache_cold`, with
 partial indexed matches retained. A Service whose dynamic provider is not yet
 available also reports `cache_cold`, retaining any other known dependents.
 Denied inventories report `rbac_denied`;
-unsupported watch sources and SDK providers without the optional lookup report
-`unavailable`. Reads do not start informers, wait for discovery or probe
-access. Producers must watch both configuration kinds; Radar includes them in
+failed indexed reads, unsupported watch sources and SDK providers without the
+optional lookup report `unavailable`. Pending inventories report `cache_cold`.
+Reads do not start informers, wait for discovery or probe access. Producers must watch both configuration kinds; Radar includes them in
 background warmup. Hot lookups read matching index entries without full
 configuration scans or object API Gets. URL targets
 are not Kubernetes references. This context does not establish API-server

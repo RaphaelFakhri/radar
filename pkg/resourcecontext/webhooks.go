@@ -57,10 +57,8 @@ func addWebhookContext(ctx context.Context, obj runtime.Object, opts Options, rc
 			switch {
 			case apierrors.IsForbidden(err):
 				omitted.add("dependents", OmittedRBACDenied)
-			case apierrors.IsMethodNotSupported(err):
-				omitted.add("dependents", OmittedUnavailable)
 			default:
-				omitted.add("dependents", OmittedCacheCold)
+				omitted.add("dependents", inventoryOmissionReason(err))
 			}
 			continue
 		}
