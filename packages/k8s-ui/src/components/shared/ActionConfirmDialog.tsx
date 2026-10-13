@@ -5,6 +5,7 @@ import { DialogPortal } from '../ui/DialogPortal'
 import { Collapse, CollapseChevron, useDisclosure } from '../ui/Collapse'
 import { TONE_SOLID_CLASS } from '../ui/severity-tone'
 import { AlertBanner } from '../ui/drawer-components'
+import type { ResourceRef } from '../../types/core'
 
 /** One API call the action will make, shown in the technical section. */
 export interface ActionWrite {
@@ -14,6 +15,10 @@ export interface ActionWrite {
   detail?: string
 }
 
+export type ActionConfirmResult =
+  | { state: 'error'; message: string; title?: string }
+  | { state: 'unknown' | 'partial'; message?: string; title?: string }
+
 export interface ActionConfirmDialogProps {
   open: boolean
   onClose: () => void
@@ -22,7 +27,7 @@ export interface ActionConfirmDialogProps {
   backLabel?: string
   /** Imperative title: "Switch over pg-orders?" */
   title: string
-  subject: { kind: string; namespace?: string; name: string }
+  subject: Pick<ResourceRef, 'kind' | 'name'> & Partial<Pick<ResourceRef, 'namespace'>>
   /** Kubernetes context the write goes to, always visible. */
   context?: string
   /** What happens, stated first. */
@@ -46,20 +51,14 @@ export interface ActionConfirmDialogProps {
   /** What the form still needs (an unchanged value, a missing input); disables confirm with a quiet hint beside it, not an alert. */
   incompleteReason?: string
   isLoading?: boolean
-  /** Error from the last attempt, shown inline so the user can adjust and retry. */
-  error?: string | null
   /**
-   * The last attempt may or may not have taken effect. Confirm stays locked:
-   * repeating it could apply the action twice. The host must retain this state
+   * Unknown and partial results lock Confirm: repeating the action could apply
+   * it twice. The host must retain the result
    * across dismissal/remount until it has reviewed the current target again.
    */
-  outcomeUnknown?: boolean
-  /** Heading for `error` while `outcomeUnknown`; defaults to "Radar could not tell whether this took effect". */
-  outcomeTitle?: string
+  result?: ActionConfirmResult
   /** `wide` for dialogs that show evidence beside their form fields. */
   size?: 'default' | 'wide'
-  /** Heading for `error`; defaults to "The action could not be completed". */
-  errorTitle?: string
 }
 
 export function ActionConfirmDialog({
@@ -84,11 +83,8 @@ export function ActionConfirmDialog({
   disabledReason,
   incompleteReason,
   isLoading = false,
-  error,
-  outcomeUnknown = false,
-  outcomeTitle = 'Radar could not tell whether this took effect',
+  result,
   size = 'default',
-  errorTitle = 'The action could not be completed',
 }: ActionConfirmDialogProps) {
   const titleId = useId()
   const [typed, setTyped] = useState('')
@@ -103,7 +99,8 @@ export function ActionConfirmDialog({
   }, [open])
 
   const typedOk = !typedConfirmation || typed.trim() === typedConfirmation
-  const canConfirm = !disabledReason && !incompleteReason && !outcomeUnknown && typedOk && guardSatisfied && !isLoading
+  const outcomeLocked = result?.state === 'unknown' || result?.state === 'partial'
+  const canConfirm = !disabledReason && !incompleteReason && !outcomeLocked && typedOk && guardSatisfied && !isLoading
   const where = [subject.namespace, subject.name].filter(Boolean).join('/')
 
   return (
@@ -206,12 +203,13 @@ export function ActionConfirmDialog({
           </label>
         )}
 
-        {(error || outcomeUnknown) &&
-          (outcomeUnknown ? (
-            <AlertBanner variant="warning" title={outcomeTitle} message={error || "Check the object’s current state before another attempt."} />
-          ) : (
-            <AlertBanner variant="error" title={errorTitle} message={error} />
-          ))}
+        {result && (
+          <AlertBanner
+            variant={outcomeLocked ? 'warning' : 'error'}
+            title={result.title ?? (result.state === 'partial' ? 'Some changes completed' : result.state === 'unknown' ? 'Radar could not tell whether this took effect' : 'The action could not be completed')}
+            message={result.message || 'Check the object’s current state before another attempt.'}
+          />
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-3 border-t border-theme-border p-4">

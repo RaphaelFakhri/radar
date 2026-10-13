@@ -30,6 +30,6 @@ describe('public presentation compatibility', () => {
     expect(toneTextClass('unknown')).toBe('text-theme-text-tertiary')
     const problem = { id: 'p', category: 'availability' as const, severity: 'warning' as const, title: 'Needs attention', source: 'issue' as const, subject: { kind: 'Pod', group: '', namespace: 'jobs', name: 'worker' } }
     expect(renderToStaticMarkup(<ProblemCallout problem={problem} />)).toContain('worker')
-    expect(renderToStaticMarkup(<WorkspaceProblemCallout problem={problem} rootKind="Deployment" />)).toContain('worker')
+    expect(renderToStaticMarkup(<WorkspaceProblemCallout problem={{ ...problem, tone: 'degraded' }} rootKind="Deployment" />)).toContain('worker')
   })
 })

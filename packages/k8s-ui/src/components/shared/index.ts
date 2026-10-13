@@ -12,4 +12,4 @@ export { HelmManagedByChip, ManagedByChip, type HelmOwnerRef } from './ManagedBy
 export { DetailShell, type DetailShellProps, type DetailShellTab } from './DetailShell'
 export { classifyDiffLine, hasDiffBodyChange, DiffLine } from './UnifiedDiff'
 
-export { ActionConfirmDialog, type ActionConfirmDialogProps, type ActionWrite } from './ActionConfirmDialog'
+export { ActionConfirmDialog, type ActionConfirmDialogProps, type ActionConfirmResult, type ActionWrite } from './ActionConfirmDialog'

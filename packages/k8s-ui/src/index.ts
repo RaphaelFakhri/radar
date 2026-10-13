@@ -87,11 +87,10 @@ export { CertaintyGlyph, certaintyGlyph, certaintyValueLabel, type Certainty } f
 
 export * from './components/facts'
 export {
-  ProblemCallout as WorkspaceProblemCallout,
+  WorkspaceProblemCallout,
   ProblemList,
   ProblemMeta,
   OpenIssueContext,
-  PROBLEM_TONE,
   problemOriginLabel,
   type WorkspaceProblem,
   type ProblemOrigin,

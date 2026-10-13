@@ -3,7 +3,7 @@
 // does not report something the value is "unknown", never zero or healthy.
 
 import type { Fact } from '../facts'
-import type { WorkspaceProblem } from '../problems'
+import type { ProblemDetails, ProblemProvenance } from '../problems'
 
 import type { HealthLevel } from '../resources/resource-utils'
 import {
@@ -110,9 +110,9 @@ export const CNPG_PROBLEM_CATEGORIES: { id: CNPGProblemCategory; label: string }
   { id: 'pooling', label: 'Pooling' },
 ]
 
-export interface CNPGProblem extends WorkspaceProblem<CNPGProblemCategory> {
-  source: 'issue' | 'audit'
-}
+export type CNPGProblem = ProblemDetails<CNPGProblemCategory> &
+  Extract<ProblemProvenance, { source: 'issue' | 'audit' }> &
+  { severity: 'critical' | 'warning' | 'posture' }
 
 export interface CNPGInstance {
   name: string
