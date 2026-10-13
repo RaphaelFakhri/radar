@@ -76,6 +76,11 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 		resultPublished.Store(true)
 		completedOnce.Do(func() { close(completed) })
 	}
+	verify := func() error {
+		verifyCtx, cancel := context.WithTimeout(runCtx, 5*time.Second)
+		defer cancel()
+		return verifyTarget(verifyCtx, client, target)
+	}
 	go func() {
 		timer := time.NewTimer(e.startupTimeout)
 		defer timer.Stop()
@@ -93,13 +98,9 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 	var output operators.DataOperator
 	switch request.Aspect {
 	case domain.AspectProcesses, domain.AspectConnections:
-		output = snapshotOperator(request.Aspect, target, enricher, reporter, markStarted, markCompleted, func() error {
-			verifyCtx, cancel := context.WithTimeout(runCtx, 5*time.Second)
-			defer cancel()
-			return verifyTarget(verifyCtx, client, target)
-		})
+		output = snapshotOperator(request.Aspect, target, enricher, reporter, markStarted, markCompleted, verify)
 	case domain.AspectDNS:
-		output = dnsOperator(target, request.Duration, enricher, reporter, markStarted, markCompleted)
+		output = dnsOperator(target, request.Duration, enricher, reporter, markStarted, markCompleted, verify)
 	default:
 		return domain.ErrInvalidRequest
 	}
@@ -368,14 +369,18 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 						if err != nil {
 							return err
 						}
-						if err := verify(); err != nil {
-							reporter.Interrupted(fmt.Sprintf("socket capture target could not be verified before publishing evidence: %v", err))
-							gadgetCtx.Cancel()
-							return nil
-						}
 						result.Connections = enricher.connections(rows)
 						result.Enrichment = enricher.coverage
 						result.EventCount = len(rows)
+					}
+					if err := verify(); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							reporter.Interrupted(fmt.Sprintf("capture target could not be verified before publishing evidence: %v", err))
+						}
+						if aspect == domain.AspectConnections {
+							gadgetCtx.Cancel()
+							return nil
+						}
 					}
 					reporter.Result(result)
 					markCompleted()
@@ -398,7 +403,7 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 	)
 }
 
-func dnsOperator(target domain.Target, duration time.Duration, enricher *visibleEnricher, reporter domain.Reporter, markStarted, markCompleted func()) operators.DataOperator {
+func dnsOperator(target domain.Target, duration time.Duration, enricher *visibleEnricher, reporter domain.Reporter, markStarted, markCompleted func(), verify func() error) operators.DataOperator {
 	aggregator := domain.NewDNSAggregator(target.ContainerID)
 	var mu sync.Mutex
 	startedAt := time.Time{}
@@ -444,8 +449,12 @@ func dnsOperator(target domain.Target, duration time.Duration, enricher *visible
 			if !startedAt.IsZero() {
 				captureDuration = time.Since(startedAt)
 			}
+			capturedAt := time.Now().UTC()
+			if err := verify(); err != nil && !errors.Is(err, context.Canceled) {
+				reporter.Interrupted(fmt.Sprintf("capture target could not be verified before publishing evidence: %v", err))
+			}
 			reporter.Result(domain.Result{
-				Aspect: domain.AspectDNS, Target: target, CapturedAt: time.Now().UTC(), CaptureDuration: captureDuration,
+				Aspect: domain.AspectDNS, Target: target, CapturedAt: capturedAt, CaptureDuration: captureDuration,
 				Enrichment: enricher.coverage, EventCount: events, Truncated: truncated, EventLoss: "unmeasurable", UnmatchedQueries: unmatched, DNS: groups,
 			})
 			markCompleted()

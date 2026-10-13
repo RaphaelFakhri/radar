@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"strings"
 	"testing"
 	"time"
@@ -170,13 +172,14 @@ func targetPod(uid, firstID, secondID string) *corev1.Pod {
 
 type captureReporter struct {
 	partial chan string
+	results []domain.Result
 }
 
-func (r *captureReporter) Started(domain.Target)     {}
-func (r *captureReporter) Event(json.RawMessage)     {}
-func (r *captureReporter) Result(domain.Result)      {}
-func (r *captureReporter) Interrupted(reason string) { r.partial <- reason }
-func (r *captureReporter) Partial(reason string)     { r.partial <- reason }
+func (r *captureReporter) Started(domain.Target)       {}
+func (r *captureReporter) Event(json.RawMessage)       {}
+func (r *captureReporter) Result(result domain.Result) { r.results = append(r.results, result) }
+func (r *captureReporter) Interrupted(reason string)   { r.partial <- reason }
+func (r *captureReporter) Partial(reason string)       { r.partial <- reason }
 
 func TestResolveTargetRejectsAChangedIncarnationBeforeInstrumenting(t *testing.T) {
 	pod := targetPod("new-uid", "containerd://new-id", "")
@@ -214,5 +217,113 @@ func TestSocketTargetVerificationRejectsARecreatedPodWithTheSameName(t *testing.
 	target := domain.Target{Namespace: "app", Pod: "api", PodUID: "old-uid", Node: "node-a", Container: "first", ContainerID: "same-id"}
 	if err := verifyTarget(context.Background(), client, target); !errors.Is(err, domain.ErrTargetChanged) {
 		t.Fatalf("accepted another Pod incarnation: %v", err)
+	}
+}
+
+type snapshotTestContext struct {
+	operators.GadgetContext
+	sources   map[string]datasource.DataSource
+	cancelled bool
+}
+
+func (c *snapshotTestContext) GetDataSources() map[string]datasource.DataSource { return c.sources }
+func (c *snapshotTestContext) Cancel()                                          { c.cancelled = true }
+
+func TestSnapshotPublicationChecksTargetAndPreservesOnlyIdentifiableEvidence(t *testing.T) {
+	for _, aspect := range []domain.Aspect{domain.AspectConnections, domain.AspectProcesses} {
+		t.Run(string(aspect), func(t *testing.T) {
+			source, err := datasource.New(datasource.TypeArray, "snapshot")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &snapshotTestContext{sources: map[string]datasource.DataSource{"snapshot": source}}
+			reporter := &captureReporter{partial: make(chan string, 1)}
+			checks := 0
+			op := snapshotOperator(aspect, domain.Target{}, &visibleEnricher{}, reporter, func() {}, func() {}, func() error { checks++; return domain.ErrTargetChanged })
+			if _, err := op.InstantiateDataOperator(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			packet, err := source.NewPacketArray()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := source.EmitAndRelease(packet); err != nil {
+				t.Fatal(err)
+			}
+			wantResults := 1
+			if aspect == domain.AspectConnections {
+				wantResults = 0
+			}
+			if checks != 1 || len(reporter.results) != wantResults || !ctx.cancelled {
+				t.Fatalf("checks=%d results=%d cancelled=%t", checks, len(reporter.results), ctx.cancelled)
+			}
+			select {
+			case reason := <-reporter.partial:
+				if !strings.Contains(reason, "before publishing") {
+					t.Fatal(reason)
+				}
+			default:
+				t.Fatal("target replacement was not reported")
+			}
+		})
+	}
+}
+
+func TestCancelledSocketVerificationDoesNotInventAPartialReason(t *testing.T) {
+	source, err := datasource.New(datasource.TypeArray, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &snapshotTestContext{sources: map[string]datasource.DataSource{"snapshot": source}}
+	reporter := &captureReporter{partial: make(chan string, 1)}
+	op := snapshotOperator(domain.AspectConnections, domain.Target{}, &visibleEnricher{}, reporter, func() {}, func() {}, func() error { return context.Canceled })
+	if _, err := op.InstantiateDataOperator(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := source.NewPacketArray()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.EmitAndRelease(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(reporter.results) != 0 || !ctx.cancelled {
+		t.Fatalf("unverified socket result published: %#v", reporter.results)
+	}
+	select {
+	case reason := <-reporter.partial:
+		t.Fatalf("cancellation became partial: %s", reason)
+	default:
+	}
+}
+
+func TestDNSPublicationRetainsFilteredEvidenceWhenTargetVerificationFails(t *testing.T) {
+	source, err := datasource.New(datasource.TypeSingle, "dns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &snapshotTestContext{sources: map[string]datasource.DataSource{"dns": source}}
+	reporter := &captureReporter{partial: make(chan string, 1)}
+	checks := 0
+	op := dnsOperator(domain.Target{ContainerID: "old-id"}, time.Second, &visibleEnricher{}, reporter, func() {}, func() {}, func() error { checks++; return domain.ErrTargetChanged })
+	instance, err := op.InstantiateDataOperator(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.(interface {
+		PostStop(operators.GadgetContext) error
+	}).PostStop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 1 || len(reporter.results) != 1 {
+		t.Fatalf("checks=%d results=%d", checks, len(reporter.results))
+	}
+	select {
+	case reason := <-reporter.partial:
+		if !strings.Contains(reason, "before publishing") {
+			t.Fatal(reason)
+		}
+	default:
+		t.Fatal("target replacement was not qualified")
 	}
 }

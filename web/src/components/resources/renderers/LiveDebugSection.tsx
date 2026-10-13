@@ -54,6 +54,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const runState = run?.state
   const statusQuery = useQuery({
     queryKey: ['ig', 'status', apiBase, connection.context, ...feature.gatedKey],
+    enabled: !cloud,
     queryFn: () => feature.guard(fetchIGStatus),
     staleTime: 15_000,
     retry: false,
@@ -130,7 +131,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null
 
   const capture = async (aspect: LiveDebugAspect, durationSeconds: number) => {
-    if (cloud || !running || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
+    if (!running || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
     busy.current = true
     setPending(true)
     const token = ++generation.current
@@ -178,7 +179,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
       status={status}
       pending={pending}
       targetChanged={targetChanged}
-      captureUnavailableReason={cloud ? 'Live Debug captures require a direct Radar connection; this Cloud connection only permits reads.' : !running ? 'Capture needs a running container. This container has no reported running state.' : undefined}
+      captureUnavailableReason={!running ? 'Capture needs a running container. This container has no reported running state.' : undefined}
       statusMessage={statusQuery.data?.message || (statusQuery.error as Error | undefined)?.message}
       containers={containers}
       selectedContainer={selectedContainer}

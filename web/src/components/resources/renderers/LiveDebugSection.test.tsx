@@ -102,6 +102,7 @@ describe('Live Debug capture identity', () => {
     mock.status = { error: new RadarFeatureUnsupportedError('liveDebug', { currentVersion: 'v1.16.0' }) }
     await act(async () => root.render(<LiveDebugSection data={pod()} />))
     expect(element.textContent).toBe('')
+    expect(mock.query.mock.calls.at(-1)?.[0].enabled).toBe(false)
   })
 
   it('renders an upgrade note for an older backend, and hides an absent installation', async () => {
