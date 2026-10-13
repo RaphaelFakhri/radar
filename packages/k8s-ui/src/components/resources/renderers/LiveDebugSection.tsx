@@ -117,16 +117,19 @@ export function LiveDebugSection({
               ))}
             </div>
             <div className="flex items-center gap-2">
-              {containers.length > 1 && aspect !== 'connections' && (
+              {containers.length > 1 && (
+                <label className="flex items-center gap-1.5 text-xs text-theme-text-secondary">
+                {aspect === 'connections' && <span>Anchor</span>}
                 <select
                   value={selectedContainer}
                   onChange={event => onContainerChange(event.target.value)}
                   disabled={!!active}
                   className="rounded-md border border-theme-border bg-theme-base px-2 py-1.5 text-xs text-theme-text-primary"
-                  aria-label="Container"
+                  aria-label={aspect === 'connections' ? 'Capture anchor container' : 'Container'}
                 >
                   {containers.map(container => <option key={container} value={container}>{container}</option>)}
                 </select>
+                </label>
               )}
               {aspect === 'dns' && (
                 <select
@@ -161,7 +164,7 @@ export function LiveDebugSection({
           {captureUnavailableReason && <div className="card-inner text-xs text-theme-text-secondary">{captureUnavailableReason}</div>}
           <div className="text-xs text-theme-text-tertiary">
             {aspects.find(item => item.value === aspect)?.description}. Capture explicitly loads short-lived kernel instrumentation on this Pod&apos;s node, then unloads it.
-            {aspect === 'connections' && <div className="mt-1">Sockets cover the Pod&apos;s shared network namespace, including sidecars. They cannot be attributed to one container.</div>}
+            {aspect === 'connections' && <div className="mt-1">Sockets cover the Pod&apos;s shared network namespace, including sidecars. They cannot be attributed to one container. The anchor pins the capture to a running container instance.</div>}
           </div>
 
           {(preparing || run?.state === 'running' || run?.state === 'stopping') && (
