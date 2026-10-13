@@ -1426,8 +1426,11 @@ function ChangeRow({
             )}
             {/* Detail badges: surface that there's something to see in
                 the expanded panel. Without these the user has no signal
-                that clicking will reveal anything useful. */}
-            {driftEntries.length > 0 && (
+                that clicking will reveal anything useful. The field count
+                comes from the last-applied list, which can undercount on an
+                Argo row (Argo's own list loads only on expand), so it is
+                left off there. The OutOfSync badge already marks the row. */}
+            {!canFullDiff && driftEntries.length > 0 && (
               <Tooltip content={`${driftEntries.length} field${driftEntries.length === 1 ? '' : 's'} differ from Git`} delay={200} wrapperClassName="shrink-0">
                 <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
                   {driftEntries.length} diff

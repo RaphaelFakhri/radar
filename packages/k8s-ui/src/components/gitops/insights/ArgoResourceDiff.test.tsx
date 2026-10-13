@@ -89,11 +89,15 @@ describe('GitOpsChangesView expanded Argo row', () => {
     expect(html).toContain('argo-diff')
     expect(html).not.toContain('Field diff')
     expect(passed).toEqual(lastApplied)
+    // The row's "N diff" badge counts the last-applied list, which can
+    // undercount here, so it isn't shown.
+    expect(html).not.toContain('1 diff')
   })
 
   test('without the Argo diff, the row still shows the last-applied list', () => {
     const html = renderToStaticMarkup(<GitOpsChangesView insight={insight(false)} focusKey="Deployment/web/web" />)
     expect(html).toContain('Field diff')
     expect(html).toContain('spec.replicas')
+    expect(html).toContain('1 diff')
   })
 })
