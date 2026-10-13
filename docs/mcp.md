@@ -691,26 +691,13 @@ Candidate inspection is non-exhaustive and does not perform live admission calls
 or start watches. Verify provenance with configuration history or
 [Kubernetes admission audit records](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#monitoring-admission-webhooks).
 
-Generic CRD ownership joins compare the owner reference UID with the observed
-parent incarnation when both are available. A same-named replacement is not an
-owner. This protection also applies to the direct resource-context owner fallback.
-UID metadata stays inside the cached Go topology; graph JSON is unchanged. These
-joins do not fetch owners. Typed workload grouping and controller-specific
-ownership shortcuts have separate resolution paths and are not all covered by
-this generic CRD check.
+Generic CRD owner links reject a same-named replacement when its observed UID
+differs from the owner reference. Resource context applies the same check when
+deriving `owner` from the resource's owner references. Missing UID evidence does
+not verify the owner's identity.
 
-Observed topology nodes retain metadata owner provenance internally. Metadata
-ownership edges resolve exact API identity and known UID, without fetching or
-creating missing parents. These edges carry optional `ownerController` (true or
-false). An independent spec, label or inventory link survives a stale metadata
-owner reference to the same pair; only edges supported solely by metadata are
-pruned. Logical links can also carry current metadata classification when both
-forms of evidence agree. Declaration-only nodes cannot
-seed observed owner enrollment. Every visible metadata parent can appear in a
-neighborhood, while singular owner/managed-by projections prefer the observed
-controller. Missing UID evidence does not establish that an observed object was
-replaced. Typed shortcut provenance, absent-owner materialization and an
-all-declared-owners context array remain separate concerns. The final metadata
-join applies to the resource graph, including resource neighborhoods; traffic
-views retain their existing flow-oriented edges. Shared UI coloring prefers `ownerController: true` over other parents, while a
-sole non-controller owner still participates in the hierarchy.
+On resource-graph edges, `ownerController: true` identifies an observed
+controller owner; `false` identifies an observed non-controller owner. A singular
+`owner` or an ownership-based `managedBy` chain prefers the controller. Management
+links based on labels, spec references or GitOps inventory do not by themselves
+establish Kubernetes ownership.
