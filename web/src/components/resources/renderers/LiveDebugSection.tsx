@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { RadarUpgradeNote, getDefaultContainerName, getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
 import {
@@ -22,74 +22,97 @@ interface LiveDebugSectionProps {
 
 export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const apiBase = getApiBase()
-  const cloud = useCapabilitiesContext().deployment?.mode === 'cloud'
-  const feature = useRadarFeature('liveDebug')
   const { connection } = useConnection()
-  const namespace = data.metadata?.namespace || ''
-  const pod = data.metadata?.name || ''
+  const currentConnection = useRef({ context: connection.context })
+  useLayoutEffect(() => {
+    currentConnection.current.context = connection.context
+  }, [connection.context])
+  const viewKey = JSON.stringify([apiBase, connection.context, data.metadata?.namespace, data.metadata?.name])
+  return <LiveDebugView key={viewKey} data={data} onNavigate={onNavigate} apiBase={apiBase} context={connection.context} currentConnection={currentConnection} />
+}
+
+interface LiveDebugViewProps extends LiveDebugSectionProps {
+  apiBase: string
+  context: string
+  currentConnection: RefObject<{ context: string }>
+}
+
+function LiveDebugView(props: LiveDebugViewProps) {
+  const { data } = props
   const containers = useMemo(() => (data.spec?.containers || []).map((container: any) => container.name as string), [data.spec?.containers])
   const defaultContainer = getDefaultRunningContainerName(data) || getDefaultContainerName(data) || ''
-  const [selectedContainer, setSelectedContainer] = useState(defaultContainer)
+  const [requestedContainer, setSelectedContainer] = useState(defaultContainer)
+  const selectedContainer = containers.includes(requestedContainer) ? requestedContainer : defaultContainer
+  if (requestedContainer !== selectedContainer) setSelectedContainer(selectedContainer)
+  return <LiveDebugCapture {...props} containers={containers} selectedContainer={selectedContainer} onContainerChange={setSelectedContainer} />
+}
+
+function LiveDebugCapture({ data, onNavigate, apiBase, context, currentConnection, containers, selectedContainer, onContainerChange }: LiveDebugViewProps & {
+  containers: string[]
+  selectedContainer: string
+  onContainerChange: (container: string) => void
+}) {
+  const cloud = useCapabilitiesContext().deployment?.mode === 'cloud'
+  const feature = useRadarFeature('liveDebug')
+  const namespace = data.metadata?.namespace || ''
+  const pod = data.metadata?.name || ''
   const [run, setRun] = useState<LiveDebugRun>()
   const [error, setError] = useState<string>()
-  const activeRun = useRef<LiveDebugRun | undefined>(undefined)
-  activeRun.current = run
-  const currentConnection = useRef(connection.context)
-  currentConnection.current = connection.context
-  const [pending, setPending] = useState(false)
-  const generation = useRef(0)
-  const busy = useRef(false)
+  const [pendingTarget, setPendingTarget] = useState<string>()
+  const [stateContainer, setStateContainer] = useState(selectedContainer)
+  if (stateContainer !== selectedContainer) {
+    setStateContainer(selectedContainer)
+    setRun(undefined)
+    setError(undefined)
+    setPendingTarget(undefined)
+  }
+  const lifecycle = useRef({ generation: 0, busy: false, run: undefined as LiveDebugRun | undefined })
   const containerStatus = data.status?.containerStatuses?.find((status: any) => status.name === selectedContainer)
   const containerID = containerStatus?.containerID
   const currentContainerID = useRef(containerID)
-  currentContainerID.current = containerID
   const running = containerStatus?.state?.running != null
   const normalizedContainerID = containerID?.replace(/^.*?:\/\//, '')
   const targetChanged = !!run && (run.target.podUid !== data.metadata?.uid || (!!run.target.containerId && !!normalizedContainerID && run.target.containerId !== normalizedContainerID))
-  const targetKey = `${apiBase}:${connection.context}:${data.metadata?.uid}:${selectedContainer}`
-  const viewKey = `${apiBase}:${connection.context}:${namespace}/${pod}:${selectedContainer}`
+  const targetKey = `${apiBase}:${context}:${data.metadata?.uid}:${selectedContainer}`
   const currentTarget = useRef(targetKey)
-  currentTarget.current = targetKey
+  const pending = pendingTarget === targetKey
   const runID = run?.id
   const runState = run?.state
   const statusQuery = useQuery({
-    queryKey: ['ig', 'status', apiBase, connection.context, ...feature.gatedKey],
+    queryKey: ['ig', 'status', apiBase, context, ...feature.gatedKey],
     enabled: !cloud,
     queryFn: () => feature.guard(fetchIGStatus),
     staleTime: 15_000,
     retry: false,
   })
 
-  useEffect(() => {
-    if (!containers.includes(selectedContainer)) setSelectedContainer(defaultContainer)
-  }, [containers, selectedContainer, defaultContainer])
+  useLayoutEffect(() => {
+    lifecycle.current = { generation: 0, busy: false, run: undefined }
+  }, [selectedContainer])
+
+  useLayoutEffect(() => {
+    lifecycle.current.run = run
+    currentTarget.current = targetKey
+    currentContainerID.current = containerID
+  }, [run, targetKey, containerID])
 
   useEffect(() => {
-    setSelectedContainer(defaultContainer)
-    setRun(undefined)
-    setError(undefined)
-  }, [namespace, pod])
-
-  useEffect(() => {
-    generation.current++
-    busy.current = false
-    setPending(false)
-    setRun(undefined)
-    setError(undefined)
+    const capture = lifecycle.current
+    const connection = currentConnection.current
     return () => {
-      generation.current++
-      const current = activeRun.current
+      // A container change installs a new session before this cleanup runs.
+      capture.generation++
+      const current = capture.run
       if (current && !['complete', 'stopped', 'failed', 'partial'].includes(current.state)
-          && getApiBase() === apiBase && currentConnection.current === connection.context) {
+          && getApiBase() === apiBase && connection.context === context) {
         void stopIGRun(current.id).catch(() => {})
       }
     }
-  }, [viewKey])
+  }, [apiBase, context, currentConnection, selectedContainer])
 
   useEffect(() => {
-    generation.current++
-    busy.current = false
-    setPending(false)
+    lifecycle.current.generation++
+    lifecycle.current.busy = false
   }, [targetKey])
 
   useEffect(() => {
@@ -131,46 +154,47 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null
 
   const capture = async (aspect: LiveDebugAspect, durationSeconds: number) => {
-    if (!running || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
-    busy.current = true
-    setPending(true)
-    const token = ++generation.current
+    const active = lifecycle.current
+    if (!running || active.busy || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
+    active.busy = true
+    setPendingTarget(targetKey)
+    const token = ++active.generation
     const target = targetKey
     const runtimeID = containerID
     setError(undefined)
     setRun(undefined)
     try {
       const next = await startIGCapture({ namespace, pod, podUid: data.metadata.uid, containerId: containerID, container: selectedContainer, aspect, durationSeconds })
-      if (generation.current === token && currentTarget.current === target && (runtimeID == null || currentContainerID.current === runtimeID)) setRun(next)
-      else if (getApiBase() === apiBase && currentConnection.current === connection.context) {
-        void stopIGRun(next.id).catch(() => {})
+      if (active.generation === token && currentTarget.current === target && (runtimeID == null || currentContainerID.current === runtimeID)) setRun(next)
+      else {
+        if (active.generation === token && currentTarget.current === target) {
+          setError('The container restarted while the capture request was pending. Its response was discarded. Capture again.')
+        }
+        if (getApiBase() === apiBase && currentConnection.current.context === context) {
+          void stopIGRun(next.id).catch(() => {})
+        }
       }
     } catch (captureError) {
-      if (generation.current === token && currentTarget.current === target) setError(captureError instanceof Error ? captureError.message : String(captureError))
+      if (active.generation === token && currentTarget.current === target) setError(captureError instanceof Error ? captureError.message : String(captureError))
     } finally {
-      if (generation.current === token && currentTarget.current === target) {
-        busy.current = false
-        setPending(false)
+      if (active.generation === token && currentTarget.current === target) {
+        active.busy = false
+        setPendingTarget(undefined)
       }
     }
   }
 
   const stop = async () => {
     if (!run) return
-    const token = generation.current
+    const active = lifecycle.current
+    const token = active.generation
     const target = targetKey
     try {
       const next = await stopIGRun(run.id)
-      if (generation.current === token && currentTarget.current === target) setRun(next)
+      if (active.generation === token && currentTarget.current === target) setRun(next)
     } catch (stopError) {
-      if (generation.current === token && currentTarget.current === target) setError(stopError instanceof Error ? stopError.message : String(stopError))
+      if (active.generation === token && currentTarget.current === target) setError(stopError instanceof Error ? stopError.message : String(stopError))
     }
-  }
-
-  const changeContainer = (container: string) => {
-    setSelectedContainer(container)
-    setRun(undefined)
-    setError(undefined)
   }
 
   const status = statusQuery.data?.state === 'installed' ? 'installed' : 'unknown'
@@ -183,7 +207,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
       statusMessage={statusQuery.data?.message || (statusQuery.error as Error | undefined)?.message}
       containers={containers}
       selectedContainer={selectedContainer}
-      onContainerChange={changeContainer}
+      onContainerChange={onContainerChange}
       run={run}
       error={error}
       onCapture={capture}
