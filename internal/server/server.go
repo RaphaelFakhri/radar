@@ -1364,6 +1364,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{
+		ApplicationEvidence:   true,
 		YAMLReview:            true,
 		YAMLSchemas:           true,
 		WorkloadImages:        true,
