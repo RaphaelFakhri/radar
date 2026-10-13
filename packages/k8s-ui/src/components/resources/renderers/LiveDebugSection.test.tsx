@@ -7,7 +7,7 @@ const props = { status: 'installed' as const, containers: ['app'], selectedConta
 describe('Live Debug evidence', () => {
   it('shows an empty process result when the wire omits its empty array', () => {
     const run: LiveDebugRun = { id: 'run', aspect: 'processes', state: 'complete', target, result: {
-      target, aspect: 'processes', capturedAt: '2026-10-13T00:00:00Z', captureDurationMs: 0, eventCount: 0, truncated: false, eventLoss: 'unmeasurable',
+      target, aspect: 'processes', scope: 'container', capturedAt: '2026-10-13T00:00:00Z', captureDurationMs: 0, eventCount: 0, truncated: false, eventLoss: 'unmeasurable',
     } }
     const html = renderToStaticMarkup(<LiveDebugSection {...props} run={run} />)
     expect(html).toContain('No processes were observed')
@@ -15,7 +15,7 @@ describe('Live Debug evidence', () => {
   })
   it('presents partial evidence as partial and retains the cause', () => {
     const run: LiveDebugRun = { id: 'run', aspect: 'processes', state: 'partial', target, reason: 'target replaced', result: {
-      target, aspect: 'processes', capturedAt: '2026-10-13T00:00:00Z', captureDurationMs: 0, eventCount: 0, truncated: false, eventLoss: 'unmeasurable',
+      target, aspect: 'processes', scope: 'container', capturedAt: '2026-10-13T00:00:00Z', captureDurationMs: 0, eventCount: 0, truncated: false, eventLoss: 'unmeasurable',
     } }
     const html = renderToStaticMarkup(<LiveDebugSection {...props} run={run} />)
     expect(html).toContain('Live Debug capture is partial')

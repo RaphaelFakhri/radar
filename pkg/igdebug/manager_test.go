@@ -415,3 +415,39 @@ func TestContextSwitchHidesRunsBeforeCleanupEvenForTheSameContextName(t *testing
 	close(release)
 	<-switched
 }
+
+func TestTargetInterruptionOnlyAffectsUnfinishedEvidence(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		t.Run(fmt.Sprint(completed), func(t *testing.T) {
+			manager := NewManager(DefaultLimits())
+			owner := Owner{User: "alice", Context: "cluster"}
+			run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(ctx context.Context, req Request, reporter Reporter) error {
+				reporter.Started(req.Target)
+				if completed {
+					reporter.Result(Result{EventCount: 3})
+				}
+				reporter.Interrupted("target container was replaced")
+				if !completed {
+					reporter.Result(Result{EventCount: 3})
+				}
+				return nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			view, err := manager.WaitDone(ctx, run.ID, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := StatePartial
+			if completed {
+				want = StateComplete
+			}
+			if view.State != want || view.Result == nil || view.Result.EventCount != 3 {
+				t.Fatalf("evidence lifecycle = %#v, want %s with retained result", view, want)
+			}
+		})
+	}
+}

@@ -39,6 +39,8 @@ type Reporter interface {
 	Started(Target)
 	Event(json.RawMessage)
 	Result(Result)
+	// Interrupted qualifies unfinished evidence; Partial also qualifies uncertain cleanup.
+	Interrupted(string)
 	Partial(string)
 }
 
@@ -308,6 +310,10 @@ func (m *Manager) reporterResult(id string, result Result) {
 	}
 	result.Target = run.view.Target
 	result.Aspect = run.view.Aspect
+	result.Scope = "container"
+	if result.Aspect == AspectConnections {
+		result.Scope = "pod-network"
+	}
 	if result.CapturedAt.IsZero() {
 		result.CapturedAt = time.Now().UTC()
 	}
@@ -326,10 +332,10 @@ func (m *Manager) reporterResult(id string, result Result) {
 	m.broadcastLocked(run, StreamEvent{Type: "result", Run: runView(run)})
 }
 
-func (m *Manager) reporterPartial(id, reason string) {
+func (m *Manager) reporterPartial(id, reason string, duringCapture bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if run := m.runs[id]; run != nil && !run.view.State.Terminal() && run.partialReason == "" {
+	if run := m.runs[id]; run != nil && !run.view.State.Terminal() && run.partialReason == "" && (!duringCapture || run.view.Result == nil) {
 		run.partialReason = reason
 		run.cancel()
 	}
@@ -426,7 +432,8 @@ type reporter struct {
 func (r reporter) Started(target Target)       { r.manager.reporterStarted(r.id, target) }
 func (r reporter) Event(event json.RawMessage) { r.manager.reporterEvent(r.id, event) }
 func (r reporter) Result(result Result)        { r.manager.reporterResult(r.id, result) }
-func (r reporter) Partial(reason string)       { r.manager.reporterPartial(r.id, reason) }
+func (r reporter) Interrupted(reason string)   { r.manager.reporterPartial(r.id, reason, true) }
+func (r reporter) Partial(reason string)       { r.manager.reporterPartial(r.id, reason, false) }
 
 func ValidateDuration(aspect Aspect, duration time.Duration) error {
 	if aspect == AspectDNS {

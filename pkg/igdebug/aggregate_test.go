@@ -171,3 +171,14 @@ func TestDNSAggregatorCapsRetainedState(t *testing.T) {
 func endpointFixture(address string, port int, protocol string) map[string]any {
 	return map[string]any{"addr": address, "port": port, "proto": protocol}
 }
+
+func TestConnectionsIncludeOnlyThePinnedPodsContainers(t *testing.T) {
+	raw := []byte(`[{"runtime":{"containerId":"app"},"src":{"port":8080}}, {"runtime":{"containerId":"sidecar"},"src":{"port":8081}}, {"runtime":{"containerId":"unrelated"},"src":{"port":9999}}]`)
+	rows, err := ParseConnections(raw, "app", "sidecar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Local.Port != 8080 || rows[1].Local.Port != 8081 {
+		t.Fatalf("socket scope includes another Pod or excludes a sidecar: %#v", rows)
+	}
+}

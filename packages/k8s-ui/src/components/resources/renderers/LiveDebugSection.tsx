@@ -24,6 +24,7 @@ export interface LiveDebugTarget {
 }
 
 export interface LiveDebugResult {
+	 scope: 'container' | 'pod-network'
   target: LiveDebugTarget
   aspect: LiveDebugAspect
   enrichment?: string
@@ -116,7 +117,7 @@ export function LiveDebugSection({
               ))}
             </div>
             <div className="flex items-center gap-2">
-              {containers.length > 1 && (
+              {containers.length > 1 && aspect !== 'connections' && (
                 <select
                   value={selectedContainer}
                   onChange={event => onContainerChange(event.target.value)}
@@ -160,6 +161,7 @@ export function LiveDebugSection({
           {captureUnavailableReason && <div className="card-inner text-xs text-theme-text-secondary">{captureUnavailableReason}</div>}
           <div className="text-xs text-theme-text-tertiary">
             {aspects.find(item => item.value === aspect)?.description}. Capture explicitly loads short-lived kernel instrumentation on this Pod&apos;s node, then unloads it.
+            {aspect === 'connections' && <div className="mt-1">Sockets cover the Pod&apos;s shared network namespace, including sidecars. They cannot be attributed to one container.</div>}
           </div>
 
           {(preparing || run?.state === 'running' || run?.state === 'stopping') && (
@@ -189,9 +191,9 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
         <span>Captured <TimeValue timestamp={result.capturedAt} />{result.captureDurationMs > 0 ? ` · ${(result.captureDurationMs / 1000).toFixed(1)}s` : ''}</span>
       </div>
       <div className="break-all text-xs text-theme-text-tertiary">
-        {result.target.namespace}/{result.target.pod} · {result.target.container}
+        {result.target.namespace}/{result.target.pod} · {result.scope === 'pod-network' ? 'Pod network namespace (all containers)' : result.target.container}
         <div>Pod UID: {result.target.podUid} · Node: {result.target.node}</div>
-        <div>Container ID: {result.target.containerId}</div>
+        <div>{result.scope === 'pod-network' ? 'Capture anchor container ID' : 'Container ID'}: {result.target.containerId}</div>
       </div>
       {result.aspect === 'processes' && (
         <div className="max-h-72 overflow-auto table-divide-subtle">
@@ -216,7 +218,7 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
               </div>
             </div>
           ))}
-          {(result.connections?.length ?? 0) === 0 && <EmptyResult text="No current sockets were observed for the pinned container." />}
+          {(result.connections?.length ?? 0) === 0 && <EmptyResult text="No current sockets were observed in the Pod network namespace." />}
         </div>
       )}
       {result.aspect === 'dns' && (

@@ -89,7 +89,7 @@ npm run dev
 
 ```bash
 # Backend tests
-go test ./...
+go test -tags withoutebpf ./...
 
 # Frontend type check
 cd web

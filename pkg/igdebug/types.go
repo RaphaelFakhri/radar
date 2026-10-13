@@ -39,12 +39,14 @@ type Owner struct {
 }
 
 type Target struct {
-	Namespace   string `json:"namespace"`
-	Pod         string `json:"pod"`
-	PodUID      string `json:"podUid,omitempty"`
-	Node        string `json:"node,omitempty"`
-	Container   string `json:"container"`
-	ContainerID string `json:"containerId,omitempty"`
+	Namespace           string   `json:"namespace"`
+	Pod                 string   `json:"pod"`
+	PodUID              string   `json:"podUid,omitempty"`
+	Node                string   `json:"node,omitempty"`
+	Container           string   `json:"container"`
+	ContainerID         string   `json:"containerId,omitempty"`
+	NetworkContainerIDs []string `json:"-"`
+	HostNetwork         bool     `json:"-"`
 }
 
 type Request struct {
@@ -95,6 +97,7 @@ type DNSGroup struct {
 }
 
 type Result struct {
+	Scope             string        `json:"scope"`
 	Enrichment        string        `json:"enrichment,omitempty"`
 	Aspect            Aspect        `json:"aspect"`
 	Target            Target        `json:"target"`

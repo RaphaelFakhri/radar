@@ -172,10 +172,11 @@ type captureReporter struct {
 	partial chan string
 }
 
-func (r *captureReporter) Started(domain.Target) {}
-func (r *captureReporter) Event(json.RawMessage) {}
-func (r *captureReporter) Result(domain.Result)  {}
-func (r *captureReporter) Partial(reason string) { r.partial <- reason }
+func (r *captureReporter) Started(domain.Target)     {}
+func (r *captureReporter) Event(json.RawMessage)     {}
+func (r *captureReporter) Result(domain.Result)      {}
+func (r *captureReporter) Interrupted(reason string) { r.partial <- reason }
+func (r *captureReporter) Partial(reason string)     { r.partial <- reason }
 
 func TestResolveTargetRejectsAChangedIncarnationBeforeInstrumenting(t *testing.T) {
 	pod := targetPod("new-uid", "containerd://new-id", "")

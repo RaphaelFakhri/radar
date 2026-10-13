@@ -88,14 +88,14 @@ func ParseProcesses(raw []byte, containerID string) ([]Process, error) {
 	return result, nil
 }
 
-func ParseConnections(raw []byte, containerID string) ([]Connection, error) {
+func ParseConnections(raw []byte, containerIDs ...string) ([]Connection, error) {
 	var rows []socketRow
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("decode socket snapshot: %w", err)
 	}
 	result := make([]Connection, 0, len(rows))
 	for _, row := range rows {
-		if row.Runtime.ContainerID != containerID {
+		if !contains(containerIDs, row.Runtime.ContainerID) {
 			continue
 		}
 		result = append(result, Connection{

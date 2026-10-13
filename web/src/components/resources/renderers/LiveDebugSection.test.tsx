@@ -29,7 +29,7 @@ const pod = (uid = 'old', containerID = '123') => ({
 })
 const result = { id: 'run-1', target, state: 'complete', aspect: 'processes', result: {
   target, aspect: 'processes', processes: [{ command: 'old-process', pid: 1 }],
-  capturedAt: '2026-10-13T00:00:00Z', eventCount: 1, eventLoss: 'unmeasurable', truncated: false, captureDurationMs: 0,
+  scope: 'container', capturedAt: '2026-10-13T00:00:00Z', eventCount: 1, eventLoss: 'unmeasurable', truncated: false, captureDurationMs: 0,
 } }
 let element: HTMLDivElement
 let root: Root

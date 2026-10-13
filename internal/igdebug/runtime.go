@@ -55,6 +55,9 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 		return err
 	}
 	request.Target = target
+	if request.Aspect == domain.AspectConnections && target.HostNetwork {
+		return fmt.Errorf("%w: socket snapshots are unavailable for host-network Pods because they share the node network namespace", domain.ErrInvalidRequest)
+	}
 	var enricher *visibleEnricher
 	if request.Aspect != domain.AspectProcesses {
 		enricher = loadVisibleEnricher(ctx, client, target)
@@ -120,6 +123,9 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 		"operator.KubeManager.namespace":     target.Namespace,
 		"operator.KubeManager.podname":       target.Pod,
 		"operator.KubeManager.containername": target.Container,
+	}
+	if request.Aspect == domain.AspectConnections {
+		delete(params, "operator.KubeManager.containername")
 	}
 	if err := runtime.RunGadget(gadgetCtx, runtimeParams, params); err != nil {
 		if resultPublished.Load() {
@@ -198,13 +204,23 @@ func resolveTarget(ctx context.Context, client kubernetes.Interface, gadgetNames
 	}
 	for _, gadgetPod := range gadgetPods.Items {
 		if podReady(&gadgetPod) {
+			var networkContainerIDs []string
+			for _, statuses := range [][]corev1.ContainerStatus{pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses, pod.Status.EphemeralContainerStatuses} {
+				for _, status := range statuses {
+					if status.State.Running != nil && status.ContainerID != "" {
+						networkContainerIDs = append(networkContainerIDs, trimRuntimePrefix(status.ContainerID))
+					}
+				}
+			}
 			return domain.Target{
-				Namespace:   requested.Namespace,
-				Pod:         requested.Pod,
-				PodUID:      string(pod.UID),
-				Node:        pod.Spec.NodeName,
-				Container:   containerName,
-				ContainerID: containerID,
+				Namespace:           requested.Namespace,
+				Pod:                 requested.Pod,
+				PodUID:              string(pod.UID),
+				Node:                pod.Spec.NodeName,
+				Container:           containerName,
+				ContainerID:         containerID,
+				NetworkContainerIDs: networkContainerIDs,
+				HostNetwork:         pod.Spec.HostNetwork,
 			}, nil
 		}
 	}
@@ -274,19 +290,19 @@ func watchTargetEvery(ctx context.Context, client kubernetes.Interface, target d
 			pod, err := client.CoreV1().Pods(target.Namespace).Get(ctx, target.Pod, metav1.GetOptions{})
 			if err != nil {
 				if apierrors.IsNotFound(err) {
-					reporter.Partial("target Pod was deleted during capture")
+					reporter.Interrupted("target Pod was deleted during capture")
 					return
 				}
 				consecutiveErrors++
 				if consecutiveErrors >= 3 {
-					reporter.Partial(fmt.Sprintf("target Pod could not be verified after %d attempts: %v", consecutiveErrors, err))
+					reporter.Interrupted(fmt.Sprintf("target Pod could not be verified after %d attempts: %v", consecutiveErrors, err))
 					return
 				}
 				continue
 			}
 			consecutiveErrors = 0
 			if string(pod.UID) != target.PodUID || pod.Spec.NodeName != target.Node || currentContainerID(pod, target.Container) != target.ContainerID {
-				reporter.Partial("target Pod or container was replaced during capture")
+				reporter.Interrupted("target Pod or container was replaced during capture")
 				return
 			}
 		}
@@ -330,7 +346,7 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 						result.Processes = rows
 						result.EventCount = len(rows)
 					case domain.AspectConnections:
-						rows, err := domain.ParseConnections(raw, target.ContainerID)
+						rows, err := domain.ParseConnections(raw, target.NetworkContainerIDs...)
 						if err != nil {
 							return err
 						}

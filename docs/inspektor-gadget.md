@@ -1,7 +1,7 @@
 # Inspektor Gadget Live Debug
 
 Radar's Live Debug feature uses an existing Inspektor Gadget DaemonSet to
-collect bounded kernel evidence for one Pod container. Radar never installs
+collect bounded kernel evidence for a Pod. Processes and DNS are container-scoped; socket snapshots cover the Pod network namespace, including sidecars, and cannot attribute sockets to a container. Host-network Pod socket snapshots are unavailable because that namespace belongs to the node. Radar never installs
 Gadget from the UI or status endpoint. Processes and connections are one-shot
 snapshots; DNS is a 10, 30, or 60 second capture.
 
