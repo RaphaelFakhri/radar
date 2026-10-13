@@ -99,6 +99,7 @@ describe('Live Debug capture identity', () => {
     mock.status = { error: new RadarFeatureUnsupportedError('liveDebug', { currentVersion: 'v1.16.0' }) }
     await act(async () => root.render(<LiveDebugSection data={pod()} />))
     expect(element.textContent).toContain('Live Debug captures need a newer Radar')
+    expect(element.querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
     expect(element.textContent).not.toContain('could not be verified')
     mock.status = { data: { state: 'not-installed' } }
     await act(async () => root.render(<LiveDebugSection data={pod()} />))

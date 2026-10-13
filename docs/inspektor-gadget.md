@@ -87,5 +87,5 @@ the acting identity and a five-second budget; a namespace fallback or pagination
 marks labels as partial. Process captures do not load those inventories. HTTP
 DNS runs accept at most 60 seconds; the full MCP tool accepts at most 30 seconds.
 The tool is excluded from investigation turns, including confirmed Apply.
-It is available through the full MCP endpoint for clients that confirm
-instrumentation explicitly; a proposed resource fix does not authorize it.
+It is available through the full MCP endpoint. Client approval policy controls
+confirmation; Radar does not prompt. A proposed resource fix does not authorize it.

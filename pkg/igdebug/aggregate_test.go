@@ -27,7 +27,7 @@ func TestParseConnectionsMapsStateAndEndpoint(t *testing.T) {
 		"dst":{"addr":"10.0.0.3","port":5432,"proto":"TCP","k8s":{"kind":"svc","namespace":"app","name":"postgres"}},
 		"state":5,"runtime":{"containerId":"wanted"}
 	}]`)
-	rows, err := ParseConnections(raw, "wanted")
+	rows, err := ParseConnections(raw, Target{NetworkContainerIDs: []string{"wanted"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestParseConnectionsUsesUDPStateVocabulary(t *testing.T) {
 		{"src":{"addr":"10.0.0.2","port":5353,"proto":"UDP"},"dst":{"addr":"0.0.0.0","port":0,"proto":"UDP"},"state":7,"runtime":{"containerId":"wanted"}},
 		{"src":{"addr":"10.0.0.2","port":5354,"proto":"UDP"},"dst":{"addr":"10.0.0.10","port":53,"proto":"UDP"},"state":1,"runtime":{"containerId":"wanted"}}
 	]`)
-	rows, err := ParseConnections(raw, "wanted")
+	rows, err := ParseConnections(raw, Target{NetworkContainerIDs: []string{"wanted"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +174,28 @@ func endpointFixture(address string, port int, protocol string) map[string]any {
 
 func TestConnectionsIncludeOnlyThePinnedPodsContainers(t *testing.T) {
 	raw := []byte(`[{"runtime":{"containerId":"app"},"src":{"port":8080}}, {"runtime":{"containerId":"sidecar"},"src":{"port":8081}}, {"runtime":{"containerId":"unrelated"},"src":{"port":9999}}]`)
-	rows, err := ParseConnections(raw, "app", "sidecar")
+	rows, err := ParseConnections(raw, Target{Namespace: "app", Pod: "api", NetworkContainerIDs: []string{"app", "sidecar"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 2 || rows[0].Local.Port != 8080 || rows[1].Local.Port != 8081 {
 		t.Fatalf("socket scope includes another Pod or excludes a sidecar: %#v", rows)
+	}
+}
+
+func TestConnectionsAcceptUnattributedRowsOnlyForTheExactPod(t *testing.T) {
+	raw := []byte(`[
+		{"k8s":{"namespace":"app","podName":"api"},"src":{"port":8080}},
+		{"k8s":{"namespace":"other","podName":"api"},"src":{"port":8081}},
+		{"k8s":{"namespace":"app","podName":"other"},"src":{"port":8082}},
+		{"src":{"port":8083}},
+		{"runtime":{"containerId":"unrelated"},"k8s":{"namespace":"app","podName":"api"},"src":{"port":8084}}
+	]`)
+	rows, err := ParseConnections(raw, Target{Namespace: "app", Pod: "api", NetworkContainerIDs: []string{"app", "sidecar"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Local.Port != 8080 {
+		t.Fatalf("unattributed socket scope includes another Pod: %#v", rows)
 	}
 }

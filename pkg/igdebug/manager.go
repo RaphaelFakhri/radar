@@ -122,6 +122,10 @@ func (m *Manager) execute(ctx context.Context, request Request, executor Executo
 		run.failure = err
 	case err != nil:
 		run.view.State = StateStopped
+	case run.view.Result == nil:
+		run.view.State = StateFailed
+		run.failure = errors.New("runtime finished without producing capture evidence")
+		run.view.Error = run.failure.Error()
 	default:
 		run.view.State = StateComplete
 	}

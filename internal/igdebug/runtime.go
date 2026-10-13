@@ -139,6 +139,9 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 		}
 		return fmt.Errorf("run Inspektor Gadget: %w", err)
 	}
+	if cause := context.Cause(runCtx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
 	return nil
 }
 
@@ -346,7 +349,7 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 						result.Processes = rows
 						result.EventCount = len(rows)
 					case domain.AspectConnections:
-						rows, err := domain.ParseConnections(raw, target.NetworkContainerIDs...)
+						rows, err := domain.ParseConnections(raw, target)
 						if err != nil {
 							return err
 						}

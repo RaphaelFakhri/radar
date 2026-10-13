@@ -12,6 +12,8 @@ import { getApiBase } from '../../../api/config'
 import { useCapabilitiesContext } from '../../../contexts/CapabilitiesContext'
 import { useConnection } from '../../../context/ConnectionContext'
 import { fetchIGRun, fetchIGStatus, startIGCapture, stopIGRun } from '../../../api/igdebug'
+import { Section } from '@skyhook-io/k8s-ui/components/ui/drawer-components'
+import { Activity } from 'lucide-react'
 
 interface LiveDebugSectionProps {
   data: any
@@ -120,7 +122,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   }, [runID, runState, targetKey])
 
   if (statusQuery.error instanceof RadarFeatureUnsupportedError) {
-    return <RadarUpgradeNote requirement={statusQuery.error.radarUpgrade} />
+    return <Section title="Live Debug" icon={Activity} defaultExpanded={false}><RadarUpgradeNote requirement={statusQuery.error.radarUpgrade} /></Section>
   }
 
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null

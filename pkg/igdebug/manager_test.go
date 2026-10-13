@@ -451,3 +451,21 @@ func TestTargetInterruptionOnlyAffectsUnfinishedEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeCannotCompleteWithoutEvidence(t *testing.T) {
+	manager := NewManager(DefaultLimits())
+	owner := Owner{User: "alice", Context: "cluster"}
+	run, err := manager.Start(requestFor(owner, AspectProcesses), executorFunc(func(context.Context, Request, Reporter) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	view, err := manager.WaitDone(ctx, run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != StateFailed || view.Error != "runtime finished without producing capture evidence" {
+		t.Fatalf("empty runtime completion was presented as evidence: %#v", view)
+	}
+}

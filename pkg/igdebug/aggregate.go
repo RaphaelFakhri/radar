@@ -41,6 +41,10 @@ type endpointRow struct {
 }
 
 type socketRow struct {
+	K8s struct {
+		Namespace string `json:"namespace"`
+		PodName   string `json:"podName"`
+	} `json:"k8s"`
 	Source  endpointRow `json:"src"`
 	Dest    endpointRow `json:"dst"`
 	State   int         `json:"state"`
@@ -88,14 +92,15 @@ func ParseProcesses(raw []byte, containerID string) ([]Process, error) {
 	return result, nil
 }
 
-func ParseConnections(raw []byte, containerIDs ...string) ([]Connection, error) {
+func ParseConnections(raw []byte, target Target) ([]Connection, error) {
 	var rows []socketRow
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("decode socket snapshot: %w", err)
 	}
 	result := make([]Connection, 0, len(rows))
 	for _, row := range rows {
-		if !contains(containerIDs, row.Runtime.ContainerID) {
+		podOnly := row.Runtime.ContainerID == "" && target.Namespace != "" && target.Pod != "" && row.K8s.Namespace == target.Namespace && row.K8s.PodName == target.Pod
+		if !contains(target.NetworkContainerIDs, row.Runtime.ContainerID) && !podOnly {
 			continue
 		}
 		result = append(result, Connection{
