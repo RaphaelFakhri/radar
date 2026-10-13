@@ -16,6 +16,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/gitops"
 	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -129,7 +130,7 @@ func TestEventMatchesGroup(t *testing.T) {
 
 // HasNamespaceAccess is the gitopsRequest method that handlers call before
 // running the (potentially expensive) topology+tree build. It mirrors the
-// noNamespaceAccess contract (tested in server_auth_test.go) but as a
+// readscope.NoNamespaceAccess contract (tested in server_auth_test.go) but as a
 // method on the request struct, so this guards against the predicate
 // drifting out of sync with the underlying helper.
 func TestGitopsRequestHasNamespaceAccess(t *testing.T) {
