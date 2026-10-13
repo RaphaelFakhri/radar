@@ -48,3 +48,13 @@ tooltip. `certaintyGlyph` and `certaintyValueLabel` expose the same vocabulary.
 `useOpenTerminal` accepts `shell` (one executable name, without arguments), `title`, and `sessionNote`. Dock hosts must forward these fields to their terminal renderer; Radar does so. The shared `TerminalTab` accepts `command` to describe that executable, pin the container, and suppress shell debug advice, plus `note` for session context. `createSession` remains responsible for launching the command. Omitted options retain the normal shell session.
 
 `AreaChart` supports optional `shadedRanges`, controlled `selection`, and `onSelectRange`. Range timestamps use Unix seconds. Dragging selects a range; with positive `stepSeconds`, clicking selects a step-wide window centered on the pointer, clipped at the chart edges. Arrow keys plus Enter select a window from the keyboard. Shaded range labels appear on hover. `AlertBanner.action` places a host-supplied control alongside the title. Omitting these props preserves existing charts and banners.
+
+## Facts, problems and reviewed actions
+
+`FactValue`, `FactSource`, `FactGrid` and `FactRow` show an observed value and its source. Hosts supply explicit unknown or partial text; these components never infer completeness. `at` is a past event by default; `atMeaning="since"` describes a continuing state. `FoldSection` opens when its `attention` becomes true. `RefLink` is navigable only when the host supplies `onNavigate`; `ManagedByText` reuses the GitOps owner mapper for a plain relationship label.
+
+`WorkspaceProblemCallout`, `ProblemList` and `ProblemMeta` show host-classified issues, best-practice checks or measurements with provenance. `rootKind` identifies the workspace's root; `subjectIsSelf` suppresses a link back to the current object. The host supplies `OpenIssueContext` only when it can open the matching Issues entry. Critical, warning and posture describe findings, and map to the existing health tones. `formatGrant` formats a permission for display; it performs no authorization.
+
+`ActionConfirmDialog` adds context, reviewed writes and optional typed acknowledgement to the simpler `ConfirmDialog`. Hosts own loading, permission checks, stale-fact validation and result classification. Set `outcomeUnknown` when a result is unknown or partial to lock another submit; the component does not infer this from HTTP status. Remount it when changing the reviewed target or action, so acknowledgement and disclosure state start fresh. The default error heading makes no claim about whether a write occurred; use a stronger `errorTitle` only when the producer proves it.
+
+Existing CNPG primitive exports remain available and delegate to these shared implementations.
