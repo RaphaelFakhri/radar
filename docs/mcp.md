@@ -152,13 +152,12 @@ your provider environment and OpenCode configuration, and runs with `--auto`:
 permission requests are approved automatically, including those from built-in
 tools and configured MCP servers; explicit denials still apply. Radar does not
 enforce a CLI sandbox. Diagnosis and follow-up use Radar's read-only investigation
-MCP. A confirmed Apply starts a separate resource-write session on
-`/mcp-investigation-apply`. Radar's Apply transport excludes kernel instrumentation
-from both discovery and direct calls. The runner then resumes the original
-read-only session to verify the result. Normal-setup profiles can still inherit
-other MCP servers from the user's CLI configuration; this transport boundary does
-not restrict those separately configured connections. As with other agents using
-your normal setup, Radar cannot authenticate write results and reports the Apply
+MCP. A confirmed Apply starts a separate resource-write session, then resumes
+the original read-only session to verify the result. Live Debug captures are
+excluded from diagnosis, follow-up and Apply. Normal-setup profiles can inherit
+other MCP servers from the user's CLI configuration; Radar's tool restrictions
+do not apply to those connections. As with other agents using your normal setup,
+Radar cannot authenticate write results and reports the Apply
 outcome as uncertain until current-state verification. Terminal handoff and
 reasoning-effort controls are not available for OpenCode.
 
@@ -582,11 +581,11 @@ itself establish cache freshness or complete namespace coverage.
 
 ### Instrumentation and Write Tools
 
-Capture creation returns a retryable 503 while the connection is unavailable or a serialized cluster-subsystem rebuild is in progress (including a traffic settings restart). Existing user-owned captures can still be retrieved, stopped and subscribed to during disconnection.
+Live Debug capture creation returns HTTP 503 when the cluster connection is unavailable or restarting. During disconnection, callers can still retrieve, stop and subscribe to their existing captures.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `inspect_pod_runtime` | Collect short-lived kernel evidence for a Pod using an existing Inspektor Gadget deployment. Processes and DNS are container-scoped; sockets cover the Pod network namespace including sidecars, without container attribution. Host-network socket snapshots are unavailable. This temporarily loads a pinned eBPF gadget on the target node and unloads it after the bounded capture; it does not install Gadget or mutate Kubernetes resources. Process snapshots expose command names, not argv. DNS output is aggregated and raw packets are not returned. Excluded from investigation turns, including confirmed Apply; available through the full MCP endpoint. Client approval policy controls confirmation; Radar does not prompt. Final state, partial reason and runtime errors qualify the evidence. | `namespace`, `pod`, `aspect` (`processes`, `connections`, `dns`); optional `container` (kubectl default-container annotation, then first running application container); `duration` for DNS (default 10s, max 30s) |
+| `inspect_pod_runtime` | Collect kernel evidence via an existing Inspektor Gadget deployment ([setup and permissions](inspektor-gadget.md)). Processes and DNS cover the selected container; connections cover the Pod network namespace, including sidecars, without container attribution. Host-network connections are unavailable. Captures temporarily load eBPF instrumentation on the node. Process IDs are host IDs; arguments and raw packets are excluded. DNS output is aggregated. Full MCP only, including stdio; excluded from built-in investigations and Apply. Client approval policy controls confirmation. Check `state`, `reason`, `error`, `truncated` and `eventLoss`; `unmeasurable` loss does not mean no events were lost. `enrichment: partial` means Pod/Service labels may be incomplete. | `namespace`, `pod`, `aspect` (`processes`, `connections`, `dns`); optional `container` (default-container annotation, then first running application container); `duration` for DNS (default 10s, max 30s) |
 | `apply_resource` | Create or update a Kubernetes resource from YAML. Supports multi-document YAML, per-document partial-failure results, server-side dry-run preview, and SSA ownership-conflict reporting. | `yaml` (required), `mode` (optional: `apply` or `create`, default `apply`), `dry_run` (optional, default false), `namespace` (optional, override), `verify` (optional, default true: real mutations return post-mutation state, submitted-vs-live diff, workload rollout/pods, and related issues; dry runs return a preview diff), `force` (optional, default false: take SSA field ownership from other managers) |
 | `patch_resource` | Patch one existing Kubernetes resource with JSON Patch, JSON Merge Patch, or strategic merge patch. Use for precise field/list edits when you know the exact path and do not want to rewrite the full manifest or take broad server-side-apply ownership. Strategic patch is for built-in Kubernetes kinds and name-keyed list edits, such as changing one container. | `kind` (required), `name` (required), `namespace` (required for namespaced resources), `group` (optional), `patch_type` (optional: `json` default, `merge`, or `strategic`), `patch` (required JSON string), `dry_run` (optional), `verify` (optional, default true: real mutations return compact post-patch state and JSON Patch field checks; dry runs return a preview diff) |
 | `manage_workload` | Restart, scale, or rollback a Deployment, StatefulSet, DaemonSet, or Argo Rollout. Note: `scale` is not supported for DaemonSets. On a Rollout, `rollback` rewrites the pod template and therefore starts a **new** rollout that re-runs every canary step, pause, and analysis — use `manage_rollout` `abort` to revert traffic immediately, or follow the rollback with `promote-full`. | `action` (required: `restart`, `scale`, `rollback`), `kind` (required), `namespace` (required), `name` (required), `replicas` (for scale), `revision` (for rollback — enumerate with `get_resource include=revisions`) |

@@ -1,7 +1,8 @@
 # Inspektor Gadget demo fixture
 
-`scripts/ig-demo.sh up` creates or reuses `kind-radar-ig-demo`, installs the
-official Inspektor Gadget v0.54.1 chart, and applies `fixtures.yaml`.
+`scripts/ig-demo.sh up` creates or reuses the `radar-ig-demo` cluster (context
+`kind-radar-ig-demo`), installs the official Inspektor Gadget chart (v0.54.1 by
+default), and applies `fixtures.yaml`.
 
 The `probe` Pod continuously produces:
 
@@ -9,10 +10,8 @@ The `probe` Pod continuously produces:
 - HTTP connections to the `server` Service;
 - a multi-container target with an explicit default container.
 
-The `server` Pod supplies a stable process tree and listening sockets.
+Use the `server` Pod for process and listening-socket snapshots.
 
-Kind nodes inherit the host kernel. Docker Desktop's LinuxKit kernel may not
-expose BTF, in which case installation/detection succeeds but a capture returns
-the expected compatibility error. Run the same fixtures on a BTF-capable Linux
-test cluster for live evidence and use the local cluster for the unsupported-host
-state.
+An installed Gadget DaemonSet does not guarantee a successful capture. Use a
+cluster whose nodes support Gadget instrumentation to test live evidence; use
+an incompatible node to test capture-error presentation.
