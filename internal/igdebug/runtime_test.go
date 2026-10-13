@@ -207,3 +207,12 @@ func TestEnrichmentMarksPaginationAsPartial(t *testing.T) {
 		t.Fatalf("a capped inventory claimed complete enrichment: %#v", result)
 	}
 }
+
+func TestSocketTargetVerificationRejectsARecreatedPodWithTheSameName(t *testing.T) {
+	pod := targetPod("new-uid", "containerd://same-id", "")
+	client := fake.NewSimpleClientset(pod)
+	target := domain.Target{Namespace: "app", Pod: "api", PodUID: "old-uid", Node: "node-a", Container: "first", ContainerID: "same-id"}
+	if err := verifyTarget(context.Background(), client, target); !errors.Is(err, domain.ErrTargetChanged) {
+		t.Fatalf("accepted another Pod incarnation: %v", err)
+	}
+}

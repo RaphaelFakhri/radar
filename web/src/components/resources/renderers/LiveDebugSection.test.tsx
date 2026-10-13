@@ -6,13 +6,14 @@ import { LiveDebugSection } from './LiveDebugSection'
 import { RadarFeatureUnsupportedError } from '../../../api/radarFeatures'
 
 const mock = vi.hoisted(() => ({
+  mode: 'local',
   status: { data: { state: 'installed' }, isLoading: false, error: undefined } as any,
   start: vi.fn(), stop: vi.fn(), fetch: vi.fn(), query: vi.fn(),
 }))
 vi.mock('@tanstack/react-query', () => ({ useQuery: (options: any) => { mock.query(options); return mock.status } }))
 vi.mock('../../../api/client', () => ({ ApiError: class extends Error { status = 0 }, useRadarFeature: () => ({ gatedKey: [], guard: (request: () => unknown) => request() }) }))
 vi.mock('../../../api/config', () => ({ getApiBase: () => '/api' }))
-vi.mock('../../../contexts/CapabilitiesContext', () => ({ useCapabilitiesContext: () => ({ deployment: { mode: 'local' } }) }))
+vi.mock('../../../contexts/CapabilitiesContext', () => ({ useCapabilitiesContext: () => ({ deployment: { mode: mock.mode } }) }))
 vi.mock('../../../context/ConnectionContext', () => ({ useConnection: () => ({ connection: { context: 'test' } }) }))
 vi.mock('../../../api/igdebug', () => ({
   fetchIGStatus: vi.fn(), fetchIGRun: (...args: unknown[]) => mock.fetch(...args),
@@ -34,6 +35,7 @@ const result = { id: 'run-1', target, state: 'complete', aspect: 'processes', re
 let element: HTMLDivElement
 let root: Root
 beforeEach(() => {
+  mock.mode = 'local'
   mock.status = { data: { state: 'installed' }, isLoading: false }
   mock.start.mockReset(); mock.fetch.mockReset(); mock.stop.mockReset(); mock.stop.mockResolvedValue({}); mock.query.mockClear()
   element = document.createElement('div'); root = createRoot(element)
@@ -93,6 +95,13 @@ describe('Live Debug capture identity', () => {
     expect(capture().disabled).toBe(true)
     await act(async () => root.render(<LiveDebugSection data={pod()} />))
     expect(capture().disabled).toBe(false)
+  })
+
+  it('hides unavailable instrumentation on a Cloud connection even when the backend is older', async () => {
+    mock.mode = 'cloud'
+    mock.status = { error: new RadarFeatureUnsupportedError('liveDebug', { currentVersion: 'v1.16.0' }) }
+    await act(async () => root.render(<LiveDebugSection data={pod()} />))
+    expect(element.textContent).toBe('')
   })
 
   it('renders an upgrade note for an older backend, and hides an absent installation', async () => {

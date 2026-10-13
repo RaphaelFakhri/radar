@@ -121,8 +121,10 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
     }
   }, [runID, runState, targetKey])
 
+  if (cloud) return null
+
   if (statusQuery.error instanceof RadarFeatureUnsupportedError) {
-    return <Section title="Live Debug" icon={Activity} defaultExpanded={false}><RadarUpgradeNote requirement={statusQuery.error.radarUpgrade} /></Section>
+    return <Section title="Live Debug" icon={Activity} defaultExpanded={false}><div className="mb-2 text-xs text-theme-text-secondary">Requires an existing Inspektor Gadget deployment and a direct Radar connection.</div><RadarUpgradeNote requirement={statusQuery.error.radarUpgrade} /></Section>
   }
 
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null

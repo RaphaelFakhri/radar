@@ -93,7 +93,11 @@ func (e *runtimeExecutor) Execute(ctx context.Context, request domain.Request, r
 	var output operators.DataOperator
 	switch request.Aspect {
 	case domain.AspectProcesses, domain.AspectConnections:
-		output = snapshotOperator(request.Aspect, target, enricher, reporter, markStarted, markCompleted)
+		output = snapshotOperator(request.Aspect, target, enricher, reporter, markStarted, markCompleted, func() error {
+			verifyCtx, cancel := context.WithTimeout(runCtx, 5*time.Second)
+			defer cancel()
+			return verifyTarget(verifyCtx, client, target)
+		})
 	case domain.AspectDNS:
 		output = dnsOperator(target, request.Duration, enricher, reporter, markStarted, markCompleted)
 	default:
@@ -290,8 +294,12 @@ func watchTargetEvery(ctx context.Context, client kubernetes.Interface, target d
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pod, err := client.CoreV1().Pods(target.Namespace).Get(ctx, target.Pod, metav1.GetOptions{})
+			err := verifyTarget(ctx, client, target)
 			if err != nil {
+				if errors.Is(err, domain.ErrTargetChanged) {
+					reporter.Interrupted("target Pod or container was replaced during capture")
+					return
+				}
 				if apierrors.IsNotFound(err) {
 					reporter.Interrupted("target Pod was deleted during capture")
 					return
@@ -304,12 +312,19 @@ func watchTargetEvery(ctx context.Context, client kubernetes.Interface, target d
 				continue
 			}
 			consecutiveErrors = 0
-			if string(pod.UID) != target.PodUID || pod.Spec.NodeName != target.Node || currentContainerID(pod, target.Container) != target.ContainerID {
-				reporter.Interrupted("target Pod or container was replaced during capture")
-				return
-			}
 		}
 	}
+}
+
+func verifyTarget(ctx context.Context, client kubernetes.Interface, target domain.Target) error {
+	pod, err := client.CoreV1().Pods(target.Namespace).Get(ctx, target.Pod, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if string(pod.UID) != target.PodUID || pod.Spec.NodeName != target.Node || currentContainerID(pod, target.Container) != target.ContainerID {
+		return domain.ErrTargetChanged
+	}
+	return nil
 }
 
 func currentContainerID(pod *corev1.Pod, container string) string {
@@ -324,7 +339,7 @@ func currentContainerID(pod *corev1.Pod, container string) string {
 	return ""
 }
 
-func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visibleEnricher, reporter domain.Reporter, markStarted, markCompleted func()) operators.DataOperator {
+func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visibleEnricher, reporter domain.Reporter, markStarted, markCompleted func(), verify func() error) operators.DataOperator {
 	return simple.New("radar-snapshot",
 		simple.OnInit(func(gadgetCtx operators.GadgetContext) error {
 			found := false
@@ -352,6 +367,11 @@ func snapshotOperator(aspect domain.Aspect, target domain.Target, enricher *visi
 						rows, err := domain.ParseConnections(raw, target)
 						if err != nil {
 							return err
+						}
+						if err := verify(); err != nil {
+							reporter.Interrupted(fmt.Sprintf("socket capture target could not be verified before publishing evidence: %v", err))
+							gadgetCtx.Cancel()
+							return nil
 						}
 						result.Connections = enricher.connections(rows)
 						result.Enrichment = enricher.coverage
