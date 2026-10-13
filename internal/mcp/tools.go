@@ -57,7 +57,7 @@ import (
 // steers. Put conditional advice in response guidance so it arrives when
 // relevant; otherwise describe only fields whose names are insufficient for
 // correct interpretation, not every response field.
-func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolParamRegistry) {
+func registerTools(server *mcp.Server, includeWrites, includeInstrumentation bool, paramRegistry *toolParamRegistry) {
 	boolPtr := func(b bool) *bool { return &b }
 	// All radar tools operate against the connected cluster (closed world),
 	// not the open internet — set OpenWorldHint=false so MCP clients that
@@ -557,16 +557,18 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		return
 	}
 
-	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
-		Name: "inspect_pod_runtime",
-		Description: "Collect short-lived kernel evidence for a Pod through an existing Inspektor Gadget deployment. " +
-			"Use processes to see what is running now, connections to see current TCP/UDP sockets, or dns to capture DNS answers, failures, and latency for up to 30 seconds. " +
-			"Process PIDs are host IDs. " +
-			"This is not a passive read: it temporarily loads a pinned eBPF gadget on the Pod's node, then unloads it. " +
-			"Processes and DNS are container-scoped; connections cover the Pod's shared network namespace, including sidecars, with no container attribution (host-network Pods unsupported). " +
-			"Results carry scope and pinned Pod UID/node/container identity. Requires explicit Gadget proxy RBAC; it never installs Gadget.",
-		Annotations: instrumentTool,
-	}, logToolCall("inspect_pod_runtime", handleInspectPodRuntime))
+	if includeInstrumentation {
+		addToolWithRegistry(paramRegistry, server, &mcp.Tool{
+			Name: "inspect_pod_runtime",
+			Description: "Collect short-lived kernel evidence for a Pod through an existing Inspektor Gadget deployment. " +
+				"Use processes to see what is running now, connections to see current TCP/UDP sockets, or dns to capture DNS answers, failures, and latency for up to 30 seconds. " +
+				"Process PIDs are host IDs. " +
+				"This is not a passive read: it temporarily loads a pinned eBPF gadget on the Pod's node, then unloads it. " +
+				"Processes and DNS are container-scoped; connections cover the Pod's shared network namespace, including sidecars, with no container attribution (host-network Pods unsupported). " +
+				"Results carry scope and pinned Pod UID/node/container identity. Requires explicit Gadget proxy RBAC; it never installs Gadget.",
+			Annotations: instrumentTool,
+		}, logToolCall("inspect_pod_runtime", handleInspectPodRuntime))
+	}
 
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
 		Name: "manage_workload",

@@ -152,9 +152,13 @@ your provider environment and OpenCode configuration, and runs with `--auto`:
 permission requests are approved automatically, including those from built-in
 tools and configured MCP servers; explicit denials still apply. Radar does not
 enforce a CLI sandbox. Diagnosis and follow-up use Radar's read-only investigation
-MCP. A confirmed Apply starts a separate write-enabled session, then resumes the
-original read-only session to verify the result. As with other agents using your
-normal setup, Radar cannot authenticate write results and reports the Apply
+MCP. A confirmed Apply starts a separate resource-write session on
+`/mcp-investigation-apply`. Radar's Apply transport excludes kernel instrumentation
+from both discovery and direct calls. The runner then resumes the original
+read-only session to verify the result. Normal-setup profiles can still inherit
+other MCP servers from the user's CLI configuration; this transport boundary does
+not restrict those separately configured connections. As with other agents using
+your normal setup, Radar cannot authenticate write results and reports the Apply
 outcome as uncertain until current-state verification. Terminal handoff and
 reasoning-effort controls are not available for OpenCode.
 
@@ -577,6 +581,8 @@ template-generated PVC names are not inferred. An absent omission does not by
 itself establish cache freshness or complete namespace coverage.
 
 ### Instrumentation and Write Tools
+
+Capture creation returns a retryable 503 while the connection is unavailable or a serialized cluster-subsystem rebuild is in progress (including a traffic settings restart). Existing user-owned captures can still be retrieved, stopped and subscribed to during disconnection.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|

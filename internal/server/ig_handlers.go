@@ -38,7 +38,6 @@ type igDebugService interface {
 	Stop(string, domain.Owner) (*domain.Run, error)
 	Subscribe(string, domain.Owner) (<-chan domain.StreamEvent, func(), error)
 	OnContextSwitch()
-	OnContextReady()
 }
 
 func (s *Server) handleIGStatus(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +98,7 @@ func (s *Server) handleIGCreate(w http.ResponseWriter, r *http.Request, snapshot
 	auth.AuditLog(r, body.Namespace, body.Pod)
 	run, err := s.igDebug.Start(r.Context(), request)
 	if err != nil {
-		s.writeIGError(w, err)
+		s.writeIGError(w, err, body.Namespace+"/"+body.Pod)
 		return
 	}
 	if body.Aspect == domain.AspectDNS {
@@ -121,13 +120,16 @@ func (s *Server) handleIGCreate(w http.ResponseWriter, r *http.Request, snapshot
 		s.writeJSON(w, run)
 		return
 	}
-	s.writeIGError(w, err)
+	s.writeIGError(w, err, body.Namespace+"/"+body.Pod)
 }
 
+// Retained-run reads, cancellation and subscriptions are owner-scoped in-memory
+// operations. They stay available during disconnection so cleanup and partial
+// evidence do not depend on a ready Kubernetes client.
 func (s *Server) handleIGGetRun(w http.ResponseWriter, r *http.Request) {
 	run, err := s.igDebug.Get(chi.URLParam(r, "id"), s.igOwner(r))
 	if err != nil {
-		s.writeIGError(w, err)
+		s.writeIGError(w, err, "run/"+chi.URLParam(r, "id"))
 		return
 	}
 	s.writeJSON(w, run)
@@ -136,7 +138,7 @@ func (s *Server) handleIGGetRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIGStopRun(w http.ResponseWriter, r *http.Request) {
 	run, err := s.igDebug.Stop(chi.URLParam(r, "id"), s.igOwner(r))
 	if err != nil {
-		s.writeIGError(w, err)
+		s.writeIGError(w, err, "run/"+chi.URLParam(r, "id"))
 		return
 	}
 	s.writeJSON(w, run)
@@ -145,12 +147,13 @@ func (s *Server) handleIGStopRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIGRunStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		log.Printf("[ig] Failed to stream Live Debug run %s: response writer does not support flushing", chi.URLParam(r, "id"))
 		s.writeError(w, http.StatusInternalServerError, "Streaming is not supported")
 		return
 	}
 	events, unsubscribe, err := s.igDebug.Subscribe(chi.URLParam(r, "id"), s.igOwner(r))
 	if err != nil {
-		s.writeIGError(w, err)
+		s.writeIGError(w, err, "run/"+chi.URLParam(r, "id"))
 		return
 	}
 	defer unsubscribe()
@@ -193,7 +196,7 @@ func (s *Server) igOwner(r *http.Request) domain.Owner {
 	return domain.Owner{User: username, Context: contextName}
 }
 
-func (s *Server) writeIGError(w http.ResponseWriter, err error) {
+func (s *Server) writeIGError(w http.ResponseWriter, err error, subject string) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRequest):
 		s.writeError(w, http.StatusBadRequest, err.Error())
@@ -208,7 +211,7 @@ func (s *Server) writeIGError(w http.ResponseWriter, err error) {
 	case errors.Is(err, internalig.ErrNotInstalled), errors.Is(err, internalig.ErrUnknown), errors.Is(err, internalig.ErrQuiescing):
 		s.writeError(w, http.StatusServiceUnavailable, err.Error())
 	default:
-		log.Printf("[ig] Failed to handle Live Debug request: %v", err)
+		log.Printf("[ig] Failed to handle Live Debug request %s: %v", subject, err)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 	}
 }

@@ -93,6 +93,7 @@ type Server struct {
 	mcpHandler              http.Handler
 	mcpReadOnlyHandler      http.Handler
 	mcpInvestigationHandler http.Handler
+	mcpApplyHandler         http.Handler
 	diagConfig              *DiagConfig
 	effectiveConfig         *config.Config // running config for GET /api/config
 	stopUsageData           context.CancelFunc
@@ -208,6 +209,7 @@ type Config struct {
 	StaticRoot              string                      // Path within StaticFS
 	MCPHandler              http.Handler                // MCP server handler (nil = MCP disabled)
 	MCPReadOnlyHandler      http.Handler                // public read-only MCP handler (read tools only)
+	MCPApplyHandler         http.Handler                // internal resource-write MCP handler without instrumentation
 	MCPInvestigationHandler http.Handler                // internal read-only MCP handler with evidence correlation
 	InvestigationRefs       *investigationrefs.Registry // shared private evidence issuance ledger
 	DiagConfig              *DiagConfig                 // Sanitized config for diagnostics endpoint
@@ -250,6 +252,7 @@ func New(cfg Config) *Server {
 		mcpHandler:              cfg.MCPHandler,
 		mcpReadOnlyHandler:      cfg.MCPReadOnlyHandler,
 		mcpInvestigationHandler: cfg.MCPInvestigationHandler,
+		mcpApplyHandler:         cfg.MCPApplyHandler,
 		diagConfig:              cfg.DiagConfig,
 		effectiveConfig:         cfg.EffectiveConfig,
 		promURLFlag:             cfg.PrometheusURLFlag,
@@ -295,7 +298,6 @@ func New(cfg Config) *Server {
 	// for mcpPermCache.
 	k8s.OnContextSwitch(func(_ string) {
 		s.finalizePostContextSwitch()
-		s.igDebug.OnContextReady()
 		// Alongside the subsystem resets in PerformContextSwitch (prometheus,
 		// traffic, helm): the Argo CD connection references the previous
 		// cluster's endpoint/port-forward.
@@ -913,6 +915,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	r.Handle("/mcp/.well-known/*", http.NotFoundHandler())
 	r.Handle("/mcp-readonly/.well-known/*", http.NotFoundHandler())
 	r.Handle("/mcp-investigation/.well-known/*", http.NotFoundHandler())
+	r.Handle("/mcp-investigation-apply/.well-known/*", http.NotFoundHandler())
 
 	// MCP server (Model Context Protocol for AI tools)
 	if s.mcpHandler != nil {
@@ -920,6 +923,9 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	}
 	if s.mcpReadOnlyHandler != nil {
 		r.Mount("/mcp-readonly", s.mcpReadOnlyHandler)
+	}
+	if s.mcpApplyHandler != nil {
+		r.Mount("/mcp-investigation-apply", s.mcpApplyHandler)
 	}
 	if s.mcpInvestigationHandler != nil {
 		r.Mount("/mcp-investigation", s.mcpInvestigationHandler)

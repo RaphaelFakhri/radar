@@ -274,7 +274,9 @@ func (m *Manager) reporterStarted(id string, target Target) {
 	defer m.mu.Unlock()
 	if run := m.runs[id]; run != nil && !run.view.State.Terminal() {
 		run.view.Target = target
-		run.view.State = StateRunning
+		if run.view.State == StateStarting {
+			run.view.State = StateRunning
+		}
 		run.view.UpdatedAt = time.Now().UTC()
 		m.broadcastLocked(run, StreamEvent{Type: "state", Run: runView(run)})
 	}

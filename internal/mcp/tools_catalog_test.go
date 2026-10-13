@@ -630,7 +630,7 @@ func listRegisteredToolsWithRegistry(t *testing.T, includeWrites bool) ([]*mcpsd
 
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "radar-test", Version: "test"}, nil)
 	registry := newToolParamRegistry()
-	registerTools(server, includeWrites, registry)
+	registerTools(server, includeWrites, includeWrites, registry)
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "radar-test-client", Version: "test"}, nil)
 	ctx := context.Background()
@@ -707,4 +707,28 @@ func TestRuntimeInstrumentationIsNotAnInvestigationApproval(t *testing.T) {
 		}
 	}
 	t.Fatal("runtime instrumentation is missing from the full external catalog")
+}
+
+func TestInvestigationApplyCatalogExcludesKernelInstrumentation(t *testing.T) {
+	session := connectTo(t, newServerWithInstrumentation(true, false))
+	result, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tool := range result.Tools {
+		seen[tool.Name] = true
+		if !investigation.IsReadOnlyTool(tool.Name) && !investigation.IsWriteTool(tool.Name) {
+			t.Errorf("Apply transport exposes an unapproved tool: %s", tool.Name)
+		}
+	}
+	for _, name := range investigation.WriteTools {
+		if !seen[name] {
+			t.Errorf("Apply transport is missing resource-write tool: %s", name)
+		}
+	}
+	_, err = session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "inspect_pod_runtime", Arguments: map[string]any{"namespace": "app", "pod": "api", "aspect": "processes"}})
+	if err == nil {
+		t.Fatal("Apply transport accepted a direct runtime capture call")
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	domain "github.com/skyhook-io/radar/pkg/igdebug"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,15 +39,17 @@ func TestStatusRetriesWithActingUserWhenSharedDiscoveryIsDenied(t *testing.T) {
 	}
 }
 
-func TestStartIsQuiescedUntilContextReady(t *testing.T) {
+func TestStartRecoversWithoutASuccessOnlySwitchCallback(t *testing.T) {
 	service := NewService("")
 	service.sharedClient = func() kubernetes.Interface { return fake.NewSimpleClientset() }
+	ready := false
+	service.connectionReady = func() bool { return ready }
 	service.OnContextSwitch()
 	request := domain.Request{Aspect: domain.AspectProcesses}
 	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrQuiescing) {
 		t.Fatalf("Start during transition = %v", err)
 	}
-	service.OnContextReady()
+	ready = true
 	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("Start after transition = %v", err)
 	}
@@ -55,17 +58,19 @@ func TestStartIsQuiescedUntilContextReady(t *testing.T) {
 func TestContextSwitchDoesNotWaitForDiscovery(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	entered, release := make(chan struct{}), make(chan struct{})
+	var enteredOnce sync.Once
 	client.PrependReactor("list", "daemonsets", func(ktesting.Action) (bool, runtime.Object, error) {
-		close(entered)
+		enteredOnce.Do(func() { close(entered) })
 		<-release
 		return true, &appsv1.DaemonSetList{}, nil
 	})
 	service := NewService("")
 	service.sharedClient = func() kubernetes.Interface { return client }
-	started := make(chan struct{})
+	service.connectionReady = func() bool { return true }
+	started := make(chan error, 1)
 	go func() {
-		defer close(started)
-		_, _ = service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses})
+		_, err := service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses})
+		started <- err
 	}()
 	<-entered
 	quiesced := make(chan struct{})
@@ -77,8 +82,25 @@ func TestContextSwitchDoesNotWaitForDiscovery(t *testing.T) {
 		t.Fatal("context switch waited for capture discovery")
 	}
 	close(release)
-	<-started
-	if _, err := service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses}); !errors.Is(err, ErrQuiescing) {
-		t.Fatalf("admitted a capture after teardown: %v", err)
+	if err := <-started; !errors.Is(err, ErrQuiescing) {
+		t.Fatalf("admitted discovery from a retired generation: %v", err)
+	}
+	if _, err := service.Start(context.Background(), domain.Request{Aspect: domain.AspectProcesses}); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("new requests remain latched after a switch without a success callback: %v", err)
+	}
+}
+
+func TestStartChecksConnectionReadinessWithoutASwitchHook(t *testing.T) {
+	service := NewService("")
+	ready := false
+	service.connectionReady = func() bool { return ready }
+	service.sharedClient = func() kubernetes.Interface { return fake.NewSimpleClientset() }
+	request := domain.Request{Aspect: domain.AspectProcesses}
+	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrQuiescing) {
+		t.Fatalf("Start while disconnected = %v", err)
+	}
+	ready = true
+	if _, err := service.Start(context.Background(), request); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Start after recovery = %v", err)
 	}
 }

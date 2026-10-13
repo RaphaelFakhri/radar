@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	ErrQuiescing    = errors.New("cluster connection is changing; retry after it is ready")
+	ErrQuiescing    = errors.New("cluster connection or subsystems are not ready; retry after recovery")
 	ErrNotInstalled = errors.New("Inspektor Gadget is not installed in this cluster")
 	ErrUnknown      = errors.New("unable to verify Inspektor Gadget installation")
 )
@@ -40,12 +40,12 @@ type Status struct {
 
 type Service struct {
 	mu                sync.Mutex
-	quiescing         bool
 	generation        uint64
 	manager           *domain.Manager
 	registry          string
 	sharedClient      func() kubernetes.Interface
 	clientFromContext func(context.Context) kubernetes.Interface
+	connectionReady   func() bool
 }
 
 var (
@@ -83,6 +83,9 @@ func NewService(registry string) *Service {
 			return nil
 		},
 		clientFromContext: k8s.ClientFromContext,
+		connectionReady: func() bool {
+			return k8s.IsConnected() && !k8s.ContextOperationInProgress()
+		},
 	}
 }
 
@@ -119,9 +122,9 @@ func statusWithClient(ctx context.Context, client kubernetes.Interface) Status {
 
 func (s *Service) Start(ctx context.Context, request domain.Request) (*domain.Run, error) {
 	s.mu.Lock()
-	generation, quiescing := s.generation, s.quiescing
+	generation := s.generation
 	s.mu.Unlock()
-	if quiescing {
+	if !s.connectionReady() {
 		return nil, ErrQuiescing
 	}
 	if err := domain.ValidateDuration(request.Aspect, request.Duration); err != nil {
@@ -130,6 +133,12 @@ func (s *Service) Start(ctx context.Context, request domain.Request) (*domain.Ru
 	statusCtx, cancelStatus := context.WithTimeout(ctx, 5*time.Second)
 	status := s.Status(statusCtx)
 	cancelStatus()
+	s.mu.Lock()
+	changed := s.generation != generation || !s.connectionReady()
+	s.mu.Unlock()
+	if changed {
+		return nil, ErrQuiescing
+	}
 	if status.State != StateInstalled {
 		if status.State == StateNotInstalled {
 			return nil, ErrNotInstalled
@@ -154,7 +163,7 @@ func (s *Service) Start(ctx context.Context, request domain.Request) (*domain.Ru
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.quiescing || s.generation != generation {
+	if !s.connectionReady() || s.generation != generation {
 		return nil, ErrQuiescing
 	}
 	if err := ctx.Err(); err != nil {
@@ -185,16 +194,9 @@ func (s *Service) Subscribe(id string, owner domain.Owner) (<-chan domain.Stream
 
 func (s *Service) OnContextSwitch() {
 	s.mu.Lock()
-	s.quiescing = true
 	s.generation++
 	s.mu.Unlock()
 	s.manager.OnContextSwitch()
-}
-
-func (s *Service) OnContextReady() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.quiescing = false
 }
 
 func chooseDaemonSet(items []appsv1.DaemonSet) appsv1.DaemonSet {

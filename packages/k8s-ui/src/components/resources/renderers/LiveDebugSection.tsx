@@ -214,7 +214,7 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
         <div className="max-h-72 overflow-auto table-divide-subtle">
           {(result.connections || []).map((connection, index) => (
             <div key={`${connection.local.address}-${connection.local.port}-${connection.remote.address}-${connection.remote.port}-${index}`} className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 py-1.5 text-xs">
-              <span className="badge-sm status-neutral">{connection.state}</span>
+              <Badge severity="neutral" size="sm">{connection.state}</Badge>
               <div className="min-w-0 text-theme-text-secondary">
                 <EndpointView endpoint={connection.local} onNavigate={onNavigate} />
                 <span className="mx-1.5 text-theme-text-tertiary">→</span>

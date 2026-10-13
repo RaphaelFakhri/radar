@@ -472,3 +472,57 @@ func TestRuntimeCannotCompleteWithoutEvidence(t *testing.T) {
 		t.Fatalf("empty runtime completion was presented as evidence: %#v", view)
 	}
 }
+
+func TestLateStartupCannotResumeAStoppingRun(t *testing.T) {
+	for _, interruption := range []bool{false, true} {
+		t.Run(fmt.Sprintf("interruption=%t", interruption), func(t *testing.T) {
+			manager := NewManager(DefaultLimits())
+			owner := Owner{User: "alice", Context: "test"}
+			reporters := make(chan Reporter, 1)
+			start, reported, finish := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(ctx context.Context, req Request, reporter Reporter) error {
+				reporters <- reporter
+				<-start
+				req.Target.ContainerID = "resolved-id"
+				reporter.Started(req.Target)
+				close(reported)
+				<-finish
+				return ctx.Err()
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reporter := <-reporters
+			events, unsubscribe, err := manager.Subscribe(run.ID, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unsubscribe()
+			if interruption {
+				reporter.Interrupted("target container was replaced")
+			} else if _, err := manager.Stop(run.ID, owner); err != nil {
+				t.Fatal(err)
+			}
+			close(start)
+			<-reported
+			view, err := manager.Get(run.ID, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.State != StateStopping || view.Target.ContainerID != "resolved-id" {
+				t.Fatalf("late startup view = %#v", view)
+			}
+			close(finish)
+			state := StateStopped
+			if interruption {
+				state = StatePartial
+			}
+			waitForState(t, manager, run.ID, owner, state)
+			for event := range events {
+				if event.Run != nil && event.Run.State == StateRunning {
+					t.Fatalf("late startup resumed stopping capture: %#v", event)
+				}
+			}
+		})
+	}
+}

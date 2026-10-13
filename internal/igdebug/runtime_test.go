@@ -97,9 +97,14 @@ func TestWatchTargetToleratesTransientGetFailures(t *testing.T) {
 	})
 	reporter := &captureReporter{partial: make(chan string, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
-	go watchTargetEvery(ctx, client, domain.Target{Namespace: "app", Pod: "api", PodUID: "old-uid", Node: "node-a", Container: "first", ContainerID: "old-id"}, reporter, time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watchTargetEvery(ctx, client, domain.Target{Namespace: "app", Pod: "api", PodUID: "old-uid", Node: "node-a", Container: "first", ContainerID: "old-id"}, reporter, time.Millisecond)
+	}()
 	time.Sleep(10 * time.Millisecond)
 	cancel()
+	<-done
 	select {
 	case reason := <-reporter.partial:
 		t.Fatalf("transient failures ended capture: %s", reason)
@@ -325,5 +330,51 @@ func TestDNSPublicationRetainsFilteredEvidenceWhenTargetVerificationFails(t *tes
 		}
 	default:
 		t.Fatal("target replacement was not qualified")
+	}
+}
+
+func TestResolvedNetworkScopeUsesTargetContainersInsteadOfGadgetContainers(t *testing.T) {
+	pod := targetPod("target-uid", "containerd://app-id", "containerd://sidecar-id")
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+		{Name: "native-sidecar", ContainerID: "containerd://native-id", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		{Name: "finished-init", ContainerID: "containerd://finished-id", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}},
+	}
+	pod.Status.EphemeralContainerStatuses = []corev1.ContainerStatus{
+		{Name: "debug", ContainerID: "containerd://debug-id", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+	}
+	gadget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "gadget-node-a", Namespace: "gadget", Labels: map[string]string{"k8s-app": "gadget"}},
+		Spec:       corev1.PodSpec{NodeName: "node-a"},
+		Status: corev1.PodStatus{
+			Conditions:        []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "gadget", ContainerID: "containerd://gadget-id", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}},
+		},
+	}
+	target, err := resolveTarget(context.Background(), fake.NewSimpleClientset(pod, gadget), "gadget", domain.Target{Namespace: "app", Pod: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`[
+		{"runtime":{"containerId":"app-id"},"src":{"port":8080}},
+		{"runtime":{"containerId":"sidecar-id"},"src":{"port":8081}},
+		{"runtime":{"containerId":"native-id"},"src":{"port":8082}},
+		{"runtime":{"containerId":"debug-id"},"src":{"port":8083}},
+		{"runtime":{"containerId":"gadget-id"},"src":{"port":9999}},
+		{"runtime":{"containerId":"finished-id"},"src":{"port":9998}},
+		{"runtime":{"containerId":"other-id"},"src":{"port":9997}},
+		{"k8s":{"namespace":"app","podName":"api"},"src":{"port":8084}},
+		{"k8s":{"namespace":"other","podName":"api"},"src":{"port":9996}}
+	]`)
+	rows, err := domain.ParseConnections(raw, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(target.NetworkContainerIDs) != 4 || len(rows) != 5 {
+		t.Fatalf("resolved target %#v, rows %#v", target, rows)
+	}
+	for i, row := range rows {
+		if int(row.Local.Port) != 8080+i {
+			t.Fatalf("socket scope includes a daemon/foreign container or drops a target container: %#v", rows)
+		}
 	}
 }

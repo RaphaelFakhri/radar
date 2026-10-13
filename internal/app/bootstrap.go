@@ -564,6 +564,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		serverCfg.MCPHandler = mcppkg.NewHandler()
 		serverCfg.MCPReadOnlyHandler = mcppkg.NewReadOnlyHandler()
 		serverCfg.MCPInvestigationHandler = mcppkg.NewInvestigationHandler(evidenceRefs)
+		serverCfg.MCPApplyHandler = mcppkg.NewInvestigationApplyHandler()
 	}
 
 	return server.New(serverCfg)

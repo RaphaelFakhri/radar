@@ -54,7 +54,6 @@ func (f *fakeIGDebugService) Subscribe(_ string, owner domain.Owner) (<-chan dom
 }
 
 func (f *fakeIGDebugService) OnContextSwitch() {}
-func (f *fakeIGDebugService) OnContextReady()  {}
 
 func TestIGSnapshotReturnsDataReadyResultAndForwardsOwner(t *testing.T) {
 	connectedForIGTest(t)
