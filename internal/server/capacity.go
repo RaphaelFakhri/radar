@@ -1,7 +1,6 @@
 package server
 
 import (
-	"github.com/go-chi/chi/v5"
 	"log"
 	"net/http"
 	"net/url"
@@ -9,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -442,7 +442,7 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request, ident
 	result.meta.Provider = capacityProvider(result.meta.Provider, nodePools, nodeClaims, nodeClasses, result.meta.Coverage)
 	resourceCache := k8s.GetResourceCache()
 	ownerResolutionAllowed, workloadAttributionPartial := capacityOwnerResolutionPermissions(pods, func(group, resource, namespace string) bool {
-		return s.canRead(r, group, resource, namespace, "list") && readscope.CacheCoversNamespace(resourceCache, resource, namespace)
+		return resourceCache != nil && s.canRead(r, group, resource, namespace, "list") && readscope.CacheCoversNamespace(resourceCache, resource, namespace)
 	})
 	if workloadAttributionPartial {
 		coverage := result.meta.Coverage[capacityapi.CoverageWorkloads]

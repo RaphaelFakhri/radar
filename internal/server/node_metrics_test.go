@@ -1,7 +1,6 @@
 package server
 
 import (
-	"github.com/skyhook-io/radar/internal/readscope"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -10,6 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/skyhook-io/radar/internal/readscope"
 )
 
 func TestListPodsScoped_SentinelContract(t *testing.T) {
