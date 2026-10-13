@@ -93,16 +93,17 @@ var applicationsCacheMaxEntries = 256
 var (
 	applicationsCacheMu         sync.Mutex
 	applicationsCache           = map[string]applicationsCacheEntry{}
+	applicationsGraphCache      = map[string]applicationsCacheEntry{}
 	applicationsBuildSF         singleflight.Group
+	applicationsGraphBuildSF    singleflight.Group
 	applicationsCacheGeneration uint64
 )
 
 type applicationsCacheEntry struct {
-	at      time.Time
-	rows    []appRow
-	claims  []argoClaim
-	graph   *appGraph
-	graphAt time.Time
+	at     time.Time
+	rows   []appRow
+	claims []argoClaim
+	graph  *appGraph
 }
 
 // appRow is one logical app in this cluster.
@@ -576,7 +577,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 		return nil, errResourceCacheUnavailable
 	}
 	applicationsCacheMu.Lock()
-	cacheKey := fmt.Sprintf("%d|%s|graph:%s", applicationsCacheGeneration, applicationsCacheKeyFor(namespaces, canListClusterWorkflowTemplates), applicationsCacheKeyFor(graphNamespaces, canListClusterWorkflowTemplates))
+	cacheKey := fmt.Sprintf("%d|%d|%s|graph:%s", applicationsCacheGeneration, cache.Generation(), applicationsCacheKeyFor(namespaces, canListClusterWorkflowTemplates), applicationsCacheKeyFor(graphNamespaces, canListClusterWorkflowTemplates))
 	entry, hit := applicationsCache[cacheKey]
 	applicationsCacheMu.Unlock()
 	if hit && time.Since(entry.at) < applicationsCacheTTL {
@@ -594,12 +595,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 		buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 
-		g := entry.graph
-		graphAt := entry.graphAt
-		if g == nil || time.Since(graphAt) >= applicationsGraphCacheTTL {
-			g = buildAppGraph(cache, graphNamespaces)
-			graphAt = time.Now()
-		}
+		g := cachedAppGraph(cache, graphNamespaces)
 		wls := collectAppWorkloads(buildCtx, cache, namespaces, g, canListClusterWorkflowTemplates)
 		rows := groupApplications(wls)
 		sourcePaths, appSetChildren, argoItems := argoApplicationFacts(buildCtx, cache)
@@ -610,9 +606,9 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 		claims := collectArgoClaims(argoItems, sourcePaths, appSetByKey, namespaces)
 		applicationsCacheMu.Lock()
 		if len(applicationsCache) >= applicationsCacheMaxEntries {
-			evictOldestApplicationsCacheEntry()
+			evictOldestApplicationsCacheEntry(applicationsCache)
 		}
-		applicationsCache[cacheKey] = applicationsCacheEntry{at: time.Now(), rows: rows, claims: claims, graph: g, graphAt: graphAt}
+		applicationsCache[cacheKey] = applicationsCacheEntry{at: time.Now(), rows: rows, claims: claims}
 		applicationsCacheMu.Unlock()
 		return &applicationsResponse{Applications: rows, ArgoClaims: claims}, nil
 	})
@@ -622,11 +618,40 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 	return value.(*applicationsResponse), nil
 }
 
-func evictOldestApplicationsCacheEntry() {
+// cachedAppGraph shares immutable ownership evidence across namespace picks.
+// Its key depends on the cache source and readable scope, not selected workloads.
+func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
+	applicationsCacheMu.Lock()
+	key := fmt.Sprintf("%d|%d|%s", applicationsCacheGeneration, cache.Generation(), applicationsCacheKeyFor(namespaces, true))
+	entry, hit := applicationsGraphCache[key]
+	applicationsCacheMu.Unlock()
+	if hit && time.Since(entry.at) < applicationsGraphCacheTTL {
+		return entry.graph
+	}
+	value, _, _ := applicationsGraphBuildSF.Do(key, func() (any, error) {
+		applicationsCacheMu.Lock()
+		entry, hit := applicationsGraphCache[key]
+		applicationsCacheMu.Unlock()
+		if hit && time.Since(entry.at) < applicationsGraphCacheTTL {
+			return entry.graph, nil
+		}
+		graph := buildAppGraph(cache, namespaces)
+		applicationsCacheMu.Lock()
+		if len(applicationsGraphCache) >= applicationsCacheMaxEntries {
+			evictOldestApplicationsCacheEntry(applicationsGraphCache)
+		}
+		applicationsGraphCache[key] = applicationsCacheEntry{at: time.Now(), graph: graph}
+		applicationsCacheMu.Unlock()
+		return graph, nil
+	})
+	return value.(*appGraph)
+}
+
+func evictOldestApplicationsCacheEntry(entries map[string]applicationsCacheEntry) {
 	var oldestKey string
 	var oldestAt time.Time
 	first := true
-	for k, e := range applicationsCache {
+	for k, e := range entries {
 		if first || e.at.Before(oldestAt) {
 			oldestKey = k
 			oldestAt = e.at
@@ -634,13 +659,14 @@ func evictOldestApplicationsCacheEntry() {
 		}
 	}
 	if !first {
-		delete(applicationsCache, oldestKey)
+		delete(entries, oldestKey)
 	}
 }
 
 func clearApplicationsCache() {
 	applicationsCacheMu.Lock()
 	applicationsCache = map[string]applicationsCacheEntry{}
+	applicationsGraphCache = map[string]applicationsCacheEntry{}
 	applicationsCacheGeneration++
 	applicationsCacheMu.Unlock()
 }

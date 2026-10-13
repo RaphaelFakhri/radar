@@ -47,15 +47,15 @@ type Builder func(obj runtime.Object, u *unstructured.Unstructured, group, kind,
 // its preferred source (REST: broadcaster cache; MCP: short-TTL
 // memoizer). nil topo is fine — managedBy is omitted but issueCount
 // still resolves.
-func BuilderFromIndexes(ctx context.Context, topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex, checker resourcecontext.RefAccessChecker) Builder {
+func BuilderFromIndexes(ctx context.Context, topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex, relIdx *topology.RelationshipsIndex, checker resourcecontext.RefAccessChecker) Builder {
 	resourceProvider := k8s.NewTopologyResourceProvider(k8s.GetResourceCache())
 	dynamicProvider := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
-	// One inverted-edges index per request — without it each
+	// Reuse the index for this exact snapshot when supplied, otherwise build
+	// one inverted-edges index per request — without it each
 	// GetRelationships call would re-scan topo.Edges in O(E), turning
 	// the list/search hot path into O(N × E). See pkg/topology T3.
-	var relIdx *topology.RelationshipsIndex
-	if topo != nil {
+	if topo != nil && relIdx == nil {
 		relIdx = topology.IndexByResource(topo)
 	}
 

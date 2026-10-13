@@ -36,7 +36,7 @@ func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) 
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
-	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), idx, idx, newMCPRequestScopedChecker(ctx))
+	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), idx, idx, nil, newMCPRequestScopedChecker(ctx))
 }
 
 // newSearchSummaryContextBuilder is the MCP search variant. Mirrors
@@ -56,7 +56,7 @@ func newSearchSummaryContextBuilder(ctx context.Context, scanNamespaces []string
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
 	}
-	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), namespacedIdx, clusterIdx, newMCPRequestScopedChecker(ctx))
+	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), namespacedIdx, clusterIdx, nil, newMCPRequestScopedChecker(ctx))
 }
 
 // summaryCtxTopoMemo caches topology builds for the list_resources and search

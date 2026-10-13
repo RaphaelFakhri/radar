@@ -503,8 +503,11 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 		families: s.readablePolicyReportFamilies(r, namespace),
 	}
 
-	if topo, prov, dyn, ok := s.topologyForContext(); ok {
+	if topo, prov, dyn, relIdx, ok := s.topologyForContext(); ok {
 		opts.Topology = s.relationshipTopologyForUser(r, topo)
+		if opts.Topology == topo {
+			opts.RelIndex = relIdx
+		}
 		opts.Provider = prov
 		opts.DynamicProv = dyn
 		// Relationships are computed inside Build via GetRelationshipsWithObject,
@@ -522,16 +525,16 @@ func (s *Server) buildAIResourceContext(r *http.Request, obj runtime.Object, kin
 // namespace is a view scope, not an ownership boundary: its Flux manager may
 // live in flux-system. The caller filters this shared graph before using it.
 // Returns ok=false when the cache isn't ready yet.
-func (s *Server) topologyForContext() (*topology.Topology, topology.ResourceProvider, topology.DynamicProvider, bool) {
+func (s *Server) topologyForContext() (*topology.Topology, topology.ResourceProvider, topology.DynamicProvider, *topology.RelationshipsIndex, bool) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 	if s.broadcaster != nil {
-		if topo := s.broadcaster.GetCachedTopology(); topo != nil {
-			return topo, provider, dyn, true
+		if topo, idx := s.broadcaster.GetCachedTopologyWithIndex(); topo != nil {
+			return topo, provider, dyn, idx, true
 		}
 	}
 
@@ -544,9 +547,9 @@ func (s *Server) topologyForContext() (*topology.Topology, topology.ResourceProv
 		return topology.NewBuilder(provider).WithDynamic(dyn).Build(opts)
 	})
 	if err != nil || topo == nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	return topo, provider, dyn, true
+	return topo, provider, dyn, topology.IndexByResource(topo), true
 }
 
 // computeIssueSummaryForResource rolls up per-resource issue-composer rows

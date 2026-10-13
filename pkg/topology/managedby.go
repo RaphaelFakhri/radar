@@ -64,7 +64,7 @@ func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *
 	}
 	identity := resourceid.ResolveCurrent(resourceid.OptionalGroupReference(group, kind, namespace, name), nil).Ref
 	target := ResourceRef{Kind: identity.Kind, Group: identity.Group, Namespace: namespace, Name: name}
-	if ref := detectManagedByFromMeta(obj); ref != nil && idx.AcceptsManagerHint(*ref, target) {
+	if ref := detectManagedByFromMeta(obj, idx, target); ref != nil {
 		// detectManagedByFromMeta hand-sets Group for GitOps/Flux managers; do
 		// NOT call enrichRef here — it would overwrite the deliberate group
 		// with the result of a dp lookup keyed on the manager kind, which
@@ -79,7 +79,7 @@ func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *
 }
 
 func synthesizeManagedByFromNode(obj metav1.Object, nodeID string, target ResourceRef, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) []ResourceRef {
-	if ref := detectManagedByFromMeta(obj); ref != nil && idx.AcceptsManagerHint(*ref, target) {
+	if ref := detectManagedByFromMeta(obj, idx, target); ref != nil {
 		return []ResourceRef{*ref}
 	}
 	if top := walkTopmostOwnerFromNodeID(nodeID, topo, dp, idx); top != nil {
@@ -152,9 +152,10 @@ func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef) bool 
 }
 
 // detectManagedByFromMeta inspects labels/annotations on obj for GitOps / Helm
-// ownership signals and returns the implied manager ref. Returns nil if no
-// signal is present. Mirrors detectGitOpsOwner precedence in the web package.
-func detectManagedByFromMeta(obj metav1.Object) *ResourceRef {
+// ownership signals and returns the strongest accepted manager ref. Inventory
+// can reject a stale Flux signal without discarding weaker metadata evidence.
+// Returns nil if no signal is accepted.
+func detectManagedByFromMeta(obj metav1.Object, idx *RelationshipsIndex, target ResourceRef) *ResourceRef {
 	if obj == nil {
 		return nil
 	}
@@ -162,19 +163,25 @@ func detectManagedByFromMeta(obj metav1.Object) *ResourceRef {
 	annos := obj.GetAnnotations()
 
 	if name, ns := labels[fluxHelmNameLabel], labels[fluxHelmNSLabel]; name != "" && ns != "" {
-		return &ResourceRef{
+		ref := ResourceRef{
 			Kind:      "HelmRelease",
 			Group:     fluxHelmGroup,
 			Namespace: ns,
 			Name:      name,
 		}
+		if idx.AcceptsManagerHint(ref, target) {
+			return &ref
+		}
 	}
 	if name, ns := labels[fluxKustomizeNameLabel], labels[fluxKustomizeNSLabel]; name != "" && ns != "" {
-		return &ResourceRef{
+		ref := ResourceRef{
 			Kind:      "Kustomization",
 			Group:     fluxKustomizeGroup,
 			Namespace: ns,
 			Name:      name,
+		}
+		if idx.AcceptsManagerHint(ref, target) {
+			return &ref
 		}
 	}
 

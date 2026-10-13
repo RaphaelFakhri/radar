@@ -50,7 +50,7 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 		t.Fatal("HelmRelease cache did not sync")
 	}
 	env := newAuthTestServer(t)
-	shared, _, _, ok := env.srv.topologyForContext()
+	shared, _, _, _, ok := env.srv.topologyForContext()
 	if !ok || !env.srv.broadcaster.updateCachedTopology(shared, env.srv.broadcaster.topoEpoch.Load()) {
 		t.Fatal("could not seed the shared relationship snapshot")
 	}
@@ -81,6 +81,9 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 				if user != "" {
 					if summary != nil && summary.ManagedBy != nil && summary.ManagedBy.Namespace == "gitops" {
 						t.Fatalf("hidden summary manager leaked: %+v", summary)
+					}
+					if target.Name == "web-pod" && (summary == nil || summary.ManagedBy == nil || summary.ManagedBy.Kind != "Deployment" || summary.ManagedBy.Name != "web") {
+						t.Fatalf("readable native ancestor lost: %+v", summary)
 					}
 				} else if summary == nil || summary.ManagedBy == nil || summary.ManagedBy.Name != "actual" {
 					t.Fatalf("%s summary=%+v", target.Name, summary)
@@ -117,5 +120,17 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 		} else if row.SourceRef == nil || row.SourceRef.Name != "actual" || row.SourceRef.Namespace != "gitops" {
 			t.Fatalf("namespace pick lost readable manager: %+v", row.SourceRef)
 		}
+	}
+}
+
+func TestApplicationsGraphCacheDoesNotCrossSources(t *testing.T) {
+	clearApplicationsCache()
+	t.Cleanup(clearApplicationsCache)
+	useTestResourceCache(t, clusterWithDeployment("old-web"))
+	before := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"})
+	useTestResourceCache(t, clusterWithDeployment("new-web"))
+	after := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"})
+	if after.byID["deployment/demo/new-web"].Name != "new-web" || after.byID["deployment/demo/old-web"].Name != "" || before.byID["deployment/demo/old-web"].Name != "old-web" {
+		t.Fatal("graph cache crossed source generations or mutated the old snapshot")
 	}
 }
