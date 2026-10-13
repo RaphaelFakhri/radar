@@ -732,6 +732,17 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	}
 	sourceNamespaces := namespaces
 	assessment := cache.AssessKindRead("pods", sourceNamespaces)
+	if len(assessment.Uncovered) > 0 && len(assessment.Uncovered) == len(sourceNamespaces) {
+		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
+		coverage.Scope = capacityapi.CoverageScopeAllAuthorizedNamespaces
+		if explicit {
+			coverage.Scope = capacityapi.CoverageScopeExplicitNamespaces
+		}
+		coverage.Namespaces = []string{}
+		meta.Coverage[capacityapi.CoveragePods] = coverage
+		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
+		return nil
+	}
 	if assessment.Readiness != k8s.KindReady {
 		coverage := unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		switch assessment.Readiness {
