@@ -240,6 +240,14 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 		if sourceTopoID == "" {
 			continue
 		}
+		if source, ok := topoByID[sourceTopoID]; ok && id != rootNode.ID {
+			ref := refFromTopologyNode(source)
+			if topology.IsGitOpsManagerKind(source.Kind, ref.Group) {
+				// Nested managers remain portals to their own tree. Their
+				// inventory and generated descendants belong to that tree.
+				continue
+			}
+		}
 		for _, e := range adj[sourceTopoID] {
 			targetTopo, ok := topoByID[e.Target]
 			if !ok {
