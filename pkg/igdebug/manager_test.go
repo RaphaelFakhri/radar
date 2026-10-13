@@ -360,3 +360,26 @@ func TestSnapshotRowsAreCappedWithoutLosingObservedCount(t *testing.T) {
 		t.Fatalf("snapshot cap lost count or truncation: %#v", view.Result)
 	}
 }
+
+func TestPartialKeepsTheFirstCause(t *testing.T) {
+	manager := NewManager(DefaultLimits())
+	owner := Owner{User: "alice", Context: "test"}
+	run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(_ context.Context, req Request, reporter Reporter) error {
+		reporter.Started(req.Target)
+		reporter.Partial("target container was replaced")
+		reporter.Partial("runtime cleanup could not be confirmed")
+		return context.Canceled
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	view, err := manager.WaitDone(ctx, run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.State != StatePartial || view.Reason != "target container was replaced" {
+		t.Fatalf("lost the first capture cause: %#v", view)
+	}
+}

@@ -16,7 +16,7 @@ export async function startIGCapture(input: {
   namespace: string
   pod: string
   podUid: string
-  containerId: string
+  containerId?: string
   container: string
   aspect: LiveDebugAspect
   durationSeconds: number
@@ -29,8 +29,8 @@ export async function startIGCapture(input: {
   })
 }
 
-export async function fetchIGRun(id: string): Promise<LiveDebugRun> {
-  return fetchJSON<LiveDebugRun>(`/ig/runs/${encodeURIComponent(id)}`)
+export async function fetchIGRun(id: string, signal?: AbortSignal): Promise<LiveDebugRun> {
+  return fetchJSON<LiveDebugRun>(`/ig/runs/${encodeURIComponent(id)}`, { signal })
 }
 
 export async function stopIGRun(id: string): Promise<LiveDebugRun> {

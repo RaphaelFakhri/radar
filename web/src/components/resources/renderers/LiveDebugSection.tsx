@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RadarUpgradeNote, getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
+import { RadarUpgradeNote, getDefaultContainerName, getDefaultRunningContainerName } from '@skyhook-io/k8s-ui'
 import {
   LiveDebugSection as BaseLiveDebugSection,
   type LiveDebugAspect,
   type LiveDebugRun,
 } from '@skyhook-io/k8s-ui/components/resources/renderers/LiveDebugSection'
-import { useRadarFeature } from '../../../api/client'
+import { ApiError, useRadarFeature } from '../../../api/client'
 import { RadarFeatureUnsupportedError } from '../../../api/radarFeatures'
 import { getApiBase } from '../../../api/config'
 import { useCapabilitiesContext } from '../../../contexts/CapabilitiesContext'
@@ -25,17 +25,8 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const { connection } = useConnection()
   const namespace = data.metadata?.namespace || ''
   const pod = data.metadata?.name || ''
-  const containers = useMemo(() => {
-    const running = new Set(
-      (data.status?.containerStatuses || [])
-        .filter((status: any) => status.state?.running != null)
-        .map((status: any) => status.name),
-    )
-    return (data.spec?.containers || [])
-      .map((container: any) => container.name as string)
-      .filter((name: string) => running.has(name))
-  }, [data.spec?.containers, data.status?.containerStatuses])
-  const defaultContainer = getDefaultRunningContainerName(data) || ''
+  const containers = useMemo(() => (data.spec?.containers || []).map((container: any) => container.name as string), [data.spec?.containers])
+  const defaultContainer = getDefaultRunningContainerName(data) || getDefaultContainerName(data) || ''
   const [selectedContainer, setSelectedContainer] = useState(defaultContainer)
   const [run, setRun] = useState<LiveDebugRun>()
   const [error, setError] = useState<string>()
@@ -46,8 +37,14 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   const [pending, setPending] = useState(false)
   const generation = useRef(0)
   const busy = useRef(false)
-  const containerID = data.status?.containerStatuses?.find((status: any) => status.name === selectedContainer)?.containerID
-  const targetKey = `${apiBase}:${connection.context}:${data.metadata?.uid}:${containerID}`
+  const containerStatus = data.status?.containerStatuses?.find((status: any) => status.name === selectedContainer)
+  const containerID = containerStatus?.containerID
+  const currentContainerID = useRef(containerID)
+  currentContainerID.current = containerID
+  const running = containerStatus?.state?.running != null
+  const normalizedContainerID = containerID?.replace(/^.*?:\/\//, '')
+  const targetChanged = !!run?.target.containerId && !!normalizedContainerID && run.target.containerId !== normalizedContainerID
+  const targetKey = `${apiBase}:${connection.context}:${data.metadata?.uid}:${selectedContainer}`
   const currentTarget = useRef(targetKey)
   currentTarget.current = targetKey
   const runID = run?.id
@@ -89,19 +86,29 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
     if (!runID || !runState || ['complete', 'stopped', 'failed', 'partial'].includes(runState)) return
     let cancelled = false
     const target = targetKey
+    const abort = new AbortController()
+    let timer: number | undefined
     const poll = async () => {
       try {
-        const next = await fetchIGRun(runID)
+        const next = await fetchIGRun(runID, abort.signal)
         if (!cancelled && currentTarget.current === target) setRun(next)
       } catch (pollError) {
-        if (!cancelled && currentTarget.current === target) setError(pollError instanceof Error ? pollError.message : String(pollError))
+        if (!cancelled && currentTarget.current === target) {
+          const message = pollError instanceof Error ? pollError.message : String(pollError)
+          setError(message)
+          if (pollError instanceof ApiError && (pollError.status === 403 || pollError.status === 404)) {
+            setRun(previous => previous ? { ...previous, state: 'failed', error: message } : previous)
+            return
+          }
+        }
       }
+      if (!cancelled) timer = window.setTimeout(poll, 1_000)
     }
-    const timer = window.setInterval(poll, 1_000)
     void poll()
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      abort.abort()
+      window.clearTimeout(timer)
     }
   }, [runID, runState, targetKey])
 
@@ -112,16 +119,17 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   if (statusQuery.isLoading || statusQuery.data?.state === 'not-installed') return null
 
   const capture = async (aspect: LiveDebugAspect, durationSeconds: number) => {
-    if (cloud || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
+    if (cloud || !running || busy.current || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))) return
     busy.current = true
     setPending(true)
     const token = ++generation.current
     const target = targetKey
+    const runtimeID = containerID
     setError(undefined)
     setRun(undefined)
     try {
       const next = await startIGCapture({ namespace, pod, podUid: data.metadata.uid, containerId: containerID, container: selectedContainer, aspect, durationSeconds })
-      if (generation.current === token && currentTarget.current === target) setRun(next)
+      if (generation.current === token && currentTarget.current === target && (runtimeID == null || currentContainerID.current === runtimeID)) setRun(next)
       else if (getApiBase() === apiBase && currentConnection.current === connection.context) {
         void stopIGRun(next.id).catch(() => {})
       }
@@ -158,7 +166,8 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
     <BaseLiveDebugSection
       status={status}
       pending={pending}
-      captureUnavailableReason={cloud ? 'Live Debug captures require a direct Radar connection; this Cloud connection only permits reads.' : undefined}
+      targetChanged={targetChanged}
+      captureUnavailableReason={cloud ? 'Live Debug captures require a direct Radar connection; this Cloud connection only permits reads.' : !running ? 'Capture needs a running container. This container has no reported running state.' : undefined}
       statusMessage={statusQuery.data?.message || (statusQuery.error as Error | undefined)?.message}
       containers={containers}
       selectedContainer={selectedContainer}

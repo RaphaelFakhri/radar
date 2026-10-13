@@ -7,15 +7,15 @@ import { RadarFeatureUnsupportedError } from '../../../api/radarFeatures'
 
 const mock = vi.hoisted(() => ({
   status: { data: { state: 'installed' }, isLoading: false, error: undefined } as any,
-  start: vi.fn(), stop: vi.fn(), query: vi.fn(),
+  start: vi.fn(), stop: vi.fn(), fetch: vi.fn(), query: vi.fn(),
 }))
 vi.mock('@tanstack/react-query', () => ({ useQuery: (options: any) => { mock.query(options); return mock.status } }))
-vi.mock('../../../api/client', () => ({ useRadarFeature: () => ({ gatedKey: [], guard: (request: () => unknown) => request() }) }))
+vi.mock('../../../api/client', () => ({ ApiError: class extends Error { status = 0 }, useRadarFeature: () => ({ gatedKey: [], guard: (request: () => unknown) => request() }) }))
 vi.mock('../../../api/config', () => ({ getApiBase: () => '/api' }))
 vi.mock('../../../contexts/CapabilitiesContext', () => ({ useCapabilitiesContext: () => ({ deployment: { mode: 'local' } }) }))
 vi.mock('../../../context/ConnectionContext', () => ({ useConnection: () => ({ connection: { context: 'test' } }) }))
 vi.mock('../../../api/igdebug', () => ({
-  fetchIGStatus: vi.fn(), fetchIGRun: vi.fn(),
+  fetchIGStatus: vi.fn(), fetchIGRun: (...args: unknown[]) => mock.fetch(...args),
   startIGCapture: (...args: unknown[]) => mock.start(...args),
   stopIGRun: (...args: unknown[]) => mock.stop(...args),
 }))
@@ -35,7 +35,7 @@ let element: HTMLDivElement
 let root: Root
 beforeEach(() => {
   mock.status = { data: { state: 'installed' }, isLoading: false }
-  mock.start.mockReset(); mock.stop.mockReset(); mock.stop.mockResolvedValue({}); mock.query.mockClear()
+  mock.start.mockReset(); mock.fetch.mockReset(); mock.stop.mockReset(); mock.stop.mockResolvedValue({}); mock.query.mockClear()
   element = document.createElement('div'); root = createRoot(element)
 })
 afterEach(async () => { await act(async () => root.unmount()) })
@@ -68,6 +68,21 @@ describe('Live Debug capture identity', () => {
     expect(element.textContent).not.toContain('old-process')
     expect(mock.stop).toHaveBeenCalledWith('run-1')
     expect(capture().disabled).toBe(false)
+  })
+
+  it('retains a partial capture and the chosen container after a restart', async () => {
+    let resolve!: (run: any) => void
+    mock.start.mockResolvedValue({ id: 'run-1', target, aspect: 'processes', state: 'running' })
+    mock.fetch.mockReturnValue(new Promise(done => { resolve = done }))
+    await act(async () => root.render(<LiveDebugSection data={pod()} />))
+    await act(async () => expand())
+    await act(async () => capture().click())
+    await act(async () => root.render(<LiveDebugSection data={pod('old', '456')} />))
+    expect(mock.stop).not.toHaveBeenCalled()
+    await act(async () => resolve({ ...result, state: 'partial', reason: 'target container was replaced' }))
+    expect(element.textContent).toContain('target container was replaced')
+    expect(element.textContent).toContain('These results refer to the displayed container ID')
+    expect(element.textContent).toContain('old-process')
   })
 
   it('enables Capture when a container starts after the drawer opened', async () => {

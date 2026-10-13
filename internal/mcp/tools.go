@@ -668,9 +668,9 @@ type dashboardInput struct {
 type inspectPodRuntimeInput struct {
 	Namespace string `json:"namespace" jsonschema:"Pod namespace"`
 	Pod       string `json:"pod" jsonschema:"Pod name"`
-	Container string `json:"container,omitempty" jsonschema:"container name; defaults to the first running app container"`
+	Container string `json:"container,omitempty" jsonschema:"container name; honors the kubectl default-container annotation when running, otherwise the first running app container"`
 	Aspect    string `json:"aspect" jsonschema:"evidence to collect: processes, connections, or dns"`
-	Duration  int    `json:"duration,omitempty" jsonschema:"DNS capture duration in seconds, default 10, maximum 30; ignored for snapshots"`
+	Duration  int    `json:"duration,omitempty" jsonschema:"DNS capture duration in seconds, default 10, maximum 30; omit for snapshots"`
 }
 
 type topResourcesInput struct {

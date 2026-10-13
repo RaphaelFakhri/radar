@@ -325,7 +325,7 @@ func (m *Manager) reporterResult(id string, result Result) {
 func (m *Manager) reporterPartial(id, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if run := m.runs[id]; run != nil && !run.view.State.Terminal() {
+	if run := m.runs[id]; run != nil && !run.view.State.Terminal() && run.partialReason == "" {
 		run.partialReason = reason
 		run.cancel()
 	}
