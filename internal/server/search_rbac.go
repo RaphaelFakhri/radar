@@ -106,8 +106,10 @@ func (s *Server) computeSearchSkipKinds(r *http.Request) map[string]bool {
 //     cluster scope (cluster-wide-namespace sentinel from DiscoverNamespaces
 //     stage 1 — list-pods cluster-wide — AND no `ns:` modifier narrowed it).
 //     Cluster-wide list-pods does NOT imply cluster-wide list-secrets, so
-//     gate via a `list secrets` SAR at cluster scope. Returns ("skip", nil)
-//     when denied; ("", nil) when allowed (cluster-wide informer scan runs).
+//     gate via a `list secrets` SAR at cluster scope. Returns ("", nil) when
+//     allowed (cluster-wide informer scan runs). When denied, falls back to
+//     per-namespace fanout over every namespace, so Secrets a RoleBinding
+//     grants still show.
 //   - Namespace-scoped scan (scanNamespaces != nil): per-namespace SAR
 //     fanout. Returns ("skip", nil) when the user can't list secrets in any
 //     scan namespace; ("override", subset) when they can in a subset (walker
@@ -120,22 +122,9 @@ func (s *Server) computeSearchSecretsRBAC(r *http.Request, scanNamespaces []stri
 		return "", nil
 	}
 
-	if scanNamespaces == nil {
-		if s.canRead(r, "", "secrets", "", "list") {
-			return "", nil
-		}
-		return "skip", nil
-	}
-
-	if len(scanNamespaces) == 0 {
-		return "skip", nil
-	}
-
-	scoped := make([]string, 0, len(scanNamespaces))
-	for _, ns := range scanNamespaces {
-		if s.canRead(r, "", "secrets", ns, "list") {
-			scoped = append(scoped, ns)
-		}
+	scoped := s.listableNamespaces(r, "", "secrets", scanNamespaces)
+	if scoped == nil {
+		return "", nil
 	}
 	if len(scoped) == 0 {
 		return "skip", nil

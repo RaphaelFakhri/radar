@@ -2216,18 +2216,9 @@ func (s *Server) preflightResourceList(r *http.Request, kind, group string, name
 	// gate the read. Other namespaced kinds are deferred.
 	if kind == "secrets" || kind == "secret" {
 		if auth.UserFromContext(r.Context()) != nil {
-			if namespaces == nil {
-				// Auth user with cluster-wide namespace access (e.g. picked up
-				// via DiscoverNamespaces stage 1: cluster-wide list pods). The
-				// cache will serve all secrets — gate on cluster-scope SAR.
-				if !s.canRead(r, "", "secrets", "", "list") {
-					return nil, http.StatusForbidden, "insufficient permissions to list secrets", false
-				}
-			} else {
-				namespaces = s.filterNamespacesByCanRead(r, "", "secrets", "list", namespaces)
-				if len(namespaces) == 0 {
-					return namespaces, http.StatusForbidden, "insufficient permissions to list secrets", false
-				}
+			namespaces = s.listableNamespaces(r, "", "secrets", namespaces)
+			if namespaces != nil && len(namespaces) == 0 {
+				return namespaces, http.StatusForbidden, "insufficient permissions to list secrets", false
 			}
 		}
 	}

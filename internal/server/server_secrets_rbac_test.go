@@ -142,6 +142,43 @@ func TestProxyAuth_SecretsList_ClusterWideShape_WithSecretRBAC(t *testing.T) {
 	}
 }
 
+func TestProxyAuth_SecretsList_ClusterWideShape_PerNamespaceSecretRBAC(t *testing.T) {
+	// Cluster-wide namespace shape with no cluster-scope secrets SAR, but a
+	// RoleBinding grants secrets in default. The list must show default's
+	// secrets rather than nothing, and still withhold kube-system's.
+	env := newAuthTestServer(t)
+	env.srv.permCache.Set("team-reader", nil, &auth.UserPermissions{
+		AllowedNamespaces: nil,
+	})
+	perms := env.srv.permCache.Get("team-reader", nil)
+	perms.SetCanI("list", "", "secrets", "", false)
+	for _, ns := range allNamespaceNames() {
+		perms.SetCanI("list", "", "secrets", ns, ns == "default")
+	}
+
+	resp := env.authGet(t, "/api/resources/secrets", "team-reader", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var items []struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	json.NewDecoder(resp.Body).Decode(&items)
+	if len(items) == 0 {
+		t.Fatalf("user with secrets in default got no secrets")
+	}
+	for _, it := range items {
+		if it.Metadata.Namespace != "default" {
+			t.Errorf("secret %s/%s leaked from a namespace without secrets RBAC", it.Metadata.Namespace, it.Metadata.Name)
+		}
+	}
+}
+
 func TestProxyAuth_SecretsGet_Denied(t *testing.T) {
 	// 403 (not 404) when the namespace is allowed but per-kind RBAC denies.
 	// 404 would let the user probe secret existence by observing 200 vs 404;
@@ -236,6 +273,48 @@ func TestProxyAuth_SearchSecrets_NamespaceDenied(t *testing.T) {
 		if h.Name == "nginx-tls" {
 			t.Errorf("secret leaked in search despite per-ns deny: %+v", body.Hits)
 		}
+	}
+}
+
+func TestProxyAuth_SearchSecrets_ClusterWideShape_PerNamespaceSecretRBAC(t *testing.T) {
+	// Cluster-wide namespace shape, no cluster-scope secrets SAR, secrets
+	// granted in default only. Search must find default's Secret and still
+	// drop kube-system's.
+	env := newAuthTestServer(t)
+	env.srv.permCache.Set("team-reader", nil, &auth.UserPermissions{
+		AllowedNamespaces: nil,
+	})
+	perms := env.srv.permCache.Get("team-reader", nil)
+	perms.SetCanI("list", "", "secrets", "", false)
+	for _, ns := range allNamespaceNames() {
+		perms.SetCanI("list", "", "secrets", ns, ns == "default")
+	}
+
+	resp := env.authGet(t, "/api/search?q=kind:Secret", "team-reader", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Hits []struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"hits"`
+	}
+	json.NewDecoder(resp.Body).Decode(&body)
+
+	found := false
+	for _, h := range body.Hits {
+		if h.Namespace != "default" {
+			t.Errorf("secret %s/%s leaked in search from a namespace without secrets RBAC", h.Namespace, h.Name)
+		}
+		if h.Name == "nginx-tls" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected nginx-tls in search hits, got %+v", body.Hits)
 	}
 }
 
