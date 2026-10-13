@@ -11,6 +11,7 @@ import (
 
 	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/resourceid"
 	"github.com/skyhook-io/radar/pkg/topology"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -241,8 +242,8 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 			continue
 		}
 		if source, ok := topoByID[sourceTopoID]; ok && id != rootNode.ID {
-			ref := refFromTopologyNode(source)
-			if topology.IsGitOpsManagerKind(source.Kind, ref.Group) {
+			apiVersion, _ := source.Data["apiVersion"].(string)
+			if topology.IsGitOpsManagerKind(source.Kind, resourceid.GroupFromAPIVersion(apiVersion)) {
 				// Nested managers remain portals to their own tree. Their
 				// inventory and generated descendants belong to that tree.
 				continue

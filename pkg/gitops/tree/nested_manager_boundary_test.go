@@ -21,8 +21,8 @@ func TestBootstrapTreeStopsAtNestedManager(t *testing.T) {
 			childRef := ResourceRef{Kind: tc.kind, Group: tc.group, Namespace: "flux-system", Name: "apps"}
 			root := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "metadata": map[string]any{"namespace": "flux-system", "name": "flux-system"}, "status": map[string]any{"inventory": map[string]any{"entries": []any{map[string]any{"id": "flux-system_apps_" + tc.group + "_" + tc.kind}, map[string]any{"id": "prod_direct_apps_Deployment"}}}}}}
 			topo := &topology.Topology{Nodes: []topology.Node{
-				{ID: "root", Kind: topology.KindKustomization, Name: rootRef.Name, Data: map[string]any{"namespace": rootRef.Namespace, "group": rootRef.Group}},
-				{ID: "child", Kind: topology.NodeKind(tc.kind), Name: childRef.Name, Data: map[string]any{"namespace": childRef.Namespace, "group": childRef.Group}},
+				{ID: "root", Kind: topology.KindKustomization, Name: rootRef.Name, Data: map[string]any{"namespace": rootRef.Namespace, "apiVersion": rootRef.Group + "/v1"}},
+				{ID: "child", Kind: topology.NodeKind(tc.kind), Name: childRef.Name, Data: map[string]any{"namespace": childRef.Namespace, "apiVersion": childRef.Group + "/v1"}},
 				{ID: "nested-deployment", Kind: topology.KindDeployment, Name: "nested", Data: map[string]any{"namespace": "prod", "group": "apps"}},
 				{ID: "nested-pod", Kind: topology.KindPod, Name: "nested-pod", Data: map[string]any{"namespace": "prod"}},
 				{ID: "direct-deployment", Kind: topology.KindDeployment, Name: "direct", Data: map[string]any{"namespace": "prod", "group": "apps"}},
