@@ -3014,7 +3014,7 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.writeJSON(w, topology.ResourceWithRelationships{
-			RelatedApplicationFindings: issues.CachedStrimziEvidence(resource, s.strimziEvidenceAccess(r)),
+			RelatedApplicationFindings: issues.CachedStrimziEvidence(resource, s.issueRelatedResourceAccess(r)),
 			Resource:                   resource,
 			Relationships:              relationships,
 			HPADiagnosis:               hpaDiagnosisFor(resource),
@@ -3246,7 +3246,7 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 
 	// Return resource with relationships
 	response := topology.ResourceWithRelationships{
-		RelatedApplicationFindings: issues.CachedStrimziEvidence(resource, s.strimziEvidenceAccess(r)),
+		RelatedApplicationFindings: issues.CachedStrimziEvidence(resource, s.issueRelatedResourceAccess(r)),
 		Resource:                   resource,
 		Relationships:              relationships,
 		HPADiagnosis:               hpaDiagnosisFor(resource),
