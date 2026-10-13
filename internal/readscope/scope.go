@@ -4,8 +4,9 @@ package readscope
 // means the user is unrestricted; preserve `requested` (which may also be nil
 // for cluster-wide). When the user is restricted, keep only the requested
 // namespaces they're allowed to see; if `requested` is empty, fall back to
-// the full allowed set. An empty requested selection means unspecified here;
-// an empty allowed set means no access. Use NoNamespaceAccess before passing an
+// the full allowed set. For a restricted caller, an empty selection defaults to its allowed set.
+// An unrestricted caller preserves the request, including an explicit empty set.
+// An empty allowed set always means no access. Use NoNamespaceAccess before passing an
 // authorization-filtered requested scope.
 func SelectNamespaces(allowed, requested []string) []string {
 	if allowed == nil {

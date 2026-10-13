@@ -11,6 +11,7 @@ func TestSelectNamespacesSelectionAndAuthorization(t *testing.T) {
 		allowed, requested, want []string
 	}{
 		{"unrestricted all", nil, nil, nil},
+		{"unrestricted empty preserved", nil, []string{}, []string{}},
 		{"unrestricted selection", nil, []string{"b"}, []string{"b"}},
 		{"omitted selection", []string{"a", "b"}, nil, []string{"a", "b"}},
 		{"empty selection", []string{"a", "b"}, []string{}, []string{"a", "b"}},
