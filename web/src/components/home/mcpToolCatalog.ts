@@ -300,7 +300,7 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   {
     name: 'inspect_pod_runtime',
     write: true,
-    desc: 'Collect short-lived kernel evidence from one Pod container through an existing Inspektor Gadget deployment. Loads a pinned eBPF gadget only for the bounded capture, then unloads it.',
+    desc: 'Capture container processes and DNS, or sockets across the Pod network namespace including sidecars, through an existing Inspektor Gadget deployment. Loads a pinned eBPF gadget for the bounded capture, then unloads it.',
     params: [
       { arg: 'namespace', required: true, desc: 'pod namespace' },
       { arg: 'pod', required: true, desc: 'pod name' },
