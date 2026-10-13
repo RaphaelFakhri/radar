@@ -91,6 +91,7 @@ export function LiveDebugSection({
   const active = pending || (run && !['complete', 'stopped', 'failed', 'partial'].includes(run.state))
   const canStop = active && run?.aspect === 'dns' && run.state !== 'stopping'
   const preparing = pending || run?.state === 'starting'
+  const captureMessage = run?.state === 'partial' ? [error, run.reason, run.error].filter(Boolean).join(' ') : error || run?.error || run?.reason
 
   return (
     <Section title="Live Debug" icon={Activity} defaultExpanded={false}>
@@ -170,11 +171,11 @@ export function LiveDebugSection({
           {(preparing || run?.state === 'running' || run?.state === 'stopping') && (
             <div className="card-inner flex items-center gap-2 text-xs text-theme-text-secondary">
               <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              {preparing ? 'Preparing the pinned gadget…' : run?.state === 'running' ? 'Capturing kernel events…' : 'Capture ready; unloading instrumentation…'}
+              {preparing ? 'Preparing the pinned gadget…' : run?.state === 'running' ? 'Capturing kernel events…' : run?.result ? 'Capture ready; unloading instrumentation…' : 'Stopping capture and unloading instrumentation…'}
             </div>
           )}
-          {(error || run?.error || run?.reason) && (
-            <AlertBanner variant={run?.state === 'partial' ? 'warning' : 'error'} title={run?.state === 'partial' ? 'Live Debug capture is partial' : 'Live Debug capture failed'} message={error || run?.error || run?.reason} />
+          {captureMessage && (
+            <AlertBanner variant={run?.state === 'partial' ? 'warning' : 'error'} title={run?.state === 'partial' ? 'Live Debug capture is partial' : 'Live Debug capture failed'} message={captureMessage} />
           )}
           {targetChanged && run?.result && <div className="card-inner text-xs text-theme-text-secondary">The Pod or container instance has changed. These results refer to the displayed Pod UID and container ID.</div>}
           {run?.result && run.aspect === aspect && <ResultView result={run.result} onNavigate={onNavigate} />}
@@ -203,7 +204,7 @@ function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigat
           {(result.processes || []).map(process => (
             <div key={`${process.pid}-${process.command}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-1.5 text-xs">
               <div className="min-w-0"><span className="font-mono text-theme-text-primary">{process.command}</span>{process.user && <span className="ml-2 text-theme-text-tertiary">{process.user}</span>}</div>
-              <div className="font-mono text-theme-text-secondary">PID {process.pid}{process.parentPid ? ` · PPID ${process.parentPid}` : ''}</div>
+              <div className="font-mono text-theme-text-secondary">Host PID {process.pid}{process.parentPid ? ` · Host PPID ${process.parentPid}` : ''}</div>
             </div>
           ))}
           {(result.processes?.length ?? 0) === 0 && <EmptyResult text="No processes were observed for the pinned container." />}
@@ -278,7 +279,7 @@ function EndpointView({ endpoint, onNavigate }: { endpoint: LiveDebugEndpoint; o
       name={endpoint.resource.name}
       kind={kind}
       namespace={endpoint.resource.namespace || ''}
-      label={<span>{kind.toLowerCase()} {endpoint.resource.namespace}/{endpoint.resource.name}</span>}
+      label={<span>{kind.toLowerCase()} {endpoint.resource.namespace}/{endpoint.resource.name}{endpoint.port ? `:${endpoint.port}` : ''}</span>}
       onNavigate={onNavigate}
     />
   )

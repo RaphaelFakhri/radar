@@ -382,6 +382,9 @@ func TestPartialKeepsTheFirstCause(t *testing.T) {
 	if view.State != StatePartial || view.Reason != "target container was replaced" {
 		t.Fatalf("lost the first capture cause: %#v", view)
 	}
+	if view.Error != "runtime cleanup could not be confirmed" {
+		t.Fatalf("lost secondary cleanup uncertainty: %#v", view)
+	}
 }
 
 func TestContextSwitchHidesRunsBeforeCleanupEvenForTheSameContextName(t *testing.T) {

@@ -339,8 +339,17 @@ func (m *Manager) reporterResult(id string, result Result) {
 func (m *Manager) reporterPartial(id, reason string, duringCapture bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if run := m.runs[id]; run != nil && !run.view.State.Terminal() && run.partialReason == "" && (!duringCapture || run.view.Result == nil) {
+	if run := m.runs[id]; run != nil && !run.view.State.Terminal() && (!duringCapture || run.view.Result == nil) {
+		if run.partialReason != "" {
+			if !duringCapture && reason != run.partialReason {
+				run.view.Error = reason
+			}
+			return
+		}
 		run.partialReason = reason
+		run.view.State = StateStopping
+		run.view.UpdatedAt = time.Now().UTC()
+		m.broadcastLocked(run, StreamEvent{Type: "state", Run: runView(run)})
 		run.cancel()
 	}
 }

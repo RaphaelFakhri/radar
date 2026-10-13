@@ -60,6 +60,9 @@ runtime's concrete compatibility error. Linux nodes generally need kernel 5.10+
 with BTF. GKE Autopilot, Fargate, and Docker Desktop kernels without BTF may be
 unsupported even though detection reports `installed`.
 
+Process IDs and parent process IDs refer to the host PID namespace, not the
+PID values inside a container.
+
 Every result records the pinned Pod UID, node, container ID, capture window,
 row/event count, Radar truncation, and whether IG-side event loss was measurable.
 DNS absence is phrased as "no response observed in the capture window," never as
