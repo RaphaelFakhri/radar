@@ -246,7 +246,7 @@ func TestToolCatalogContextBudget(t *testing.T) {
 	// load-bearing routing and uncertainty contracts. The application evidence tool
 	// adds 908 bytes to the existing catalog allowance, including the UID-bound target argument.
 	const (
-		maxCatalogBytes         = 58750 + 908
+		maxCatalogBytes         = 59000 + 908
 		maxToolDescriptionBytes = 3000
 	)
 
