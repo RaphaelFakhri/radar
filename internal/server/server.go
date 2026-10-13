@@ -1801,6 +1801,30 @@ func (s *Server) filterNamespacesByCanRead(r *http.Request, group, resource, ver
 	return out
 }
 
+// listableNamespaces narrows a parseNamespacesForUser result to the namespaces
+// where the calling user may list (group, resource). Use it for data derived
+// from a kind the shared cache holds under Radar's identity, where namespace
+// visibility alone doesn't imply the user may read that kind.
+//   - nil in → all-namespace access: nil out (all) if the user can list the
+//     kind cluster-wide; otherwise the namespaces where a RoleBinding grants
+//     it, which may be empty.
+//   - slice in → the per-namespace listable subset (possibly empty).
+//
+// Never returns nil unless the cluster-wide check passed, so a missing
+// namespace list fails closed instead of reading as "all".
+func (s *Server) listableNamespaces(r *http.Request, group, resource string, namespaces []string) []string {
+	if namespaces == nil {
+		if s.canRead(r, group, resource, "", "list") {
+			return nil
+		}
+		namespaces = allNamespaceNames()
+		if namespaces == nil {
+			return []string{}
+		}
+	}
+	return s.filterNamespacesByCanRead(r, group, resource, "list", namespaces)
+}
+
 // deniedClusterScopedTopoKinds returns the set of cluster-scoped topology
 // NodeKinds the calling user cannot list. Walks topology.ClusterScopedKinds
 // (centralized table — see pkg/topology/cluster_scoped_kinds.go). Reuses

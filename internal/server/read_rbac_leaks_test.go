@@ -1,13 +1,26 @@
 package server
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/k8s"
 	pkgtraffic "github.com/skyhook-io/radar/pkg/traffic"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // flowVisibleForNamespaces is the per-flow filter that backs both the
@@ -84,6 +97,19 @@ func TestSecretReadableNamespaces(t *testing.T) {
 		}
 	})
 
+	t.Run("cluster-wide namespaces, secrets only via RoleBinding -> that namespace", func(t *testing.T) {
+		env := newAuthTestServer(t)
+		env.srv.permCache.Set("bob", nil, &auth.UserPermissions{AllowedNamespaces: nil})
+		perms := env.srv.permCache.Get("bob", nil)
+		perms.SetCanI("list", "", "secrets", "", false)
+		perms.SetCanI("list", "", "secrets", "default", true)
+
+		got := env.srv.secretReadableNamespaces(clusterWideReq("bob"), nil)
+		if len(got) != 1 || got[0] != "default" {
+			t.Errorf("expected [default], got %#v", got)
+		}
+	})
+
 	t.Run("namespace-restricted -> per-namespace subset", func(t *testing.T) {
 		env := newAuthTestServer(t)
 		env.srv.permCache.Set("alice", nil, &auth.UserPermissions{AllowedNamespaces: []string{"default", "kube-system"}})
@@ -96,6 +122,133 @@ func TestSecretReadableNamespaces(t *testing.T) {
 			t.Errorf("expected [default], got %#v", got)
 		}
 	})
+}
+
+// A user who sees every namespace (e.g. `view` through a ClusterRoleBinding)
+// but may list Secrets only where a RoleBinding grants it must still see the
+// TLS certificates in those namespaces, and only those. The Secrets view's
+// expiry column and the dashboard's certificate health both read TLS Secrets.
+func TestProxyAuth_CertificatesFollowPerNamespaceSecretsRBAC(t *testing.T) {
+	ctx := context.Background()
+	for _, ns := range []string{"default", "broken"} {
+		sec := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbac-cert-" + ns, Namespace: ns},
+			Type:       corev1.SecretTypeTLS,
+			Data: map[string][]byte{
+				"tls.crt": selfSignedCertPEM(t, ns+".example.test"),
+				"tls.key": []byte("unused"),
+			},
+		}
+		if _, err := testFakeClient.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create secret in %s: %v", ns, err)
+		}
+		t.Cleanup(func() {
+			_ = testFakeClient.CoreV1().Secrets(sec.Namespace).Delete(context.Background(), sec.Name, metav1.DeleteOptions{})
+		})
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lister := k8s.GetResourceCache().Secrets()
+		_, errA := lister.Secrets("default").Get("rbac-cert-default")
+		_, errB := lister.Secrets("broken").Get("rbac-cert-broken")
+		if errA == nil && errB == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("test secrets did not reach the cache")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// secretsGrants maps a namespace ("" = cluster-wide) to the user's
+	// list-secrets verdict. Every user can see all namespaces.
+	tests := []struct {
+		name          string
+		secretsGrants map[string]bool
+		wantNS        []string
+	}{
+		{
+			name:          "secrets only via RoleBinding in default",
+			secretsGrants: map[string]bool{"": false, "default": true, "broken": false},
+			wantNS:        []string{"default"},
+		},
+		{
+			name:          "secrets cluster-wide",
+			secretsGrants: map[string]bool{"": true},
+			wantNS:        []string{"broken", "default"},
+		},
+		{
+			name:          "no secrets anywhere",
+			secretsGrants: map[string]bool{"": false, "default": false, "broken": false},
+			wantNS:        nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newAuthTestServer(t)
+			perms := &auth.UserPermissions{AllowedNamespaces: nil}
+			for ns, ok := range tt.secretsGrants {
+				perms.SetCanI("list", "", "secrets", ns, ok)
+			}
+			env.srv.permCache.Set("dana", nil, perms)
+
+			resp := env.authGet(t, "/api/secrets/certificate-expiry", "dana", "")
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("certificate-expiry: expected 200, got %d", resp.StatusCode)
+			}
+			var expiry map[string]CertExpiry
+			if err := json.NewDecoder(resp.Body).Decode(&expiry); err != nil {
+				t.Fatalf("decode certificate-expiry: %v", err)
+			}
+			var gotNS []string
+			for _, ns := range []string{"broken", "default"} {
+				if _, ok := expiry[ns+"/rbac-cert-"+ns]; ok {
+					gotNS = append(gotNS, ns)
+				}
+			}
+			if strings.Join(gotNS, ",") != strings.Join(tt.wantNS, ",") {
+				t.Errorf("certificate-expiry namespaces = %v, want %v", gotNS, tt.wantNS)
+			}
+
+			dash := env.authGet(t, "/api/dashboard", "dana", "")
+			defer dash.Body.Close()
+			if dash.StatusCode != http.StatusOK {
+				t.Fatalf("/api/dashboard: expected 200, got %d", dash.StatusCode)
+			}
+			var body DashboardResponse
+			if err := json.NewDecoder(dash.Body).Decode(&body); err != nil {
+				t.Fatalf("decode dashboard: %v", err)
+			}
+			gotTotal := 0
+			if body.CertificateHealth != nil {
+				gotTotal = body.CertificateHealth.Total
+			}
+			if gotTotal != len(tt.wantNS) {
+				t.Errorf("dashboard certificateHealth.total = %d, want %d", gotTotal, len(tt.wantNS))
+			}
+		})
+	}
+}
+
+func selfSignedCertPEM(t *testing.T, dnsName string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: dnsName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		DNSNames:     []string{dnsName},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 // The Tier-1 namespace gates: a user whose namespace access excludes the

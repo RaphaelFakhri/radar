@@ -36,18 +36,10 @@ type CertExpiry = topology.CertExpiry
 // calling user may list Secrets. The shared cache can hold every secret (the SA
 // may have cluster-wide secrets RBAC the user lacks), so secret-derived data
 // (TLS cert metadata) must be gated per-user even when the namespace is visible.
-// Mirrors the secrets gate in preflightResourceList:
-//   - nil in → all-namespace access: nil out (all) if the user can list secrets
-//     cluster-wide, else empty (none).
-//   - slice in → the per-namespace secrets-listable subset (possibly empty).
+// A user who sees all namespaces but may list Secrets only through
+// RoleBindings gets the certificates in those namespaces.
 func (s *Server) secretReadableNamespaces(r *http.Request, namespaces []string) []string {
-	if namespaces == nil {
-		if s.canRead(r, "", "secrets", "", "list") {
-			return nil
-		}
-		return []string{}
-	}
-	return s.filterNamespacesByCanRead(r, "", "secrets", "list", namespaces)
+	return s.listableNamespaces(r, "", "secrets", namespaces)
 }
 
 func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
