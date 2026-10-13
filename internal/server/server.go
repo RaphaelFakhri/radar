@@ -5310,7 +5310,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 				s.getUserNamespaces(r, nil)
 			}
 			if perms := s.permCache.Get(user.Username, user.Groups); perms != nil {
-				resp["readscope.NoNamespaceAccess"] = readscope.NoNamespaceAccess(auth.FilterNamespacesForUser(nil, user, perms))
+				resp["noNamespaceAccess"] = readscope.NoNamespaceAccess(auth.FilterNamespacesForUser(nil, user, perms))
 			}
 		}
 	}
