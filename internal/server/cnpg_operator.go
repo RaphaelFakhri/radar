@@ -164,12 +164,12 @@ func (s *Server) cnpgOperatorScope(r *http.Request) []string {
 
 func (s *Server) cnpgOperatorDeployments(r *http.Request, cache *k8s.ResourceCache, scope []string) (cnpgKindAccess, []string, []*appsv1.Deployment) {
 	acc, denied, read := s.cnpgTypedScope(r, cache, scope, "apps", "deployments")
-	if acc.state == cnpgCoverageDenied || acc.state == cnpgCoverageError {
+	if acc.state != cnpgCoverageFull && acc.state != cnpgCoveragePartial {
 		return acc, denied, nil
 	}
 	lister := cache.Deployments()
-	if lister == nil || !cache.IsKindReady("deployments") {
-		return cnpgKindAccess{state: cnpgCoverageSyncing}, nil, nil
+	if lister == nil {
+		return cnpgKindAccess{state: cnpgCoverageError}, nil, nil
 	}
 	var out []*appsv1.Deployment
 	if read == nil {
@@ -191,12 +191,12 @@ func (s *Server) cnpgOperatorDeployments(r *http.Request, cache *k8s.ResourceCac
 
 func (s *Server) cnpgOperatorServices(r *http.Request, cache *k8s.ResourceCache, scope []string) (cnpgKindAccess, []string, []*corev1.Service) {
 	acc, denied, read := s.cnpgTypedScope(r, cache, scope, "", "services")
-	if acc.state == cnpgCoverageDenied || acc.state == cnpgCoverageError {
+	if acc.state != cnpgCoverageFull && acc.state != cnpgCoveragePartial {
 		return acc, denied, nil
 	}
 	lister := cache.Services()
-	if lister == nil || !cache.IsKindReady("services") {
-		return cnpgKindAccess{state: cnpgCoverageSyncing}, nil, nil
+	if lister == nil {
+		return cnpgKindAccess{state: cnpgCoverageError}, nil, nil
 	}
 	hasPlugin, err := labels.Parse(cnpgPluginNameLabel)
 	if err != nil {

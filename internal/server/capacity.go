@@ -687,6 +687,17 @@ func (s *Server) loadCapacityNodes(r *http.Request, meta *capacityapi.ResponseMe
 		meta.Coverage[capacityapi.CoverageNodes] = unavailableCoverage("node_cache_unavailable", []string{"nodes", "allocatable", "composition", "actualUsage"})
 		return nil
 	}
+	switch cache.KindReadinessFor("nodes") {
+	case k8s.KindPending:
+		meta.Coverage[capacityapi.CoverageNodes] = syncingCoverage("node_cache_syncing", []string{"nodes", "allocatable", "composition", "actualUsage"})
+		return nil
+	case k8s.KindFailed:
+		meta.Coverage[capacityapi.CoverageNodes] = errorCoverage("node_cache_sync_failed", []string{"nodes", "allocatable", "composition", "actualUsage"})
+		return nil
+	case k8s.KindUnavailable:
+		meta.Coverage[capacityapi.CoverageNodes] = unavailableCoverage("node_cache_unavailable", []string{"nodes", "allocatable", "composition", "actualUsage"})
+		return nil
+	}
 	nodes, err := cache.Nodes().List(labels.Everything())
 	if err != nil {
 		log.Printf("[capacity] Failed to list Nodes: %v", err)
@@ -727,7 +738,6 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 		return nil
 	}
-	pods := readscope.ListPodsScoped(cache.Pods(), namespaces)
 	scope := capacityapi.CoverageScopeCluster
 	status := capacityapi.CoverageAvailable
 	if namespaces != nil || cacheNamespaces.Limited {
@@ -748,10 +758,25 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		coverage.ReasonCode = "pod_cache_scope_partial"
 	}
 	coverage.Namespaces = append([]string{}, namespaces...)
+	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"}
+	readiness := cache.KindReadinessFor("pods")
+	switch readiness {
+	case k8s.KindPending:
+		coverage.Status, coverage.ReasonCode = capacityapi.CoverageSyncing, "pod_cache_syncing"
+	case k8s.KindFailed:
+		coverage.Status, coverage.ReasonCode = capacityapi.CoverageError, "pod_cache_sync_failed"
+	case k8s.KindUnavailable:
+		coverage.Status, coverage.ReasonCode = capacityapi.CoverageUnavailable, "pod_cache_unavailable"
+	}
+	if readiness != k8s.KindReady {
+		meta.Coverage[capacityapi.CoveragePods] = coverage
+		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
+		return nil
+	}
+	pods := readscope.ListPodsScoped(cache.Pods(), namespaces)
 	coverage.ObservedAt = &now
 	count := len(pods)
 	coverage.ItemCount = &count
-	coverage.ImpactFields = []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"}
 	meta.Coverage[capacityapi.CoveragePods] = coverage
 	meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 	return pods

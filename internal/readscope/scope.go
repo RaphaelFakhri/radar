@@ -22,6 +22,8 @@ type CacheNamespaceResult struct {
 // NamespacesWithinCache narrows requested (nil = all namespaces) to what the
 // informer for resource holds. Limited: the informer is not cluster-wide;
 // Partial: some requested namespaces are not held; Unavailable: none are.
+// Scope alone does not establish that the initial list completed; consumers
+// must check the kind's readiness before interpreting an empty list as absence.
 func NamespacesWithinCache(cache InformerScope, resource string, requested []string) CacheNamespaceResult {
 	result := CacheNamespaceResult{Namespaces: requested}
 	if cache == nil || cache.IsKindClusterWide(resource) {

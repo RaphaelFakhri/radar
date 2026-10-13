@@ -522,6 +522,12 @@ func (s *Server) cnpgTypedScope(r *http.Request, cache *k8s.ResourceCache, names
 		log.Printf("[cnpg] %s cache does not cover the requested scope", resource)
 		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
 	}
+	switch cache.KindReadinessFor(resource) {
+	case k8s.KindPending:
+		return cnpgKindAccess{state: cnpgCoverageSyncing}, nil, []string{}
+	case k8s.KindFailed, k8s.KindUnavailable:
+		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
+	}
 	if allowed != nil {
 		for _, ns := range allowed {
 			if slices.Contains(within.Namespaces, ns) {
@@ -545,7 +551,7 @@ func (s *Server) cnpgWorkspaceReadPods(r *http.Request, cache *k8s.ResourceCache
 	out := []any{}
 	returned := map[string]bool{}
 	acc, denied, read := s.cnpgTypedScope(r, cache, namespaces, "", "pods")
-	if acc.state == cnpgCoverageDenied || acc.state == cnpgCoverageError {
+	if acc.state != cnpgCoverageFull && acc.state != cnpgCoveragePartial {
 		return acc, nil, out, returned
 	}
 	if cache.Pods() == nil {
