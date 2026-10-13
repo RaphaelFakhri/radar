@@ -2237,6 +2237,14 @@ func (c *ResourceCache) GetPodsForWorkload(namespace string, selector *metav1.La
 	return matchingPods
 }
 
+func (rc *ResourceCache) AssessKindRead(resource string, requested []string) k8score.KindReadAssessment {
+	var core *k8score.ResourceCache
+	if rc != nil {
+		core = rc.ResourceCache
+	}
+	return core.AssessKindRead(resource, requested)
+}
+
 // PermissionResult returns the probes that selected this cache's informer
 // scope. A later global refresh must not re-label rows from this cache.
 func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {

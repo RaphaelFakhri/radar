@@ -904,6 +904,9 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 
 	// Try typed cache first (group=="" → core/built-in lookup).
 	objs, err := k8s.FetchResourceList(cache, kind, listScope)
+	if !resourceReadCacheIsCurrent(cache) {
+		return nil, nil, readErrorf(readreason.KindSyncPending, "cluster context changed during the read; retry shortly")
+	}
 	if err == k8s.ErrUnknownKind {
 		// Fall through to dynamic cache for CRDs. ClassifyKindScope/SAR
 		// above already authorized cluster-scoped CRDs; namespaced CRDs
@@ -945,6 +948,9 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		}
 	}
 
+	if !resourceReadCacheIsCurrent(cache) {
+		return nil, nil, readErrorf(readreason.KindSyncPending, "cluster context changed during the read; retry shortly")
+	}
 	return listResult(results, coverage)
 }
 
@@ -1148,6 +1154,9 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		rawObj = u
 	} else {
 		obj, err := k8s.FetchResource(cache, kind, namespace, name)
+		if !resourceReadCacheIsCurrent(cache) {
+			return nil, nil, readErrorf(readreason.KindSyncPending, "cluster context changed during the read; retry shortly")
+		}
 		if err == k8s.ErrUnknownKind {
 			u, dynErr := fetchMCPDynamicResource(ctx, cache, kind, group, namespace, name)
 			if dynErr != nil {
@@ -1235,6 +1244,10 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 				recentChangesCoverageLimited = len(recentChanges) < len(changesResult.Changes)
 			}
 		}
+	}
+
+	if !resourceReadCacheIsCurrent(cache) {
+		return nil, nil, readErrorf(readreason.KindSyncPending, "cluster context changed during the read; retry shortly")
 	}
 
 	// Three shapes:
