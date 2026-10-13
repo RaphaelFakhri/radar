@@ -173,7 +173,7 @@ export function LiveDebugSection({
           {(error || run?.error || run?.reason) && (
             <AlertBanner variant={run?.state === 'partial' ? 'warning' : 'error'} title={run?.state === 'partial' ? 'Live Debug capture is partial' : 'Live Debug capture failed'} message={error || run?.error || run?.reason} />
           )}
-          {targetChanged && run?.result && <div className="card-inner text-xs text-theme-text-secondary">The container instance has changed. These results refer to the displayed container ID.</div>}
+          {targetChanged && run?.result && <div className="card-inner text-xs text-theme-text-secondary">The Pod or container instance has changed. These results refer to the displayed Pod UID and container ID.</div>}
           {run?.result && run.aspect === aspect && <ResultView result={run.result} onNavigate={onNavigate} />}
           {!run && <div className="card-inner py-5 text-center text-xs text-theme-text-tertiary">Choose an answer and capture when you need live runtime evidence.</div>}
         </div>

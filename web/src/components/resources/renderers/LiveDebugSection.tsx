@@ -43,8 +43,9 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
   currentContainerID.current = containerID
   const running = containerStatus?.state?.running != null
   const normalizedContainerID = containerID?.replace(/^.*?:\/\//, '')
-  const targetChanged = !!run?.target.containerId && !!normalizedContainerID && run.target.containerId !== normalizedContainerID
+  const targetChanged = !!run && (run.target.podUid !== data.metadata?.uid || (!!run.target.containerId && !!normalizedContainerID && run.target.containerId !== normalizedContainerID))
   const targetKey = `${apiBase}:${connection.context}:${data.metadata?.uid}:${selectedContainer}`
+  const viewKey = `${apiBase}:${connection.context}:${namespace}/${pod}:${selectedContainer}`
   const currentTarget = useRef(targetKey)
   currentTarget.current = targetKey
   const runID = run?.id
@@ -64,7 +65,7 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
     setSelectedContainer(defaultContainer)
     setRun(undefined)
     setError(undefined)
-  }, [namespace, pod, data.metadata?.uid])
+  }, [namespace, pod])
 
   useEffect(() => {
     generation.current++
@@ -80,6 +81,12 @@ export function LiveDebugSection({ data, onNavigate }: LiveDebugSectionProps) {
         void stopIGRun(current.id).catch(() => {})
       }
     }
+  }, [viewKey])
+
+  useEffect(() => {
+    generation.current++
+    busy.current = false
+    setPending(false)
   }, [targetKey])
 
   useEffect(() => {

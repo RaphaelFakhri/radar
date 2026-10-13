@@ -70,18 +70,18 @@ describe('Live Debug capture identity', () => {
     expect(capture().disabled).toBe(false)
   })
 
-  it('retains a partial capture and the chosen container after a restart', async () => {
+  it.each(['pod', 'container'])('retains a partial capture and the chosen container after the %s restarts', async replacement => {
     let resolve!: (run: any) => void
     mock.start.mockResolvedValue({ id: 'run-1', target, aspect: 'processes', state: 'running' })
     mock.fetch.mockReturnValue(new Promise(done => { resolve = done }))
     await act(async () => root.render(<LiveDebugSection data={pod()} />))
     await act(async () => expand())
     await act(async () => capture().click())
-    await act(async () => root.render(<LiveDebugSection data={pod('old', '456')} />))
+    await act(async () => root.render(<LiveDebugSection data={replacement === 'pod' ? pod('new', '456') : pod('old', '456')} />))
     expect(mock.stop).not.toHaveBeenCalled()
     await act(async () => resolve({ ...result, state: 'partial', reason: 'target container was replaced' }))
     expect(element.textContent).toContain('target container was replaced')
-    expect(element.textContent).toContain('These results refer to the displayed container ID')
+    expect(element.textContent).toContain('These results refer to the displayed Pod UID and container ID')
     expect(element.textContent).toContain('old-process')
   })
 
