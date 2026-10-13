@@ -159,7 +159,7 @@ export function ServiceAccountRenderer({
       {/* Image Pull Secrets */}
       {imagePullSecrets.length > 0 && (
         <Section title={`Image Pull Secrets (${imagePullSecrets.length})`}>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
             {imagePullSecrets.map((secret: any) => (
               <ResourceLink key={secret.name} name={secret.name} kind="secrets" namespace={metadata.namespace} onNavigate={onNavigate} />
             ))}
