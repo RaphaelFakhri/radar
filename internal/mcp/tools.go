@@ -561,6 +561,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		Name: "inspect_pod_runtime",
 		Description: "Collect short-lived kernel evidence for a Pod through an existing Inspektor Gadget deployment. " +
 			"Use processes to see what is running now, connections to see current TCP/UDP sockets, or dns to capture DNS answers, failures, and latency for up to 30 seconds. " +
+			"Process PIDs are host IDs. " +
 			"This is not a passive read: it temporarily loads a pinned eBPF gadget on the Pod's node, then unloads it. " +
 			"Processes and DNS are container-scoped; connections cover the Pod's shared network namespace, including sidecars, with no container attribution (host-network Pods unsupported). " +
 			"Results carry scope and pinned Pod UID/node/container identity. Requires explicit Gadget proxy RBAC; it never installs Gadget.",
