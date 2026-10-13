@@ -518,6 +518,9 @@ func (s *Server) cnpgTypedScope(r *http.Request, cache *k8s.ResourceCache, names
 		return cnpgKindAccess{state: cnpgCoverageDenied}, nil, []string{}
 	}
 	assessment := cache.AssessKindRead(resource, allowed)
+	if len(assessment.Uncovered) > 0 && len(assessment.Uncovered) == len(allowed) {
+		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
+	}
 	switch assessment.Readiness {
 	case k8s.KindPending:
 		return cnpgKindAccess{state: cnpgCoverageSyncing}, nil, []string{}
