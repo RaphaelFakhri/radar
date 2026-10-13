@@ -3,6 +3,8 @@ package topology
 import (
 	"strings"
 
+	"github.com/skyhook-io/radar/pkg/resourceid"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -49,7 +51,20 @@ const (
 //
 // Returns nil when no meaningful manager is detectable.
 func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) []ResourceRef {
-	if ref := detectManagedByFromMeta(obj); ref != nil {
+	if idx == nil && topo != nil {
+		idx = IndexByResource(topo)
+	}
+	objectKind, group := objectGVK(obj)
+	if objectKind != "" {
+		kind = objectKind
+	} else if builtin, ok := resourceid.BuiltinForName(kind); ok {
+		kind = builtin.Kind
+	} else {
+		kind = normalizeKind(kind, dp)
+	}
+	identity := resourceid.ResolveCurrent(resourceid.OptionalGroupReference(group, kind, namespace, name), nil).Ref
+	target := ResourceRef{Kind: identity.Kind, Group: identity.Group, Namespace: namespace, Name: name}
+	if ref := detectManagedByFromMeta(obj); ref != nil && idx.AcceptsManagerHint(*ref, target) {
 		// detectManagedByFromMeta hand-sets Group for GitOps/Flux managers; do
 		// NOT call enrichRef here — it would overwrite the deliberate group
 		// with the result of a dp lookup keyed on the manager kind, which
@@ -63,14 +78,77 @@ func SynthesizeManagedBy(obj metav1.Object, kind, namespace, name string, topo *
 	return nil
 }
 
-func synthesizeManagedByFromNode(obj metav1.Object, nodeID string, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) []ResourceRef {
-	if ref := detectManagedByFromMeta(obj); ref != nil {
+func synthesizeManagedByFromNode(obj metav1.Object, nodeID string, target ResourceRef, topo *Topology, dp DynamicProvider, idx *RelationshipsIndex) []ResourceRef {
+	if ref := detectManagedByFromMeta(obj); ref != nil && idx.AcceptsManagerHint(*ref, target) {
 		return []ResourceRef{*ref}
 	}
 	if top := walkTopmostOwnerFromNodeID(nodeID, topo, dp, idx); top != nil {
 		return []ResourceRef{*top}
 	}
 	return nil
+}
+
+// IsGitOpsManagerKind identifies the exact in-cluster GitOps ownership
+// boundaries used by resource context and Applications. A manager's source
+// or parent manager does not own each of its generated descendants.
+func IsGitOpsManagerKind(kind NodeKind, group string) bool {
+	switch kind {
+	case KindApplication:
+		return group == "argoproj.io"
+	case KindKustomization:
+		return group == "kustomize.toolkit.fluxcd.io"
+	case KindHelmRelease:
+		return group == "helm.toolkit.fluxcd.io"
+	}
+	return false
+}
+
+// AcceptsManagerHint checks Flux origin labels against observed inventory and ancestry.
+// Origin labels remain useful when no inventory is available. Once an observed
+// Flux controller records inventory (or targets another cluster), membership
+// must follow the graph, including an owner chain for generated descendants.
+func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef) bool {
+	if idx == nil || (ref.Group != fluxHelmGroup && ref.Group != fluxKustomizeGroup) {
+		return true
+	}
+	manager := idx.nodesByResourceKey[resourceid.ResourceKey(ref.Group, ref.Kind, ref.Namespace, ref.Name)]
+	if manager == nil || !manager.gitopsManagementAuthoritative {
+		return true
+	}
+	targetKey := resourceid.ResourceKey(target.Group, target.Kind, target.Namespace, target.Name)
+	if manager.managedResourceKeys[targetKey] {
+		return true
+	}
+	node := idx.nodesByResourceKey[targetKey]
+	if node == nil {
+		return false
+	}
+	nodeID := node.ID
+	seen := map[string]bool{nodeID: true}
+	queue := []string{nodeID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		// The nearest manager is the ownership boundary. Its source or
+		// parent manager is not the manager of generated descendants.
+		if currentNode := idx.nodesByID[current]; current != nodeID && currentNode != nil && IsGitOpsManagerKind(currentNode.Kind, nodeAPIGroupFromData(currentNode)) {
+			continue
+		}
+		incoming, _ := idx.EdgesFor(current)
+		for _, edge := range incoming {
+			if edge.Type != EdgeManages {
+				continue
+			}
+			if edge.Source == manager.ID {
+				return true
+			}
+			if !seen[edge.Source] {
+				seen[edge.Source] = true
+				queue = append(queue, edge.Source)
+			}
+		}
+	}
+	return false
 }
 
 // detectManagedByFromMeta inspects labels/annotations on obj for GitOps / Helm
@@ -162,7 +240,7 @@ func parseArgoTrackingID(value string) (namespace, name string, ok bool) {
 }
 
 // walkTopmostOwner follows EdgeManages edges upward from the queried node
-// until no further owner exists, returning the topmost ancestor's ResourceRef.
+// until the first GitOps manager or final owner, returning that ResourceRef.
 // Returns nil when the queried resource has no owner in the topology. Cycle-
 // safe: stops at the first revisit.
 //
@@ -224,11 +302,19 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 			break
 		}
 		visited[next] = true
-		ref := resourceRefForNodeID(next, topo, dp)
+		var ref *ResourceRef
+		if idx != nil {
+			ref = resourceRefForNode(idx.nodesByID[next], dp)
+		} else {
+			ref = resourceRefForNodeID(next, topo, dp)
+		}
 		if ref == nil {
 			break
 		}
 		topRef = ref
+		if IsGitOpsManagerKind(NodeKind(ref.Kind), ref.Group) {
+			break
+		}
 		cur = next
 	}
 	return topRef

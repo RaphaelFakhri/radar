@@ -159,11 +159,13 @@ const (
 
 // Node represents a node in the topology graph
 type Node struct {
-	ID     string         `json:"id"`
-	Kind   NodeKind       `json:"kind"`
-	Name   string         `json:"name"`
-	Status HealthStatus   `json:"status"`
-	Data   map[string]any `json:"data"`
+	managedResourceKeys           map[string]bool
+	gitopsManagementAuthoritative bool
+	ID                            string         `json:"id"`
+	Kind                          NodeKind       `json:"kind"`
+	Name                          string         `json:"name"`
+	Status                        HealthStatus   `json:"status"`
+	Data                          map[string]any `json:"data"`
 }
 
 // Edge represents a connection between two nodes

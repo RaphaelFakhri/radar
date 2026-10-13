@@ -79,6 +79,7 @@ func TestAddGitOpsManagedResourceEdgesParsesFluxIdentityFromRight(t *testing.T) 
 		{ID: "job/ml/train_run/batch.volcano.sh", Kind: KindJob, Name: "train_run", Data: map[string]any{"namespace": "ml", "apiVersion": "batch.volcano.sh/v1alpha1"}},
 	}
 	ks := &unstructured.Unstructured{Object: map[string]any{
+		"kind": "Kustomization", "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
 		"metadata": map[string]any{"namespace": "flux-system", "name": "training"},
 		"status": map[string]any{"inventory": map[string]any{"entries": []any{
 			map[string]any{"id": "ml_train_run_batch.volcano.sh_Job"},
@@ -92,7 +93,7 @@ func TestAddGitOpsManagedResourceEdgesParsesFluxIdentityFromRight(t *testing.T) 
 		nil,
 		nil,
 		[]*unstructured.Unstructured{ks},
-		map[string]string{"flux-system/training": "kustomization/flux-system/training"},
+		map[string]string{"Kustomization/flux-system/training": "kustomization/flux-system/training"},
 	)
 	if len(edges) != 1 || edges[0].Target != "job/ml/train_run/batch.volcano.sh" {
 		t.Fatalf("Flux edges = %+v, want only the exact underscore-named Volcano Job", edges)
@@ -133,15 +134,14 @@ func TestAddGitOpsManagedResourceEdgesIgnoresRemoteDestinations(t *testing.T) {
 		map[string]string{"argocd/sealed-hub": "application/argocd/sealed-hub", "argocd/sealed-prod": "application/argocd/sealed-prod"},
 		nil,
 		[]*unstructured.Unstructured{remoteKs},
-		map[string]string{"flux-system/fleet-prod": "kustomization/flux-system/fleet-prod"},
+		map[string]string{"Kustomization/flux-system/fleet-prod": "kustomization/flux-system/fleet-prod"},
 	)
 	if len(edges) != 1 || edges[0].Source != "application/argocd/sealed-hub" {
 		t.Fatalf("manages edges = %+v, want only the in-cluster Application's", edges)
 	}
 }
 
-// HelmReleases have no inventory, so topology links one to the workloads whose
-// Helm labels name it. A release applied to another cluster installed nothing
+// Releases without inventory use the exact Flux origin-label pair. A release applied to another cluster installed nothing
 // here, so a local workload whose labels name it is not its own.
 func TestBuildLinksOnlyLocalHelmReleasesByLabel(t *testing.T) {
 	hrGVR := schema.GroupVersionResource{Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases"}

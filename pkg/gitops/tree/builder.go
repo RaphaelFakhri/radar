@@ -98,11 +98,12 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 	// hosts merge the destination cluster's own tree on top (mergeGitOpsTrees).
 	remote := (tool == ToolArgoCD && strings.EqualFold(root.GetKind(), "Application") && !gitops.IsInClusterDestination(root)) ||
 		(tool == ToolFluxCD && !gitops.FluxTargetsLocalCluster(root))
-	// HelmRelease has no status.inventory; recover its managed set from live
-	// topology by Helm's recommended labels so the resource tree isn't empty.
+	// Older helm-controller versions omit status.inventory. Only in that case
+	// use Flux's exact origin labels; a recorded empty inventory stays empty.
 	// A remote release's objects aren't in local topology, so a local match is
 	// someone else's.
-	if tool == ToolFluxCD && strings.EqualFold(root.GetKind(), "HelmRelease") && len(managed) == 0 && !remote {
+	_, hasInventory, _ := unstructured.NestedFieldNoCopy(root.Object, "status", "inventory")
+	if tool == ToolFluxCD && strings.EqualFold(root.GetKind(), "HelmRelease") && !hasInventory && !remote {
 		managed = fluxHelmReleaseManaged(root, b.topoNodes())
 	}
 	status := rootStatus(root, tool)

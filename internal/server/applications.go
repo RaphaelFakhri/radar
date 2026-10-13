@@ -697,26 +697,6 @@ func appGraphNodeGroup(node *topology.Node, kind string) string {
 	return resourceid.GroupForBuiltinKind(kind)
 }
 
-// isGitOpsManagerKind reports whether a node is an in-cluster GitOps manager —
-// the boundary structuralRoot stops climbing AT. Above a manager lies either a
-// source ref (GitRepository → Kustomization is an EdgeManages edge too) or a
-// parent manager (app-of-apps); climbing THROUGH one would resolve every
-// installation sharing that source/parent to the same structural root and
-// union-find would merge them all into one app. ownerRef chains — including
-// operator CRs (CNPG Cluster, Strimzi Kafka) — are not managers and keep
-// climbing to the topmost owner.
-func isGitOpsManagerKind(kind topology.NodeKind, group string) bool {
-	switch kind {
-	case topology.KindApplication:
-		return group == "argoproj.io"
-	case topology.KindKustomization:
-		return group == "kustomize.toolkit.fluxcd.io"
-	case topology.KindHelmRelease:
-		return group == "helm.toolkit.fluxcd.io"
-	}
-	return false
-}
-
 // structuralRoot walks incoming EdgeManages edges from startID toward the
 // app's structural root: the lowest in-cluster GitOps manager (ArgoCD
 // Application, Flux Kustomization/HelmRelease) when one manages the workload,
@@ -749,7 +729,7 @@ func (g *appGraph) structuralRoot(startID string) (topology.Node, bool) {
 			ok = true
 		}
 		cur = next
-		if exists && isGitOpsManagerKind(n.Kind, appGraphNodeGroup(&n, topology.KubernetesKindForNode(&n))) {
+		if exists && topology.IsGitOpsManagerKind(n.Kind, appGraphNodeGroup(&n, topology.KubernetesKindForNode(&n))) {
 			break
 		}
 	}
@@ -893,6 +873,20 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 		group := appWorkloadAPIGroup(kind)
 		if resource, ok := obj.(*unstructured.Unstructured); ok {
 			group = resourceid.GroupFromAPIVersion(resource.GetAPIVersion())
+		}
+		if overlay != nil {
+			signals := append([]subject.Signal{overlay.Winner}, overlay.Conflicts...)
+			valid := signals[:0]
+			for _, signal := range signals {
+				if g.idx.AcceptsManagerHint(topology.ResourceRef{Kind: signal.Ref.Kind, Group: signal.Ref.Group, Namespace: signal.Ref.Namespace, Name: signal.Ref.Name}, topology.ResourceRef{Kind: kind, Group: group, Namespace: ns, Name: name}) {
+					valid = append(valid, signal)
+				}
+			}
+			if len(valid) == 0 || valid[0].Tier > subject.TierAppName {
+				overlay = nil
+			} else {
+				overlay = &subject.AppOverlay{Winner: valid[0], Conflicts: valid[1:]}
+			}
 		}
 		rootKey, rootKind, rootGroup, rootIdentity := g.rootOf(group, kind, ns, name)
 		rels := g.relationshipsFor(kind, ns, name, obj)
