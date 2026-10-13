@@ -692,6 +692,8 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 
 **Topology:** Full Istio traffic path — IstioGateway → VirtualService → Service, and DestinationRule → Service configuration edges. See how traffic flows through gateway listeners, virtual service routing rules, and into backend services.
 
+Service links accept short names in the rule's namespace or full `name.namespace.svc.<domain>` names. Radar reads a unique registry domain from standard observed Istiod Deployments' `--domain` argument, using Istio's `cluster.local` default when no override is observed. Conflicting or unresolved control-plane arguments leave FQDN links unresolved. External control planes and nonstandard launch configurations may therefore need additional domain discovery; arbitrary dotted hosts are not treated as local Services.
+
 **VirtualService Detail View:**
 - HTTP/TCP/TLS routing rules with match conditions
 - Destinations with weight distribution bars

@@ -430,6 +430,8 @@ type Relationships struct {
 	PodPlacementObserved    bool `json:"-"`
 	PodPlacementUnavailable bool `json:"-"`
 
+	// IstioServiceDomain is the configured registry domain or upstream default; omitted when unknown.
+	IstioServiceDomain string `json:"istioServiceDomain,omitempty"`
 	// Reflection distinguishes reflection links also retained in ConfigRefs/Consumers.
 	Reflection *ReflectionRelationships `json:"reflection,omitempty"`
 

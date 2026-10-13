@@ -351,6 +351,9 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	rel := &Relationships{}
+	if node := nodeByID[nodeID]; node != nil {
+		rel.IstioServiceDomain, _ = node.Data["istioServiceDomain"].(string)
+	}
 	kindLower := strings.ToLower(kind)
 
 	for _, edge := range outgoingEdges {
@@ -735,7 +738,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		len(rel.Ingresses) == 0 && len(rel.Gateways) == 0 && len(rel.Routes) == 0 &&
 		len(rel.ConfigRefs) == 0 && len(rel.Consumers) == 0 && len(rel.Scalers) == 0 &&
 		len(rel.StorageRefs) == 0 && len(rel.Dependencies) == 0 && len(rel.Dependents) == 0 &&
-		len(rel.PDBs) == 0 && len(rel.NetworkPolicies) == 0 &&
+		len(rel.PDBs) == 0 && len(rel.NetworkPolicies) == 0 && rel.IstioServiceDomain == "" &&
 		len(rel.Monitors) == 0 && len(rel.MonitorTargets) == 0 && len(rel.Backends) == 0 && len(rel.RoutedFrom) == 0 && len(rel.Protects) == 0 && len(rel.HealthChecks) == 0 && len(rel.StagedPolicies) == 0 && rel.ScaleTarget == nil && len(rel.Pods) == 0 &&
 		rel.ServiceAccount == nil && rel.Node == nil && len(rel.ResourceClaims) == 0 && len(rel.ManagedBy) == 0 && !rel.PodPlacementObserved {
 		return nil
