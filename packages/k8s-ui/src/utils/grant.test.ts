@@ -9,6 +9,7 @@ describe('formatGrant', () => {
     expect(formatGrant({ verb: 'get', resource: 'pods', subresource: 'proxy', namespace: 'pg' })).toBe('get pods/proxy in namespace pg')
   })
   it('words a cluster-wide grant with the group as resource.group', () => {
+    expect(formatGrant({ verb: 'patch', resource: 'clusters', group: 'example.io', subresource: 'status' })).toBe('patch clusters.example.io/status cluster-wide')
     expect(formatGrant({ verb: 'get', resource: 'nodes' })).toBe('get nodes cluster-wide')
     expect(formatGrant({ verb: 'list', group: 'postgresql.cnpg.io', resource: 'clusters' })).toBe('list clusters.postgresql.cnpg.io cluster-wide')
   })

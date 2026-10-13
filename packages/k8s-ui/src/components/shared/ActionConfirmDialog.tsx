@@ -50,7 +50,8 @@ export interface ActionConfirmDialogProps {
   error?: string | null
   /**
    * The last attempt may or may not have taken effect. Confirm stays locked:
-   * repeating it could apply the action twice.
+   * repeating it could apply the action twice. The host must retain this state
+   * across dismissal/remount until it has reviewed the current target again.
    */
   outcomeUnknown?: boolean
   /** Heading for `error` while `outcomeUnknown`; defaults to "Radar could not tell whether this took effect". */
@@ -205,9 +206,9 @@ export function ActionConfirmDialog({
           </label>
         )}
 
-        {error &&
+        {(error || outcomeUnknown) &&
           (outcomeUnknown ? (
-            <AlertBanner variant="warning" title={outcomeTitle} message={error} />
+            <AlertBanner variant="warning" title={outcomeTitle} message={error || "Check the object’s current state before another attempt."} />
           ) : (
             <AlertBanner variant="error" title={errorTitle} message={error} />
           ))}

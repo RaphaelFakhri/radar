@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ActionConfirmDialog, type ActionConfirmDialogProps } from './ActionConfirmDialog'
@@ -80,6 +80,8 @@ describe('ActionConfirmDialog', () => {
   it('locks an unknown result even without an error string', () => {
     render({ outcomeUnknown: true })
     expect(button('Scale').disabled).toBe(true)
+    expect(document.body.textContent).toContain('Radar could not tell whether this took effect')
+    expect(document.body.textContent).toContain('Check the object’s current state')
   })
   it('allows retry after a known refusal, using neutral default error copy', () => {
     render({ error: 'The reviewed replica count changed.' })
@@ -114,4 +116,25 @@ describe('ActionConfirmDialog', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(document.body.textContent).toContain('spec.replicas: 3')
   })
+})
+
+it('retains a host-owned outcome lock across dialog dismissal and remount', () => {
+  function Host() {
+    const [open, setOpen] = useState(true)
+    const [unknown, setUnknown] = useState(true)
+    return <>
+      <button onClick={() => setOpen(true)}>Review action</button>
+      <button onClick={() => setUnknown(false)}>Current state reviewed</button>
+      {open && <ActionConfirmDialog {...base} outcomeUnknown={unknown} onClose={() => setOpen(false)} />}
+    </>
+  }
+  const root = createRoot(document.body.appendChild(document.createElement('div')))
+  roots.push(root)
+  act(() => root.render(<Host />))
+  expect(button('Scale').disabled).toBe(true)
+  act(() => button('Cancel').click())
+  act(() => button('Review action').click())
+  expect(button('Scale').disabled).toBe(true)
+  act(() => button('Current state reviewed').click())
+  expect(button('Scale').disabled).toBe(false)
 })

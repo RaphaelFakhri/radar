@@ -18,13 +18,12 @@ function grantResource(g: Grant): string {
 /**
  * The grant's two halves for display: what ("patch clusters/status
  * (postgresql.cnpg.io)") and where (" in namespace pg", " cluster-wide").
- * Worded like the server's Grant.String so the two never disagree.
  */
 export function grantParts(g: Grant): { what: string; scope: string } {
   if (g.namespace) {
     return { what: `${g.verb} ${grantResource(g)}${g.group ? ` (${g.group})` : ''}`, scope: ` in namespace ${g.namespace}` }
   }
-  return { what: `${g.verb} ${grantResource(g)}${g.group ? `.${g.group}` : ''}`, scope: ' cluster-wide' }
+  return { what: `${g.verb} ${g.resource}${g.group ? `.${g.group}` : ''}${g.subresource ? `/${g.subresource}` : ''}`, scope: ' cluster-wide' }
 }
 
 export function formatGrant(g: Grant): string

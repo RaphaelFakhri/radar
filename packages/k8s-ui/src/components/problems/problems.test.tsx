@@ -26,7 +26,7 @@ describe('problemOriginLabel', () => {
 })
 
 it('keeps original scheduler evidence behind a closed disclosure in callouts and lists', () => {
-  const p = { ...problem('Pod'), detail: 'both nodes have reached their Pod limit', rawDetail: '0/2 nodes are available: 2 Too many pods.' }
+  const p = { ...problem('Pod'), detail: 'both nodes have reached their Pod limit', rawDetailLabel: 'Scheduler message', rawDetail: '0/2 nodes are available: 2 Too many pods.' }
   for (const node of [<ProblemCallout problem={p} rootKind="Cluster" />, <ProblemList problems={[p]} rootKind="Cluster" />]) {
     const html = renderToStaticMarkup(node)
     expect(html).toContain(p.detail)
@@ -35,4 +35,9 @@ it('keeps original scheduler evidence behind a closed disclosure in callouts and
     expect(html).toContain('aria-expanded="false"')
   }
   expect(renderToStaticMarkup(<ProblemCallout problem={problem('Pod')} rootKind="Cluster" />)).not.toContain('Scheduler message')
+})
+
+it('uses a generic label for raw evidence from another controller', () => {
+  const p = { ...problem('Deployment'), rawDetail: 'Progress deadline exceeded.' }
+  expect(renderToStaticMarkup(<ProblemCallout problem={p} rootKind="Application" />)).toContain('Original evidence')
 })

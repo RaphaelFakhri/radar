@@ -18,6 +18,6 @@ export function ProblemCallout(props: Omit<ComponentProps<typeof WorkspaceProble
   return <WorkspaceProblemCallout {...props} rootKind="Cluster" />
 }
 
-export function ToneDot({ tone }: ComponentProps<typeof StatusDot>) {
+export function ToneDot({ tone }: Pick<ComponentProps<typeof StatusDot>, 'tone'>) {
   return <StatusDot tone={tone} size="sm" />
 }
