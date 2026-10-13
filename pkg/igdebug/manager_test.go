@@ -383,3 +383,35 @@ func TestPartialKeepsTheFirstCause(t *testing.T) {
 		t.Fatalf("lost the first capture cause: %#v", view)
 	}
 }
+
+func TestContextSwitchHidesRunsBeforeCleanupEvenForTheSameContextName(t *testing.T) {
+	manager := NewManager(DefaultLimits())
+	owner := Owner{User: "alice", Context: "same-name"}
+	cancelled, release := make(chan struct{}), make(chan struct{})
+	run, err := manager.Start(requestFor(owner, AspectDNS), executorFunc(func(ctx context.Context, req Request, reporter Reporter) error {
+		reporter.Started(req.Target)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return ctx.Err()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe, err := manager.Subscribe(run.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	switched := make(chan struct{})
+	go func() { manager.OnContextSwitch(); close(switched) }()
+	<-cancelled
+	if _, err := manager.Get(run.ID, owner); !errors.Is(err, ErrNotFound) {
+		close(release)
+		t.Fatalf("old run was readable during cleanup: %v", err)
+	}
+	for range events {
+	}
+	close(release)
+	<-switched
+}

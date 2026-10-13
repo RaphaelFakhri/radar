@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Activity, LoaderCircle, Play, Square } from 'lucide-react'
 import { Section, AlertBanner, ResourceLink } from '../../ui/drawer-components'
 import { Badge } from '../../ui/Badge'
+import { TimeValue } from '../../ui/ScheduleValue'
 
 export type LiveDebugAspect = 'processes' | 'connections' | 'dns'
 export type LiveDebugState = 'starting' | 'running' | 'stopping' | 'complete' | 'stopped' | 'failed' | 'partial'
@@ -180,13 +181,12 @@ export function LiveDebugSection({
 }
 
 function ResultView({ result, onNavigate }: { result: LiveDebugResult; onNavigate?: LiveDebugSectionProps['onNavigate'] }) {
-  const captured = new Date(result.capturedAt).toLocaleTimeString()
   const noun = result.aspect === 'processes' ? 'process' : result.aspect === 'connections' ? 'socket' : 'event'
   return (
     <div className="card-inner-lg space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-theme-text-tertiary">
         <span>{result.eventCount} {noun}{result.eventCount === 1 ? '' : 's'}</span>
-        <span>Captured at {captured}{result.captureDurationMs > 0 ? ` · ${(result.captureDurationMs / 1000).toFixed(1)}s` : ''}</span>
+        <span>Captured <TimeValue timestamp={result.capturedAt} />{result.captureDurationMs > 0 ? ` · ${(result.captureDurationMs / 1000).toFixed(1)}s` : ''}</span>
       </div>
       <div className="break-all text-xs text-theme-text-tertiary">
         {result.target.namespace}/{result.target.pod} · {result.target.container}

@@ -245,6 +245,10 @@ func (m *Manager) OnContextSwitch() {
 		run.discard = true
 		run.view.State = StateStopping
 		run.cancel()
+		for ch := range run.subscribers {
+			close(ch)
+			delete(run.subscribers, ch)
+		}
 		done = append(done, run.done)
 	}
 	m.mu.Unlock()
@@ -333,7 +337,7 @@ func (m *Manager) reporterPartial(id, reason string) {
 
 func (m *Manager) authorizeLocked(id string, owner Owner) (*managedRun, error) {
 	run := m.runs[id]
-	if run == nil {
+	if run == nil || run.discard {
 		return nil, ErrNotFound
 	}
 	if run.owner != owner {
