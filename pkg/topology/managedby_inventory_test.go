@@ -94,6 +94,27 @@ func TestNestedFluxBuilderKeepsNearestManager(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				rootID := "kustomization/flux-system/flux-system"
+				repoID := "gitrepository/flux-system/flux-system"
+				for _, edge := range topo.Edges {
+					if edge.Source == repoID && edge.Target == rootID && edge.Type == EdgeManages {
+						t.Fatal("source dependency formed a management cycle")
+					}
+				}
+				rootRel := GetRelationshipsWithObject("Kustomization", "flux-system", "flux-system", root, topo, provider, dp, IndexByResource(topo))
+				if rootRel == nil || rootRel.Owner != nil {
+					t.Fatalf("repository incorrectly owns the reconciler: %+v", rootRel)
+				}
+				ownedRepo, usedRepo := false, false
+				for _, ref := range rootRel.Children {
+					ownedRepo = ownedRepo || ref.Kind == "GitRepository" && ref.Name == "flux-system"
+				}
+				for _, ref := range rootRel.Dependencies {
+					usedRepo = usedRepo || ref.Kind == "GitRepository" && ref.Name == "flux-system"
+				}
+				if !ownedRepo || !usedRepo {
+					t.Fatalf("bootstrap inventory ownership or source dependency lost: %+v", rootRel)
+				}
 				rel := GetRelationshipsWithObject("Pod", "prod", pod.Name, pod, topo, provider, dp, IndexByResource(topo))
 				if rel == nil || len(rel.ManagedBy) != 1 || rel.ManagedBy[0].Kind != wantKind || rel.ManagedBy[0].Name != wantName || rel.ManagedBy[0].Group != wantGroup {
 					t.Fatalf("managedBy=%+v want %s/%s (%s)", rel, wantKind, wantName, wantGroup)

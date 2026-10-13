@@ -4480,7 +4480,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		name := ks.GetName()
 		ksID := kustomizationIDs[ns+"/"+name]
 
-		// Also create edge from GitRepository to Kustomization if source ref exists
+		// A source dependency does not establish ownership of the reconciler.
 		spec, _, _ := unstructured.NestedMap(ks.Object, "spec")
 		if spec != nil {
 			if sourceRef, ok, _ := unstructured.NestedMap(spec, "sourceRef"); ok && sourceRef != nil {
@@ -4495,10 +4495,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					gitRepoID := gitRepoIDs[refNS+"/"+refName]
 					if gitRepoID != "" {
 						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", gitRepoID, ksID),
-							Source: gitRepoID,
-							Target: ksID,
-							Type:   EdgeManages, // GitRepo provides source for Kustomization
+							ID:     fmt.Sprintf("%s-uses-%s", ksID, gitRepoID),
+							Source: ksID,
+							Target: gitRepoID,
+							Type:   EdgeUses,
 						})
 					}
 				}
