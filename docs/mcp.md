@@ -711,12 +711,13 @@ observed ancestry, not ownership of a Kubernetes object.
 `ownerAggregationController` is true if a matched member names that parent as
 its controller.
 
-Relationship-cache graphs keep Pods grouped. Private member identity and owner
-references support individual Pod lookups, complete Children lists and deletion
-previews at query time; filtering away a display group also removes its members
-from that query. These snapshots are not serialized. Delete previews distinguish
-verified owner-reference dependents, possible dependents with unresolved other
-owners, and GitOps finalizer teardown. Teardown reports a local, remote or unknown
-destination; remote and unknown destinations do not use a local resource list.
-Preview references follow resource-detail read gates, and `withheld` names the
-fields that omitted unreadable resources without exposing names or hidden counts.
+REST `owner` and `children` relationships include individual Pods even when
+topology groups them. GitOps inventory and label-based management are not
+Kubernetes ownership.
+
+REST `cascade-preview` separates predicted garbage-collection `dependents` from
+`possibleDependents` whose deletion is uncertain because other owners are
+unresolved. `controllerTeardown` describes GitOps cleanup through finalizers;
+its `destination` is `local`, `remote` or `unknown`, and only local teardown can
+list resources. `withheld` names lists with unreadable references; an empty list
+marked this way does not mean no resources are affected.
