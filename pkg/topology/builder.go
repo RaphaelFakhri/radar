@@ -5834,6 +5834,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Only includes CRDs already being watched and with owner refs to existing nodes
 	if opts.IncludeGenericCRDs {
 		nodes, edges = b.addGenericCRDNodes(nodes, edges, opts)
+		var issuerWarnings []string
+		nodes, edges, issuerWarnings = b.addIssuanceIssuerEdges(nodes, edges, opts)
+		warnings = append(warnings, issuerWarnings...)
 	}
 	edges = addKnativeReferenceEdges(nodes, edges, knativeTriggerResources, knativeSourceResources, knativeChannelResources)
 	edges = addGitOpsManagedResourceEdges(
