@@ -41,7 +41,7 @@ export type ProblemProvenance =
   | { source: 'audit'; sourceDetail?: string; origin?: never; measuredBy?: never }
   | { source: 'measurement'; measuredBy?: string; sourceDetail?: string; origin?: never }
 
-export type WorkspaceProblem<C extends string = string> = ProblemDetails<C> & ProblemProvenance & { tone: HealthLevel }
+export type WorkspaceProblem<C extends string = string> = ProblemDetails<C> & ProblemProvenance & { tone: Exclude<HealthLevel, 'healthy'> }
 
 /** A problem's provenance label: where its evidence comes from, never a generic "Radar issue". */
 export function problemOriginLabel(problem: WorkspaceProblem): ProblemOrigin {
@@ -131,9 +131,8 @@ export function WorkspaceProblemCallout({
   subjectIsSelf?: boolean
 }) {
   const severity = healthToSeverity(problem.tone)
-  const variant = severity === 'alert' ? 'warning' : severity === 'neutral' ? 'info' : severity
   return (
-    <AlertBanner variant={variant} title={problem.title} message={problem.detail}>
+    <AlertBanner variant={severity} title={problem.title} message={problem.detail}>
       {problem.rawDetail && <FoldSection title={problem.rawDetailLabel ?? "Original evidence"} summary="" attention={false}><div className="break-words text-xs text-theme-text-secondary">{problem.rawDetail}</div></FoldSection>}
       <ProblemMeta problem={problem} rootKind={rootKind} onNavigate={onNavigate} subjectIsSelf={subjectIsSelf}>
         {action}

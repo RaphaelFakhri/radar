@@ -48,3 +48,13 @@ it('keeps source-specific provenance fields exclusive in the public type', () =>
   expectTypeOf<Details & { source: 'measurement'; origin: { label: string } }>().not.toMatchTypeOf<WorkspaceProblem>()
   expectTypeOf<Details & { source: 'audit'; origin: { label: string } }>().not.toMatchTypeOf<WorkspaceProblem>()
 })
+
+it('preserves alert and unknown tones in callouts and compact lists', () => {
+  for (const tone of ['alert', 'unknown'] as const) {
+    const p = { ...problem('Pod'), tone }
+    const callout = renderToStaticMarkup(<WorkspaceProblemCallout problem={p} rootKind="Cluster" />)
+    expect(callout).toContain(`status-${tone}`)
+  }
+  type HealthyProblem = Omit<ReturnType<typeof details>, 'tone'> & { source: 'issue'; tone: 'healthy' }
+  expectTypeOf<HealthyProblem>().not.toMatchTypeOf<WorkspaceProblem>()
+})

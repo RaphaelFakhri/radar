@@ -1,8 +1,7 @@
-import type { HealthLevel } from '../resources/resource-utils'
 import type { WorkspaceProblem } from '../problems'
 import type { CNPGProblem, CNPGProblemCategory } from './workspace'
 
-export const CNPG_PROBLEM_TONE: Record<CNPGProblem['severity'], HealthLevel> = {
+export const CNPG_PROBLEM_TONE: Record<CNPGProblem['severity'], WorkspaceProblem['tone']> = {
   critical: 'unhealthy',
   warning: 'degraded',
   posture: 'neutral',
