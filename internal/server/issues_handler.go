@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
+	"github.com/skyhook-io/radar/internal/readscope"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"log"
 	"net/http"
@@ -11,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/filter"
 	"github.com/skyhook-io/radar/internal/helm"
@@ -74,7 +75,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	// is unrestricted); non-nil empty = "user has no access to anything
 	// they asked for".
 	namespaces := s.parseNamespacesForUser(r)
-	if noNamespaceAccess(namespaces) {
+	if readscope.NoNamespaceAccess(namespaces) {
 		// If the caller EXPLICITLY named namespace(s) they can't access, that's
 		// a denial — surface it as 403, not an empty (reads-as-"nothing broken")
 		// list. Bad trust boundary otherwise, especially for an agent.

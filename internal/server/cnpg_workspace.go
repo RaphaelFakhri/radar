@@ -17,6 +17,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/readscope"
 	bp "github.com/skyhook-io/radar/pkg/audit"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
 )
@@ -250,7 +251,7 @@ func (s *Server) handleCNPGWorkspace(w http.ResponseWriter, r *http.Request) {
 // would disclose namespaces the caller was never shown; partial then carries
 // the fact without the names.
 func (s *Server) cnpgWorkspaceScope(r *http.Request, namespaces []string, group, resource string) (allowed, denied []string, partial, any bool) {
-	if noNamespaceAccess(namespaces) {
+	if readscope.NoNamespaceAccess(namespaces) {
 		return []string{}, nil, false, false
 	}
 	if s.canRead(r, group, resource, "", "list") {
@@ -516,14 +517,14 @@ func (s *Server) cnpgTypedScope(r *http.Request, cache *k8s.ResourceCache, names
 	if !ok {
 		return cnpgKindAccess{state: cnpgCoverageDenied}, nil, []string{}
 	}
-	within := capacityNamespacesWithinCache(cache, resource, allowed)
-	if within.unavailable {
+	within := readscope.NamespacesWithinCache(cache, resource, allowed)
+	if within.Unavailable {
 		log.Printf("[cnpg] %s cache does not cover the requested scope", resource)
 		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
 	}
 	if allowed != nil {
 		for _, ns := range allowed {
-			if slices.Contains(within.namespaces, ns) {
+			if slices.Contains(within.Namespaces, ns) {
 				continue
 			}
 			partial = true
@@ -533,8 +534,8 @@ func (s *Server) cnpgTypedScope(r *http.Request, cache *k8s.ResourceCache, names
 		}
 		sort.Strings(denied)
 	}
-	acc = accessFromScope(within.namespaces, partial || within.partial)
-	return acc, denied, within.namespaces
+	acc = accessFromScope(within.Namespaces, partial || within.Partial)
+	return acc, denied, within.Namespaces
 }
 
 // cnpgWorkspaceReadPods returns the instance Pods of visible Clusters, plus
@@ -552,7 +553,7 @@ func (s *Server) cnpgWorkspaceReadPods(r *http.Request, cache *k8s.ResourceCache
 		return cnpgKindAccess{state: cnpgCoverageError}, nil, out, returned
 	}
 
-	pods := listPodsScoped(cache.Pods(), read)
+	pods := readscope.ListPodsScoped(cache.Pods(), read)
 	sort.Slice(pods, func(i, j int) bool {
 		if pods[i].Namespace != pods[j].Namespace {
 			return pods[i].Namespace < pods[j].Namespace
@@ -584,7 +585,7 @@ var cnpgWorkspaceKeyByGroupKind = func() map[string]string {
 // this response returned. IDs are the subject-derived IDs /api/issues uses.
 func (s *Server) cnpgWorkspaceIssues(r *http.Request, namespaces []string, access map[string]cnpgKindAccess, instancePods map[string]bool) []CNPGWorkspaceIssue {
 	out := []CNPGWorkspaceIssue{}
-	if noNamespaceAccess(namespaces) {
+	if readscope.NoNamespaceAccess(namespaces) {
 		return out
 	}
 	provider := issues.NewCacheProvider()

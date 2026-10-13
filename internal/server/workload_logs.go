@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
 	"io"
 	"log"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +29,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
+	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/rollouts"
@@ -183,12 +184,12 @@ func (s *Server) handleWorkloadRuns(w http.ResponseWriter, r *http.Request) {
 	runNamespaces := []string{namespace}
 	if clusterScoped {
 		runNamespaces = s.parseNamespacesForUser(r)
-		if noNamespaceAccess(runNamespaces) {
+		if readscope.NoNamespaceAccess(runNamespaces) {
 			s.writeError(w, http.StatusForbidden, "no namespace access")
 			return
 		}
 	} else {
-		if allowed := s.getUserNamespaces(r, []string{namespace}); noNamespaceAccess(allowed) {
+		if allowed := s.getUserNamespaces(r, []string{namespace}); readscope.NoNamespaceAccess(allowed) {
 			s.writeError(w, http.StatusForbidden, "no access to namespace "+namespace)
 			return
 		}
@@ -283,7 +284,7 @@ func (s *Server) handleWorkloadRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) readableRunNamespaces(r *http.Request, group, resource string, namespaces []string) ([]string, bool) {
-	if noNamespaceAccess(namespaces) {
+	if readscope.NoNamespaceAccess(namespaces) {
 		return nil, false
 	}
 	if namespaces == nil {
@@ -303,7 +304,7 @@ func (s *Server) authorizeWorkloadPodRead(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusBadRequest, "only deployments, statefulsets, daemonsets, rollouts, jobs, and workflows are supported")
 		return false
 	}
-	if noNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
+	if readscope.NoNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
 		s.writeError(w, http.StatusForbidden, "no access to namespace "+namespace)
 		return false
 	}

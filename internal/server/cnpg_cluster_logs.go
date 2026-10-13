@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
 	"io"
 	"log"
 	"math"
@@ -15,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -24,6 +24,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
+	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
@@ -100,7 +101,7 @@ func (s *Server) authorizeCNPGClusterLogs(w http.ResponseWriter, r *http.Request
 	if !s.requireConnected(w) {
 		return false
 	}
-	if noNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
+	if readscope.NoNamespaceAccess(s.getUserNamespaces(r, []string{namespace})) {
 		s.writeError(w, http.StatusForbidden, "no access to namespace "+namespace)
 		return false
 	}

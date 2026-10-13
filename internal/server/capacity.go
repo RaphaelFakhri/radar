@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/go-chi/chi/v5"
 	"log"
 	"net/http"
 	"net/url"
@@ -8,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/readscope"
 	internaltimeline "github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/karpenter"
@@ -441,7 +442,7 @@ func (s *Server) loadCapacityModel(w http.ResponseWriter, r *http.Request, ident
 	result.meta.Provider = capacityProvider(result.meta.Provider, nodePools, nodeClaims, nodeClasses, result.meta.Coverage)
 	resourceCache := k8s.GetResourceCache()
 	ownerResolutionAllowed, workloadAttributionPartial := capacityOwnerResolutionPermissions(pods, func(group, resource, namespace string) bool {
-		return s.canRead(r, group, resource, namespace, "list") && capacityCacheCoversNamespace(resourceCache, resource, namespace)
+		return s.canRead(r, group, resource, namespace, "list") && readscope.CacheCoversNamespace(resourceCache, resource, namespace)
 	})
 	if workloadAttributionPartial {
 		coverage := result.meta.Coverage[capacityapi.CoverageWorkloads]
@@ -700,7 +701,7 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 	baseNamespaces := s.capacityNamespacesForUser(r)
 	namespaces := s.capacityNamespacesForSource(r, baseNamespaces, "", "pods")
 	explicit := parseNamespaces(r.URL.Query()) != nil || k8s.ForceNamespaceScope
-	if noNamespaceAccess(namespaces) {
+	if readscope.NoNamespaceAccess(namespaces) {
 		meta.Coverage[capacityapi.CoveragePods] = deniedCoverage("pods_list_denied", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
 		meta.Coverage[capacityapi.CoverageWorkloads] = meta.Coverage[capacityapi.CoveragePods]
 		return nil
@@ -712,11 +713,11 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		return nil
 	}
 	sourceNamespaces := namespaces
-	cacheNamespaces := capacityNamespacesWithinCache(cache, "pods", sourceNamespaces)
-	namespaces = cacheNamespaces.namespaces
-	if cacheNamespaces.unavailable {
+	cacheNamespaces := readscope.NamespacesWithinCache(cache, "pods", sourceNamespaces)
+	namespaces = cacheNamespaces.Namespaces
+	if cacheNamespaces.Unavailable {
 		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
-		if explicit || cacheNamespaces.limited && sourceNamespaces == nil {
+		if explicit || cacheNamespaces.Limited && sourceNamespaces == nil {
 			coverage.Scope = capacityapi.CoverageScopeExplicitNamespaces
 		} else if sourceNamespaces != nil {
 			coverage.Scope = capacityapi.CoverageScopeAllAuthorizedNamespaces
@@ -726,11 +727,11 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 		return nil
 	}
-	pods := listPodsScoped(cache.Pods(), namespaces)
+	pods := readscope.ListPodsScoped(cache.Pods(), namespaces)
 	scope := capacityapi.CoverageScopeCluster
 	status := capacityapi.CoverageAvailable
-	if namespaces != nil || cacheNamespaces.limited {
-		if explicit || cacheNamespaces.limited && sourceNamespaces == nil {
+	if namespaces != nil || cacheNamespaces.Limited {
+		if explicit || cacheNamespaces.Limited && sourceNamespaces == nil {
 			scope = capacityapi.CoverageScopeExplicitNamespaces
 		} else {
 			scope = capacityapi.CoverageScopeAllAuthorizedNamespaces
@@ -739,11 +740,11 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 			status = capacityapi.CoveragePartial
 		}
 	}
-	if cacheNamespaces.partial {
+	if cacheNamespaces.Partial {
 		status = capacityapi.CoveragePartial
 	}
 	coverage := capacityapi.NewSourceCoverage(status, scope)
-	if cacheNamespaces.partial {
+	if cacheNamespaces.Partial {
 		coverage.ReasonCode = "pod_cache_scope_partial"
 	}
 	coverage.Namespaces = append([]string{}, namespaces...)

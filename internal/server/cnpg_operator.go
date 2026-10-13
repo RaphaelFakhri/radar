@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/readscope"
 )
 
 const (
@@ -339,7 +340,7 @@ func (s *Server) cnpgOperatorConfigMap(r *http.Request, cache *k8s.ResourceCache
 		state.Reason = "ConfigMaps are still loading"
 		return ref
 	}
-	if !capacityCacheCoversNamespace(cache, "configmaps", namespace) {
+	if !readscope.CacheCoversNamespace(cache, "configmaps", namespace) {
 		state.Reason = "Radar does not watch ConfigMaps in " + namespace
 		return ref
 	}
