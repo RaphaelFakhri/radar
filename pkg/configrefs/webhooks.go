@@ -26,7 +26,8 @@ func AdmissionWebhookServices(obj *unstructured.Unstructured) []WebhookServiceRe
 	default:
 		return nil
 	}
-	webhooks, _, _ := unstructured.NestedSlice(obj.Object, "webhooks")
+	rawWebhooks, _, _ := unstructured.NestedFieldNoCopy(obj.Object, "webhooks")
+	webhooks, _ := rawWebhooks.([]any)
 	var refs []WebhookServiceReference
 	for i, raw := range webhooks {
 		webhook, ok := raw.(map[string]any)

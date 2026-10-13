@@ -4,16 +4,16 @@ import (
 	"context"
 
 	"github.com/skyhook-io/radar/pkg/configrefs"
+	"github.com/skyhook-io/radar/pkg/k8score"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// WebhookConsumerLookup is an optional indexed dynamic-cache capability.
-// complete distinguishes synced absence from partial informer contents.
-type WebhookConsumerLookup interface {
-	AdmissionWebhookConsumers(schema.GroupVersionResource, string, string) ([]*unstructured.Unstructured, bool, error)
+type cachedDynamicReader interface {
+	ListWatchedReadOnly(schema.GroupVersionResource) ([]*unstructured.Unstructured, error)
+	Observation(schema.GroupVersionResource) k8score.DynamicResourceObservation
 }
 
 func addWebhookContext(ctx context.Context, obj runtime.Object, opts Options, rc *ResourceContext, omitted *omittedTracker) {
@@ -35,7 +35,7 @@ func addWebhookContext(ctx context.Context, obj runtime.Object, opts Options, rc
 		omitted.add("dependents", OmittedCacheCold)
 		return
 	}
-	lookup, supported := opts.DynamicProv.(WebhookConsumerLookup)
+	lookup, supported := opts.DynamicProv.(cachedDynamicReader)
 	if !supported {
 		omitted.add("dependents", OmittedUnavailable)
 		return
@@ -52,7 +52,16 @@ func addWebhookContext(ctx context.Context, obj runtime.Object, opts Options, rc
 			omitted.add("dependents", OmittedCacheCold)
 			continue
 		}
-		objects, complete, err := lookup.AdmissionWebhookConsumers(gvr, ident.Namespace, ident.Name)
+		observation := lookup.Observation(gvr)
+		switch observation.State {
+		case k8score.DynamicObservationDenied:
+			omitted.add("dependents", OmittedRBACDenied)
+			continue
+		case k8score.DynamicObservationUnsupported:
+			omitted.add("dependents", OmittedUnavailable)
+			continue
+		}
+		objects, err := lookup.ListWatchedReadOnly(gvr)
 		if err != nil {
 			switch {
 			case apierrors.IsForbidden(err):
@@ -62,7 +71,7 @@ func addWebhookContext(ctx context.Context, obj runtime.Object, opts Options, rc
 			}
 			continue
 		}
-		if !complete {
+		if observation.State != k8score.DynamicObservationSynced {
 			omitted.add("dependents", OmittedCacheCold)
 		}
 		for _, webhook := range objects {

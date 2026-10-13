@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/topology"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -20,6 +22,7 @@ type webhookContextProvider struct {
 	lists   map[string]int
 	fail    bool
 	cold    bool
+	state   k8score.DynamicObservationState
 	err     error
 }
 
@@ -32,15 +35,26 @@ func (p *webhookContextProvider) GetGVRWithGroup(kind, group string) (schema.Gro
 	}
 	return schema.GroupVersionResource{Group: group, Version: "v1", Resource: kind}, true
 }
-func (p *webhookContextProvider) AdmissionWebhookConsumers(gvr schema.GroupVersionResource, namespace, name string) ([]*unstructured.Unstructured, bool, error) {
+func (p *webhookContextProvider) ListWatchedReadOnly(gvr schema.GroupVersionResource) ([]*unstructured.Unstructured, error) {
 	p.lists[gvr.Resource]++
 	if p.err != nil {
-		return nil, false, p.err
+		return nil, p.err
 	}
 	if p.fail {
-		return nil, false, errors.New("informer not ready")
+		return nil, errors.New("informer not ready")
 	}
-	return p.objects[gvr.Resource], !p.cold, nil
+	return p.objects[gvr.Resource], nil
+}
+
+func (p *webhookContextProvider) Observation(schema.GroupVersionResource) k8score.DynamicResourceObservation {
+	state := p.state
+	if state == "" {
+		state = k8score.DynamicObservationSynced
+		if p.cold {
+			state = k8score.DynamicObservationSyncing
+		}
+	}
+	return k8score.DynamicResourceObservation{State: state}
 }
 
 func webhookContextObject(kind, name, ns, service string) *unstructured.Unstructured {
@@ -71,12 +85,16 @@ func TestWebhookContextReverseExactBoundedAndCached(t *testing.T) {
 	custom := webhookContextObject("ValidatingWebhookConfiguration", "custom", "backend", "admission")
 	custom.SetAPIVersion("custom.example/v1")
 	p.objects["ValidatingWebhookConfiguration"] = append(p.objects["ValidatingWebhookConfiguration"], custom)
+	before := p.objects["MutatingWebhookConfiguration"][0].DeepCopy()
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "admission", Namespace: "backend"}}
 	rc := &ResourceContext{}
 	omitted := newOmittedTracker()
 	addWebhookContext(context.Background(), svc, Options{DynamicProv: p}, rc, omitted)
 	if len(rc.Dependents) != maxReferencedByItems || rc.Dependents[0].Kind == rc.Dependents[1].Kind || !slices.Contains(omitted.collect(), OmittedField{Field: "dependents", Reason: OmittedBudgetExceeded}) {
 		t.Fatalf("bounded fair reverse refs: %+v omitted %+v", rc, omitted.collect())
+	}
+	if !reflect.DeepEqual(before, p.objects["MutatingWebhookConfiguration"][0]) {
+		t.Fatal("reverse scan mutated cached webhook")
 	}
 	for _, ref := range rc.Dependents {
 		if ref.Group != "admissionregistration.k8s.io" || ref.Namespace != "" || ref.Name == "custom" || ref.Name == "other-namespace" || ref.Name == "other-service" {
@@ -104,14 +122,14 @@ func TestWebhookContextReverseExactBoundedAndCached(t *testing.T) {
 	}
 }
 
-func TestWebhookContextSuccessfulUnsyncedIndexIsPartial(t *testing.T) {
+func TestWebhookContextSuccessfulUnsyncedCacheIsPartial(t *testing.T) {
 	p := &webhookContextProvider{cold: true, objects: map[string][]*unstructured.Unstructured{"MutatingWebhookConfiguration": {webhookContextObject("MutatingWebhookConfiguration", "partial", "backend", "admission")}, "ValidatingWebhookConfiguration": nil}, lists: map[string]int{}}
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "admission", Namespace: "backend"}}
 	rc := &ResourceContext{}
 	omitted := newOmittedTracker()
 	addWebhookContext(context.Background(), svc, Options{DynamicProv: p}, rc, omitted)
 	if len(rc.Dependents) != 1 || !slices.Contains(omitted.collect(), OmittedField{Field: "dependents", Reason: OmittedCacheCold}) {
-		t.Fatalf("unsynced index claimed complete: %+v %+v", rc, omitted.collect())
+		t.Fatalf("unsynced cache claimed complete: %+v %+v", rc, omitted.collect())
 	}
 	rc = &ResourceContext{}
 	omitted = newOmittedTracker()
@@ -167,5 +185,45 @@ func TestWebhookContextAbsentProviderMarksIncompleteCoverage(t *testing.T) {
 	rc := Build(context.Background(), foreign, Options{})
 	if slices.Contains(rc.Omitted, OmittedField{Field: "dependents", Reason: OmittedCacheCold}) {
 		t.Fatalf("foreign Service inherited core webhook coverage: %+v", rc.Omitted)
+	}
+}
+
+func TestWebhookContextObservationStates(t *testing.T) {
+	for _, scenario := range []struct {
+		state  k8score.DynamicObservationState
+		reason OmittedReason
+		read   bool
+	}{
+		{k8score.DynamicObservationUnwatched, OmittedCacheCold, true},
+		{k8score.DynamicObservationDeferred, OmittedCacheCold, true},
+		{k8score.DynamicObservationSyncing, OmittedCacheCold, true},
+		{k8score.DynamicObservationSynced, "", true},
+		{k8score.DynamicObservationDenied, OmittedRBACDenied, false},
+		{k8score.DynamicObservationUnsupported, OmittedUnavailable, false},
+	} {
+		t.Run(string(scenario.state), func(t *testing.T) {
+			p := &webhookContextProvider{state: scenario.state, objects: map[string][]*unstructured.Unstructured{}, lists: map[string]int{}}
+			for _, kind := range []string{"MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"} {
+				p.objects[kind] = []*unstructured.Unstructured{webhookContextObject(kind, "known", "backend", "admission")}
+			}
+			svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "admission", Namespace: "backend"}}
+			rc := &ResourceContext{}
+			omitted := newOmittedTracker()
+			addWebhookContext(context.Background(), svc, Options{DynamicProv: p}, rc, omitted)
+			if scenario.reason == "" {
+				if len(omitted.collect()) != 0 {
+					t.Fatalf("synced scan incomplete: %+v", omitted.collect())
+				}
+			} else if !slices.Contains(omitted.collect(), OmittedField{Field: "dependents", Reason: scenario.reason}) {
+				t.Fatalf("state lost: %+v", omitted.collect())
+			}
+			if scenario.read {
+				if len(rc.Dependents) != 2 || len(p.lists) != 2 {
+					t.Fatalf("known matches lost: %+v lists=%+v", rc, p.lists)
+				}
+			} else if len(rc.Dependents) != 0 || len(p.lists) != 0 {
+				t.Fatalf("unreadable source scanned: %+v lists=%+v", rc, p.lists)
+			}
+		})
 	}
 }
