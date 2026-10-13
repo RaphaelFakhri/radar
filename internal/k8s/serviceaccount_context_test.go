@@ -21,7 +21,7 @@ func TestServiceAccountInventoryStateReachesSecretContext(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			enabled := map[string]bool{
 				k8score.Pods: true, k8score.Deployments: true, k8score.StatefulSets: true,
-				k8score.DaemonSets: true, k8score.Jobs: true, k8score.CronJobs: true,
+				k8score.DaemonSets: true, k8score.ReplicaSets: true, k8score.Jobs: true, k8score.CronJobs: true,
 				k8score.ServiceAccounts: true,
 			}
 			release := make(chan struct{})
