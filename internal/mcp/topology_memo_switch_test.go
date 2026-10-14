@@ -93,7 +93,13 @@ func TestResourceContextUsesHostRelationshipGraph(t *testing.T) {
 	useSwitchTestCluster(t, "cluster-web")
 	host := &topology.Topology{Nodes: []topology.Node{{ID: "deployment/demo/host-graph", Kind: "Deployment", Name: "host-graph"}}}
 	index := topology.IndexByResource(host)
-	SetRelationshipTopologySource(func() (*topology.Topology, *topology.RelationshipsIndex) { return host, index })
+	hostGeneration := k8s.GetResourceCache().Generation()
+	SetRelationshipTopologySource(func(generation uint64) (*topology.Topology, *topology.RelationshipsIndex) {
+		if generation != hostGeneration {
+			return nil, nil
+		}
+		return host, index
+	})
 	t.Cleanup(func() { SetRelationshipTopologySource(nil) })
 
 	got, gotIndex, _, _, ok := mcpTopologyForContext()
@@ -101,9 +107,16 @@ func TestResourceContextUsesHostRelationshipGraph(t *testing.T) {
 		t.Fatalf("resource context built its own graph instead of reusing the host's: %+v", got)
 	}
 
+	// After a switch the host's graph describes the previous cluster until it
+	// rebuilds; resource context builds from the new cache instead.
+	useSwitchTestCluster(t, "new-cluster-api")
+	if built, _, _, _, ok := mcpTopologyForContext(); !ok || built == host || !hasNode(built, "new-cluster-api") {
+		t.Fatalf("resource context served the previous cluster's graph after a switch: %+v", built)
+	}
+
 	// Before the host has a graph, resource context still builds one.
-	SetRelationshipTopologySource(func() (*topology.Topology, *topology.RelationshipsIndex) { return nil, nil })
-	if built, _, _, _, ok := mcpTopologyForContext(); !ok || !hasNode(built, "cluster-web") {
+	SetRelationshipTopologySource(func(uint64) (*topology.Topology, *topology.RelationshipsIndex) { return nil, nil })
+	if built, _, _, _, ok := mcpTopologyForContext(); !ok || !hasNode(built, "new-cluster-api") {
 		t.Fatalf("fallback build missing: %+v", built)
 	}
 }

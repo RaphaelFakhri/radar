@@ -52,6 +52,11 @@ type SSEBroadcaster struct {
 	// the topology is replaced. Nil whenever cachedTopology changes (set under
 	// cachedTopologyMu alongside it). Guarded by cachedTopologyMu.
 	cachedTopologyIndex *topology.RelationshipsIndex
+	// cachedTopologyGeneration is the resource-cache generation cachedTopology
+	// was built from. The epoch drops a graph once the switch callbacks run,
+	// but the new resource cache is published before they do; a reader holding
+	// that cache must not pair it with the previous cluster's graph.
+	cachedTopologyGeneration uint64
 
 	// warmupDone is closed when deferred informers finish syncing. During warmup,
 	// topology broadcasts use longer debounce and skip the expensive full-topology
@@ -439,16 +444,8 @@ func (b *SSEBroadcaster) registerContextSwitchCallback() {
 // initCachedTopology builds the initial topology cache
 func (b *SSEBroadcaster) initCachedTopology() {
 	epoch := b.topoEpoch.Load()
-	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
-	opts := topology.DefaultBuildOptions()
-	opts.ViewMode = topology.ViewModeResources
-	// Include ReplicaSets in the cache so relationship lookups work for them
-	opts.IncludeReplicaSets = true
-	opts.ForRelationshipCache = true
-	opts.IncludeSecrets = true
-
-	if topo, err := builder.Build(opts); err == nil {
-		if b.updateCachedTopology(topo, epoch) {
+	if topo, generation, err := buildFullTopology(); err == nil {
+		if b.updateCachedTopology(topo, epoch, generation) {
 			log.Printf("Initialized topology cache with %d nodes and %d edges", len(topo.Nodes), len(topo.Edges))
 		}
 	} else {
@@ -723,11 +720,11 @@ func (b *SSEBroadcaster) broadcastTopologyUpdate() bool {
 	if b.isWarmingUp() {
 		b.markCachedTopologyDirty()
 	} else {
-		if fullTopo, err := buildFullTopology(); err == nil {
+		if fullTopo, generation, err := buildFullTopology(); err == nil {
 			// A rejected write leaves the new cluster with nothing cached, so
 			// leave the cache dirty for the next reader to rebuild — the same
 			// rule the on-demand rebuild path follows.
-			if !b.updateCachedTopology(fullTopo, epoch) {
+			if !b.updateCachedTopology(fullTopo, epoch, generation) {
 				b.markCachedTopologyDirty()
 			}
 		} else {
@@ -1165,6 +1162,24 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 	return topo
 }
 
+// GetCachedTopologyForGeneration is GetCachedTopologyWithIndex for a reader
+// holding the resource cache of the given generation: it returns nothing when
+// the cached graph was built from another cache, so the caller builds its own
+// instead of describing the previous cluster.
+func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) (*topology.Topology, *topology.RelationshipsIndex) {
+	topo, index := b.GetCachedTopologyWithIndex()
+	if topo == nil {
+		return nil, nil
+	}
+	b.cachedTopologyMu.RLock()
+	current := b.cachedTopology == topo && b.cachedTopologyGeneration == generation
+	b.cachedTopologyMu.RUnlock()
+	if !current {
+		return nil, nil
+	}
+	return topo, index
+}
+
 // GetCachedTopologyWithIndex returns the cached topology together with its
 // inverted edge index, building (and memoizing) the index on first use after a
 // topology refresh. Relationship lookups that pass the index skip the O(edges)
@@ -1206,10 +1221,10 @@ func (b *SSEBroadcaster) rebuildCachedTopology() bool {
 		return false
 	}
 	epoch := b.topoEpoch.Load()
-	if fullTopo, err := buildFullTopology(); err == nil {
+	if fullTopo, generation, err := buildFullTopology(); err == nil {
 		// A rejected write leaves nothing cached for the new cluster, so the
 		// caller must re-dirty and let the next read rebuild against it.
-		return b.updateCachedTopology(fullTopo, epoch)
+		return b.updateCachedTopology(fullTopo, epoch, generation)
 	} else {
 		log.Printf("Error rebuilding topology cache on demand: %v", err)
 		return false
@@ -1240,28 +1255,35 @@ func (b *SSEBroadcaster) markCachedTopologyDirty() {
 // updateCachedTopology stores a full topology for relationship lookups, unless
 // the cluster view was reset while it was being built. Reports whether it
 // stored.
-func (b *SSEBroadcaster) updateCachedTopology(topo *topology.Topology, epoch uint64) bool {
+func (b *SSEBroadcaster) updateCachedTopology(topo *topology.Topology, epoch, generation uint64) bool {
 	b.cachedTopologyMu.Lock()
 	defer b.cachedTopologyMu.Unlock()
 	if b.topoEpoch.Load() != epoch {
 		return false
 	}
 	b.cachedTopology = topo
+	b.cachedTopologyGeneration = generation
 	b.cachedTopologyIndex = nil // rebuilt lazily on next relationship lookup
 	b.cachedTopologyDirty = false
 	return true
 }
 
 // buildFullTopology constructs a full topology (all namespaces, resources view)
-// for relationship lookups. Used by both broadcast and lazy rebuild paths.
-func buildFullTopology() (*topology.Topology, error) {
-	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(k8s.GetResourceCache())).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
+// for relationship lookups, with the generation of the resource cache it read.
+// Used by the initial, broadcast and lazy rebuild paths.
+func buildFullTopology() (*topology.Topology, uint64, error) {
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		return nil, 0, fmt.Errorf("resource cache not initialized")
+	}
+	builder := topology.NewBuilder(k8s.NewTopologyResourceProvider(cache)).WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()))
 	opts := topology.DefaultBuildOptions()
 	opts.ViewMode = topology.ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
 	opts.IncludeSecrets = true
-	return builder.Build(opts)
+	topo, err := builder.Build(opts)
+	return topo, cache.Generation(), err
 }
 
 // HandleSSE is the HTTP handler for the SSE endpoint

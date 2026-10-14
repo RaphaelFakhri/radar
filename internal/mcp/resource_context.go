@@ -212,8 +212,9 @@ func computeMCPAuditSummary(ctx context.Context, cache *k8s.ResourceCache, group
 }
 
 // RelationshipTopologySource returns the host's maintained full relationship
-// graph and its index, or nil while none has been built.
-type RelationshipTopologySource func() (*topo.Topology, *topo.RelationshipsIndex)
+// graph and its index when it was built from the resource cache of the given
+// generation, or nil otherwise.
+type RelationshipTopologySource func(generation uint64) (*topo.Topology, *topo.RelationshipsIndex)
 
 var relationshipTopology struct {
 	sync.RWMutex
@@ -243,7 +244,7 @@ func mcpTopologyForContext() (*topo.Topology, *topo.RelationshipsIndex, topo.Res
 	source := relationshipTopology.source
 	relationshipTopology.RUnlock()
 	if source != nil {
-		if topology, index := source(); topology != nil {
+		if topology, index := source(cache.Generation()); topology != nil {
 			return topology, index, provider, dyn, true
 		}
 	}

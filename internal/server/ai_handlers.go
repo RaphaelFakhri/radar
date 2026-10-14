@@ -531,7 +531,7 @@ func (s *Server) topologyForContext() (*topology.Topology, *topology.Relationshi
 	}
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
-	if topo, index := s.RelationshipTopology(); topo != nil {
+	if topo, index := s.RelationshipTopology(cache.Generation()); topo != nil {
 		return topo, index, provider, dyn, true
 	}
 	opts := topology.RelationshipBuildOptions()
@@ -547,12 +547,13 @@ func (s *Server) topologyForContext() (*topology.Topology, *topology.Relationshi
 }
 
 // RelationshipTopology returns the broadcaster's full relationship graph and
-// its index, or nil before it has been built.
-func (s *Server) RelationshipTopology() (*topology.Topology, *topology.RelationshipsIndex) {
+// its index when it was built from the resource cache of the given generation,
+// or nil before then.
+func (s *Server) RelationshipTopology(generation uint64) (*topology.Topology, *topology.RelationshipsIndex) {
 	if s == nil || s.broadcaster == nil {
 		return nil, nil
 	}
-	return s.broadcaster.GetCachedTopologyWithIndex()
+	return s.broadcaster.GetCachedTopologyForGeneration(generation)
 }
 
 // computeIssueSummaryForResource rolls up per-resource issue-composer rows

@@ -283,7 +283,7 @@ func TestBuildFromThePreviousClusterIsNotCached(t *testing.T) {
 	b.topoEpoch.Add(1)          // the switch lands
 
 	previousCluster := &topology.Topology{Nodes: []topology.Node{{ID: "old-cluster"}}}
-	if b.updateCachedTopology(previousCluster, epoch) {
+	if b.updateCachedTopology(previousCluster, epoch, 1) {
 		t.Error("a build started before the context switch reported itself as cached")
 	}
 
@@ -296,7 +296,7 @@ func TestBuildFromThePreviousClusterIsNotCached(t *testing.T) {
 
 	// The new cluster's build still lands.
 	newCluster := &topology.Topology{Nodes: []topology.Node{{ID: "new-cluster"}}}
-	if !b.updateCachedTopology(newCluster, b.topoEpoch.Load()) {
+	if !b.updateCachedTopology(newCluster, b.topoEpoch.Load(), 1) {
 		t.Fatal("a build started after the switch was rejected too")
 	}
 }

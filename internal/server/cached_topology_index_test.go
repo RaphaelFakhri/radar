@@ -27,7 +27,7 @@ func TestGetCachedTopologyWithIndex(t *testing.T) {
 	}
 
 	topoA := topoWithEdge("deployment/ns/web", "replicaset/ns/web-1")
-	b.updateCachedTopology(topoA, b.topoEpoch.Load())
+	b.updateCachedTopology(topoA, b.topoEpoch.Load(), 1)
 
 	gotTopo, idxA := b.GetCachedTopologyWithIndex()
 	if gotTopo != topoA {
@@ -49,7 +49,7 @@ func TestGetCachedTopologyWithIndex(t *testing.T) {
 
 	// Replacing the topology invalidates the index; the next call builds a fresh one.
 	topoB := topoWithEdge("statefulset/ns/db", "pod/ns/db-0")
-	b.updateCachedTopology(topoB, b.topoEpoch.Load())
+	b.updateCachedTopology(topoB, b.topoEpoch.Load(), 1)
 	gotTopoB, idxB := b.GetCachedTopologyWithIndex()
 	if gotTopoB != topoB {
 		t.Fatalf("expected the replaced topology pointer back")
@@ -66,8 +66,23 @@ func TestGetCachedTopologyWithIndex(t *testing.T) {
 	}
 
 	// Clearing the topology (context-switch semantics) returns (nil, nil).
-	b.updateCachedTopology(nil, b.topoEpoch.Load())
+	b.updateCachedTopology(nil, b.topoEpoch.Load(), 1)
 	if topo, idx := b.GetCachedTopologyWithIndex(); topo != nil || idx != nil {
 		t.Fatalf("expected (nil, nil) after clearing topology, got (%v, %v)", topo, idx)
+	}
+}
+
+// The broadcaster drops its graph when the switch callbacks run, but the new
+// resource cache is published before they do. A reader holding that cache
+// gets nothing rather than the previous cluster's graph.
+func TestCachedTopologyForGenerationRejectsAnotherCache(t *testing.T) {
+	b := NewSSEBroadcaster()
+	previous := topoWithEdge("deployment/ns/old", "replicaset/ns/old-1")
+	b.updateCachedTopology(previous, b.topoEpoch.Load(), 1)
+	if topo, idx := b.GetCachedTopologyForGeneration(1); topo != previous || idx == nil {
+		t.Fatalf("same-generation reader lost the graph: %v %v", topo, idx)
+	}
+	if topo, idx := b.GetCachedTopologyForGeneration(2); topo != nil || idx != nil {
+		t.Fatalf("reader of the new cache got the previous cluster's graph: %v", topo)
 	}
 }

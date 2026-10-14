@@ -55,7 +55,7 @@ func TestMeasureConsumerStallPerDebounceFire(t *testing.T) {
 
 	// What the consumer used to pay per debounce fire: a full build, inline.
 	start := time.Now()
-	topo, err := buildFullTopology()
+	topo, _, err := buildFullTopology()
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
