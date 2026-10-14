@@ -37,6 +37,10 @@ type karpenterResourceInventory struct {
 	GVR      schema.GroupVersionResource
 	Items    []*unstructured.Unstructured
 	Coverage karpenterResourceCoverage
+	// Gap says why an installed kind's inventory is unknown, when that
+	// leaves its issues unchecked. Empty when the kind isn't installed, or
+	// Radar's own access excludes it by configuration.
+	Gap issuesapi.UncheckedReason
 }
 
 type karpenterIssueProvider interface {
@@ -54,7 +58,7 @@ type karpenterNodeClassReference struct {
 	pools []Ref
 }
 
-func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
+func detectKarpenterIssues(p Provider, f Filters, unchecked *uncheckedSet) ([]Issue, map[string]bool) {
 	kp, ok := p.(karpenterIssueProvider)
 	if !ok || (len(f.Namespaces) > 0 && !f.IncludeClusterScopedKarpenter) || !canReadKarpenterKind(f, karpenter.Group, karpenter.NodePoolKind) {
 		return nil, nil
@@ -62,6 +66,7 @@ func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
 
 	poolsInventory := kp.karpenterResources(karpenter.Group, karpenter.NodePoolKind)
 	if poolsInventory.Coverage != karpenterCoverageAuthoritative {
+		recordKarpenterGap(unchecked, poolsInventory, karpenter.Group, karpenter.NodePoolKind)
 		return nil, nil
 	}
 
@@ -113,6 +118,7 @@ func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
 			}
 			inventory := kp.karpenterResources(refType.group, refType.kind)
 			if inventory.Coverage != karpenterCoverageAuthoritative {
+				recordKarpenterGap(unchecked, inventory, refType.group, refType.kind)
 				continue
 			}
 			classesByName := make(map[string]*unstructured.Unstructured, len(inventory.Items))
@@ -143,6 +149,7 @@ func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
 
 	if canReadKarpenterKind(f, karpenter.Group, karpenter.NodeClaimKind) {
 		claimsInventory := kp.karpenterResources(karpenter.Group, karpenter.NodeClaimKind)
+		recordKarpenterGap(unchecked, claimsInventory, karpenter.Group, karpenter.NodeClaimKind)
 		if claimsInventory.Coverage == karpenterCoverageAuthoritative {
 			for _, claim := range claimsInventory.Items {
 				if claim == nil || claim.GetName() == "" {
@@ -168,6 +175,13 @@ func detectKarpenterIssues(p Provider, f Filters) ([]Issue, map[string]bool) {
 	}
 
 	return out, owned
+}
+
+func recordKarpenterGap(unchecked *uncheckedSet, inventory karpenterResourceInventory, group, kind string) {
+	if inventory.Coverage == karpenterCoverageAuthoritative || inventory.Gap == "" {
+		return
+	}
+	unchecked.add(issuesapi.UncheckedSourceKarpenter, inventory.Gap, issuesapi.UncheckedKind{Group: group, Kind: kind})
 }
 
 func canReadKarpenterKind(f Filters, group, kind string) bool {
