@@ -82,14 +82,16 @@ func TestGetCachedTopologyWithIndex(t *testing.T) {
 // resource cache is published before they do. A reader holding that cache
 // gets nothing rather than the previous cluster's graph.
 func TestCachedTopologyForGenerationRejectsAnotherCache(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset())
+	current := k8s.GetResourceCache().Generation()
 	b := NewSSEBroadcaster()
-	previous := topoWithEdge("deployment/ns/old", "replicaset/ns/old-1")
-	b.updateCachedTopology(previous, b.topoEpoch.Load(), 1)
-	if topo, idx := b.GetCachedTopologyForGeneration(1); topo != previous || idx == nil {
+	graph := topoWithEdge("deployment/ns/old", "replicaset/ns/old-1")
+	b.updateCachedTopology(graph, b.topoEpoch.Load(), current)
+	if topo, idx := b.GetCachedTopologyForGeneration(current); topo != graph || idx == nil {
 		t.Fatalf("same-generation reader lost the graph: %v %v", topo, idx)
 	}
-	if topo, idx := b.GetCachedTopologyForGeneration(2); topo != nil || idx != nil {
-		t.Fatalf("reader of the new cache got the previous cluster's graph: %v", topo)
+	if topo, idx := b.GetCachedTopologyForGeneration(current + 1); topo != nil || idx != nil {
+		t.Fatalf("reader of another cache got this graph: %v", topo)
 	}
 }
 
@@ -128,5 +130,38 @@ func TestRebuiltTopologyCarriesItsCacheGeneration(t *testing.T) {
 	b.cachedTopologyMu.RUnlock()
 	if topo, _ := b.cachedTopologyIfGeneration(k8s.GetResourceCache().Generation()); topo == nil || topo != built {
 		t.Fatal("the built graph wasn't stamped with the generation of the cache it read")
+	}
+}
+
+// Concurrent readers of the current cache share one repair: each gets the same
+// rebuilt graph rather than starting its own full build.
+func TestCachedTopologyRepairIsSingleFlight(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "demo"}}))
+	current := k8s.GetResourceCache().Generation()
+	b := NewSSEBroadcaster()
+	b.updateCachedTopology(topoWithEdge("deployment/demo/previous", "replicaset/demo/previous-1"), b.topoEpoch.Load(), current+1)
+
+	const readers = 16
+	got := make(chan *topology.Topology, readers)
+	start := make(chan struct{})
+	for range readers {
+		go func() {
+			<-start
+			topo, _ := b.GetCachedTopologyForGeneration(current)
+			got <- topo
+		}()
+	}
+	close(start)
+	var first *topology.Topology
+	for range readers {
+		topo := <-got
+		if topo == nil {
+			t.Fatal("a reader of the current cache got no graph")
+		}
+		if first == nil {
+			first = topo
+		} else if topo != first {
+			t.Fatal("concurrent readers each rebuilt the graph")
+		}
 	}
 }

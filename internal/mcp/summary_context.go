@@ -32,12 +32,14 @@ import (
 // returns mixed kinds in one response, so a single index can't get
 // both right.
 func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) summarycontext.Builder {
-	provider := issues.NewCacheProvider()
+	// One cache for issues, topology and the relationship provider.
+	cache := k8s.GetResourceCache()
+	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
-	return summarycontext.BuilderFromIndexes(buildSummaryContextTopology(namespaces), idx, idx)
+	return summarycontext.BuilderFromIndexes(cache, buildSummaryContextTopology(cache, namespaces), idx, idx)
 }
 
 // newSearchSummaryContextBuilder is the MCP search variant. Mirrors
@@ -48,7 +50,8 @@ func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) 
 // are reachable, so composing the cluster-wide index doesn't leak
 // rows the user can't see.
 func newSearchSummaryContextBuilder(ctx context.Context, scanNamespaces []string) summarycontext.Builder {
-	provider := issues.NewCacheProvider()
+	cache := k8s.GetResourceCache()
+	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil
 	}
@@ -57,7 +60,7 @@ func newSearchSummaryContextBuilder(ctx context.Context, scanNamespaces []string
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
 	}
-	return summarycontext.BuilderFromIndexes(buildSummaryContextTopology(scanNamespaces), namespacedIdx, clusterIdx)
+	return summarycontext.BuilderFromIndexes(cache, buildSummaryContextTopology(cache, scanNamespaces), namespacedIdx, clusterIdx)
 }
 
 // summaryCtxTopoMemo caches topology builds for the list_resources and search
@@ -77,8 +80,7 @@ var summaryCtxTopoMemo = topology.NewMemoizer(5 * time.Second)
 // resolving managedBy pointers, reusing a cached snapshot when one is
 // fresh. Returns nil on failure — the caller falls back to a
 // managedBy-less ResourceSummaryContext rather than failing the response.
-func buildSummaryContextTopology(namespaces []string) *topology.Topology {
-	cache := k8s.GetResourceCache()
+func buildSummaryContextTopology(cache *k8s.ResourceCache, namespaces []string) *topology.Topology {
 	if cache == nil {
 		return nil
 	}

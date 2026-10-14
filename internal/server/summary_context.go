@@ -31,13 +31,13 @@ import (
 // Use newSearchSummaryContextBuilder for search, which routes per-hit
 // between a namespaced and a cluster-wide index — search returns mixed
 // kinds in one response, so a single index can't get both right.
-func (s *Server) newResourceSummaryContextBuilder(r *http.Request, namespaces []string) summarycontext.Builder {
-	provider := issues.NewCacheProvider()
+func (s *Server) newResourceSummaryContextBuilder(r *http.Request, cache *k8s.ResourceCache, namespaces []string) summarycontext.Builder {
+	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
-	return summarycontext.BuilderFromIndexes(s.summaryContextTopology(), idx, idx)
+	return summarycontext.BuilderFromIndexes(cache, s.summaryContextTopology(cache), idx, idx)
 }
 
 // newSearchSummaryContextBuilder is the search-specific variant. Search
@@ -60,8 +60,8 @@ func (s *Server) newResourceSummaryContextBuilder(r *http.Request, namespaces []
 // The cluster-wide index is skipped when scanNamespaces is already nil
 // (cluster-wide user) — both indexes would be identical, so one pass
 // suffices.
-func (s *Server) newSearchSummaryContextBuilder(r *http.Request, scanNamespaces []string) summarycontext.Builder {
-	provider := issues.NewCacheProvider()
+func (s *Server) newSearchSummaryContextBuilder(r *http.Request, cache *k8s.ResourceCache, scanNamespaces []string) summarycontext.Builder {
+	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil
 	}
@@ -70,14 +70,13 @@ func (s *Server) newSearchSummaryContextBuilder(r *http.Request, scanNamespaces 
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
 	}
-	return summarycontext.BuilderFromIndexes(s.summaryContextTopology(), namespacedIdx, clusterIdx)
+	return summarycontext.BuilderFromIndexes(cache, s.summaryContextTopology(cache), namespacedIdx, clusterIdx)
 }
 
-// summaryContextTopology is the broadcaster's graph when it describes the
-// resource cache the summaries read, so managedBy never names an object from
-// the cluster just left; nil otherwise.
-func (s *Server) summaryContextTopology() *topology.Topology {
-	cache := k8s.GetResourceCache()
+// summaryContextTopology is the broadcaster's graph when it was built from the
+// resource cache the rows came from, so managedBy never names an object from
+// another cluster; nil otherwise.
+func (s *Server) summaryContextTopology(cache *k8s.ResourceCache) *topology.Topology {
 	if cache == nil {
 		return nil
 	}

@@ -44,10 +44,10 @@ type Builder func(obj runtime.Object, u *unstructured.Unstructured, group, kind,
 //
 // topo is the topology snapshot the caller has already obtained from
 // its preferred source (REST: broadcaster cache; MCP: short-TTL
-// memoizer). nil topo is fine — managedBy is omitted but issueCount
-// still resolves.
-func BuilderFromIndexes(topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex) Builder {
-	resourceProvider := k8s.NewTopologyResourceProvider(k8s.GetResourceCache())
+// memoizer), built from cache, the resource cache the rows came from.
+// nil topo is fine — managedBy is omitted but issueCount still resolves.
+func BuilderFromIndexes(cache *k8s.ResourceCache, topo *topology.Topology, namespacedIdx, clusterIdx IssueIndex) Builder {
+	resourceProvider := k8s.NewTopologyResourceProvider(cache)
 	dynamicProvider := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
 	// One inverted-edges index per request — without it each

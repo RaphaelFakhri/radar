@@ -34,6 +34,11 @@ func NewCacheProvider() *CacheProvider {
 	}
 }
 
+// ResourceCache is the typed cache this provider reads.
+func (p *CacheProvider) ResourceCache() *k8s.ResourceCache {
+	return p.cache
+}
+
 func (p *CacheProvider) ListTyped(kind string, namespaces []string) ([]runtime.Object, error) {
 	return k8s.FetchResourceList(p.cache, kind, namespaces)
 }

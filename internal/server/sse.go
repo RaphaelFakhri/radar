@@ -57,6 +57,10 @@ type SSEBroadcaster struct {
 	// but the new resource cache is published before they do; a reader holding
 	// that cache must not pair it with the previous cluster's graph.
 	cachedTopologyGeneration uint64
+	// cachedTopologyRepairMu serializes repairs of a graph from another
+	// generation, so concurrent readers wait for one rebuild instead of each
+	// starting their own.
+	cachedTopologyRepairMu sync.Mutex
 
 	// warmupDone is closed when deferred informers finish syncing. During warmup,
 	// topology broadcasts use longer debounce and skip the expensive full-topology
@@ -1172,11 +1176,28 @@ func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) (*top
 	if topo, index := b.cachedTopologyIfGeneration(generation); topo != nil {
 		return topo, index
 	}
-	if cache := k8s.GetResourceCache(); cache == nil || cache.Generation() != generation {
+	if !isCurrentCacheGeneration(generation) {
 		return nil, nil
 	}
-	b.markCachedTopologyDirty()
+	b.cachedTopologyRepairMu.Lock()
+	defer b.cachedTopologyRepairMu.Unlock()
+	// Another reader may have repaired it, or a switch landed, while this one
+	// waited.
+	if topo, index := b.cachedTopologyIfGeneration(generation); topo != nil {
+		return topo, index
+	}
+	if !isCurrentCacheGeneration(generation) {
+		return nil, nil
+	}
+	// Built here rather than through the dirty flag: another reader could claim
+	// that rebuild and leave this one looking at the old graph.
+	b.rebuildCachedTopology()
 	return b.cachedTopologyIfGeneration(generation)
+}
+
+func isCurrentCacheGeneration(generation uint64) bool {
+	cache := k8s.GetResourceCache()
+	return cache != nil && cache.Generation() == generation
 }
 
 func (b *SSEBroadcaster) cachedTopologyIfGeneration(generation uint64) (*topology.Topology, *topology.RelationshipsIndex) {

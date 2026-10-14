@@ -47,7 +47,12 @@ type CacheProvider struct {
 // NewCacheProvider returns a Provider over the live radar caches, or
 // nil if the typed cache isn't ready (cluster connection still pending).
 func NewCacheProvider() *CacheProvider {
-	cache := k8s.GetResourceCache()
+	return NewCacheProviderFor(k8s.GetResourceCache())
+}
+
+// NewCacheProviderFor is NewCacheProvider over a resource cache the caller
+// already holds, so issues come from the same cluster as the caller's rows.
+func NewCacheProviderFor(cache *k8s.ResourceCache) *CacheProvider {
 	if cache == nil {
 		return nil
 	}

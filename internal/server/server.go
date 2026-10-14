@@ -3230,7 +3230,9 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	// One Load, reused: readers are lock-free and a context switch mid-request
 	// could otherwise pass the nil check on one handle and hand the provider a
 	// different (or nil) one.
-	if promoted := k8s.GetResourceCache(); promoted != nil {
+	// The promoted cache must also be the one the resource came from, or a
+	// switch mid-request would join one cluster's object to another's graph.
+	if promoted := k8s.GetResourceCache(); promoted != nil && promoted == cache {
 		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyForGeneration(promoted.Generation()); cachedTopo != nil {
 			if auth.UserFromContext(r.Context()) != nil {
 				cachedTopo = s.relationshipTopologyForUser(r, cachedTopo)

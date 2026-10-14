@@ -96,9 +96,12 @@ func (s *Server) handleWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 
 	key := resourceid.NewRef(group, kind, namespace, name)
 	clusterContext := k8s.ActiveClusterContext()
-	live := liveWorkloadIdentity(r.Context(), chi.URLParam(r, "kind"), group, namespace, name)
-	attached := s.workloadAttachments(r, key, live.Object)
-	live.AttachedUIDs = liveAttachmentUIDs(r.Context(), attached)
+	// One cache for the workload, its attachments and their UIDs, so a switch
+	// mid-request can't join one cluster's workload to another's attachments.
+	cache := k8s.GetResourceCache()
+	live := liveWorkloadIdentity(r.Context(), cache, chi.URLParam(r, "kind"), group, namespace, name)
+	attached := s.workloadAttachments(r, cache, key, live.Object)
+	live.AttachedUIDs = liveAttachmentUIDs(r.Context(), cache, attached)
 	events, incomplete, err := readWorkloadHistory(r.Context(), store, clusterContext, key, live, attached, beforeSeq, limit+1)
 	if err != nil {
 		log.Printf("[workload-history] Failed to query the history of %s %s/%s: %v", kind, namespace, name, err)
@@ -331,13 +334,13 @@ type liveIdentity struct {
 	AttachedUIDs []string
 }
 
-func liveAttachmentUIDs(ctx context.Context, attached []resourceid.Ref) []string {
+func liveAttachmentUIDs(ctx context.Context, cache *k8s.ResourceCache, attached []resourceid.Ref) []string {
 	var uids []string
 	for _, ref := range attached {
 		if !walksAttachment(ref) {
 			continue
 		}
-		if id := liveWorkloadIdentity(ctx, ref.Kind, ref.Group, ref.Namespace, ref.Name); id.UID != "" {
+		if id := liveWorkloadIdentity(ctx, cache, ref.Kind, ref.Group, ref.Namespace, ref.Name); id.UID != "" {
 			uids = append(uids, id.UID)
 		}
 	}
@@ -348,8 +351,7 @@ func liveAttachmentUIDs(ctx context.Context, attached []resourceid.Ref) []string
 // doesn't always hold a row under the workload's own key (a busy cluster may
 // only have recorded its ReplicaSets and Pods), so the ownership walk can't
 // rely on those rows alone to know the workload's UID.
-func liveWorkloadIdentity(ctx context.Context, resource, group, namespace, name string) liveIdentity {
-	cache := k8s.GetResourceCache()
+func liveWorkloadIdentity(ctx context.Context, cache *k8s.ResourceCache, resource, group, namespace, name string) liveIdentity {
 	if cache == nil {
 		return liveIdentity{}
 	}
@@ -397,8 +399,7 @@ func resolveWorkloadKind(resource, group string) (kind, resolvedGroup string, ok
 // from the cached topology the detail view's relationships use. The live
 // object, when there is one, keeps a CRD whose kind collides with another's
 // (a Volcano Job and a batch Job) on its own topology node.
-func (s *Server) workloadAttachments(r *http.Request, key resourceid.Ref, obj metav1.Object) []resourceid.Ref {
-	cache := k8s.GetResourceCache()
+func (s *Server) workloadAttachments(r *http.Request, cache *k8s.ResourceCache, key resourceid.Ref, obj metav1.Object) []resourceid.Ref {
 	if s.broadcaster == nil || cache == nil {
 		return nil
 	}

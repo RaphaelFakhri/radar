@@ -60,12 +60,12 @@ func hasNode(topo *topology.Topology, name string) bool {
 func TestSummaryContextTopologyAfterSwitch(t *testing.T) {
 	freshSummaryCtxTopoMemo(t)
 	useSwitchTestCluster(t, "old-cluster-web")
-	if before := buildSummaryContextTopology([]string{"demo"}); !hasNode(before, "old-cluster-web") {
+	if before := buildSummaryContextTopology(k8s.GetResourceCache(), []string{"demo"}); !hasNode(before, "old-cluster-web") {
 		t.Fatal("seed: expected old-cluster-web in the summary-context topology")
 	}
 
 	useSwitchTestCluster(t, "new-cluster-api")
-	after := buildSummaryContextTopology([]string{"demo"})
+	after := buildSummaryContextTopology(k8s.GetResourceCache(), []string{"demo"})
 	if hasNode(after, "old-cluster-web") || !hasNode(after, "new-cluster-api") {
 		t.Errorf("post-switch summary-context topology still describes the previous cluster: %+v", after)
 	}
