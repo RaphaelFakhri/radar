@@ -198,7 +198,7 @@ func (s *Server) handleVitals(w http.ResponseWriter, r *http.Request) {
 	podsPartial = podsPartial || (podAssessment.Readiness == k8s.KindReady && !podAssessment.Complete)
 
 	var scopedPods []*corev1.Pod
-	if podsReadable && podAssessment.Readiness == k8s.KindReady {
+	if podsReadable {
 		scopedPods = listPodsScoped(cache.Pods(), podNamespaces)
 	}
 	if podsReadable && cache.Pods() != nil {
