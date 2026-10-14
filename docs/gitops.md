@@ -46,7 +46,7 @@ GitOps CRs that are themselves managed (a child Application from an app-of-apps 
 Per managed resource, in one row:
 
 - **Sync status** chip (`Synced`, `OutOfSync`, etc.) with the health chip beside it
-- **Field-level drift** computed inline from each resource's `kubectl.kubernetes.io/last-applied-configuration` annotation vs live cluster state. You see actual `spec.X removed / spec.Y added` entries — no `argocd app diff` round-trip needed. Live objects are pulled via a dedicated direct-GET path so the dynamic informer cache doesn't have to retain the annotation cluster-wide
+- **Field-level drift** computed inline from each resource's `kubectl.kubernetes.io/last-applied-configuration` annotation vs live cluster state. You see actual `spec.X removed / spec.Y added` entries — no `argocd app diff` round-trip needed. Live objects are pulled via a dedicated direct-GET path so the dynamic informer cache doesn't have to retain the annotation cluster-wide. When the [Argo CD API integration](#argo-cd-api-integration-deep-diff) is connected, an expanded row instead shows the field list from Argo's own diff above the YAML diff, which also covers Git changes that haven't synced yet. That list shows at most 50 fields and says so when it was cut. It is left out for a resource missing on one side (not yet created, or pending prune), where the YAML diff shows the whole object
 - **Recent events** (5 most recent, namespace-RBAC-filtered) so `ImagePullBackOff`, `FailedScheduling`, webhook denials, PVC pending, etc. show up next to the resource that caused them
 - **Open** button — drops into the standard resource drawer
 
@@ -164,8 +164,10 @@ Behavior and guarantees:
   on the target resource's kind) before Argo is consulted. Users can never
   see manifests through Radar's token that Radar's RBAC would deny.
 - **Secret manifests are structurally redacted** — `data`/`stringData` values
-  are masked with per-key changed/unchanged markers on both sides of the
-  diff. There is no un-redact option.
+  are masked per key. A value that is the same on both sides reads
+  `<redacted:unchanged>`; a value that differs reads `<redacted:desired>` and
+  `<redacted:live>`, so a rotated value still shows as a change. There is no
+  un-redact option.
 - Local CLI/Desktop tokens live in `~/.radar/clusters.json` (written `0600`)
   and are never returned by Settings APIs. Unchanged credentials are preserved;
   explicit removal deletes only this context's saved settings and credentials.
