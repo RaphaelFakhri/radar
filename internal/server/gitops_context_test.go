@@ -15,6 +15,7 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
+	"github.com/skyhook-io/radar/pkg/topology"
 )
 
 func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *testing.T) {
@@ -105,7 +106,7 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 	clearApplicationsCache()
 	t.Cleanup(clearApplicationsCache)
 	for _, visible := range [][]string{{"demo", "gitops"}, {"demo"}, {"demo", "gitops"}} {
-		got, err := listApplicationsForRequest(context.Background(), []string{"demo"}, visible, false)
+		got, err := listApplicationsForRequest(context.Background(), []string{"demo"}, visible, false, shared)
 		if err != nil || len(got.Applications) != 1 {
 			t.Fatalf("Applications: err=%v rows=%+v", err, got)
 		}
@@ -127,10 +128,37 @@ func TestApplicationsGraphCacheDoesNotCrossSources(t *testing.T) {
 	clearApplicationsCache()
 	t.Cleanup(clearApplicationsCache)
 	useTestResourceCache(t, clusterWithDeployment("old-web"))
-	before := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"})
+	before := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"}, nil)
 	useTestResourceCache(t, clusterWithDeployment("new-web"))
-	after := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"})
+	after := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"}, nil)
 	if after.byID["deployment/demo/new-web"].Name != "new-web" || after.byID["deployment/demo/old-web"].Name != "" || before.byID["deployment/demo/old-web"].Name != "old-web" {
 		t.Fatal("graph cache crossed source generations or mutated the old snapshot")
+	}
+}
+
+func TestApplicationsReuseSharedGraphWithoutMutatingVisibility(t *testing.T) {
+	client := clusterWithDeployment("web")
+	useTestResourceCache(t, client)
+	clearApplicationsCache()
+	t.Cleanup(clearApplicationsCache)
+	shared := &topology.Topology{Nodes: []topology.Node{
+		{ID: "deployment/demo/web", Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
+		{ID: "helmrelease/gitops/release", Kind: topology.KindHelmRelease, Name: "release", Data: map[string]any{"namespace": "gitops", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
+	}, Edges: []topology.Edge{{ID: "manager-to-web", Source: "helmrelease/gitops/release", Target: "deployment/demo/web", Type: topology.EdgeManages}}}
+	full := cachedAppGraph(k8s.GetResourceCache(), nil, shared)
+	limited := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"}, shared)
+	root, _ := full.structuralRoot("deployment/demo/web")
+	if root.Kind != topology.KindHelmRelease {
+		t.Fatal("shared-only ownership edge was not reused")
+	}
+	root, _ = limited.structuralRoot("deployment/demo/web")
+	if root.Kind != topology.KindDeployment {
+		t.Fatal("hidden manager was not removed")
+	}
+	if len(shared.Nodes) != 2 || len(shared.Edges) != 1 {
+		t.Fatal("scope filtering mutated shared graph")
+	}
+	if cachedAppGraph(k8s.GetResourceCache(), nil, shared) != full {
+		t.Fatal("full scope cache was contaminated")
 	}
 }

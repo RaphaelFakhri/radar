@@ -104,5 +104,11 @@ func ParseFluxInventoryID(id string) (group, kind, namespace, name string, ok bo
 	if kind == "" || name == "" {
 		return "", "", "", "", false
 	}
+	// Helm inventory comes from rendered manifests, which can retain a
+	// namespace even for a cluster-scoped builtin. The API identity cannot.
+	// Match the exact group so a namespaced CRD with the same Kind is preserved.
+	if builtin, exists := resourceid.BuiltinForKind(kind); exists && builtin.Group == group && !builtin.Namespaced {
+		namespace = ""
+	}
 	return group, kind, namespace, name, true
 }

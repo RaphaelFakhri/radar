@@ -288,7 +288,7 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology())
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -318,7 +318,7 @@ func (s *Server) handleApplicationHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"))
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology())
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -566,12 +566,12 @@ type appGraph struct {
 // workload to its graph root + label overlay, and groups them into logical
 // apps. Add-on machinery is classified (not dropped); nothing is hidden.
 func ListApplications(ctx context.Context, namespaces []string) (*applicationsResponse, error) {
-	return listApplicationsForRequest(ctx, namespaces, namespaces, true)
+	return listApplicationsForRequest(ctx, namespaces, namespaces, true, nil)
 }
 
 // namespaces selects workloads; graphNamespaces bounds readable relationship
 // evidence independently so a namespace pick does not hide a Flux manager.
-func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool) (*applicationsResponse, error) {
+func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool, shared *topology.Topology) (*applicationsResponse, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, errResourceCacheUnavailable
@@ -595,14 +595,15 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 		buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 
-		g := cachedAppGraph(cache, graphNamespaces)
+		g := cachedAppGraph(cache, graphNamespaces, shared)
 		wls := collectAppWorkloads(buildCtx, cache, namespaces, g, canListClusterWorkflowTemplates)
 		rows := groupApplications(wls)
-		sourcePaths, appSetChildren, argoItems := argoApplicationFacts(buildCtx, cache)
+		facts := namespaceScopedResourceLister{resourceLister: cache, namespaces: graphNamespaces}
+		sourcePaths, appSetChildren, argoItems := argoApplicationFacts(buildCtx, facts)
 		appSetByKey := appSetFanouts(appSetChildren)
-		enrichRowsWithManagedSourceRefs(buildCtx, cache, rows, argoItems)
+		enrichRowsWithManagedSourceRefs(buildCtx, facts, rows, argoItems)
 		enrichRowsWithArgoStatus(rows, argoItems)
-		resolveAppIdentities(rows, sourcePaths, appSetByKey, namespaceEnvLabels(cache), fluxKustomizationFacts(buildCtx, cache))
+		resolveAppIdentities(rows, sourcePaths, appSetByKey, namespaceEnvLabels(cache), fluxKustomizationFacts(buildCtx, facts))
 		claims := collectArgoClaims(argoItems, sourcePaths, appSetByKey, namespaces)
 		applicationsCacheMu.Lock()
 		if len(applicationsCache) >= applicationsCacheMaxEntries {
@@ -620,7 +621,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 
 // cachedAppGraph shares immutable ownership evidence across namespace picks.
 // Its key depends on the cache source and readable scope, not selected workloads.
-func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
+func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared *topology.Topology) *appGraph {
 	applicationsCacheMu.Lock()
 	key := fmt.Sprintf("%d|%d|%s", applicationsCacheGeneration, cache.Generation(), applicationsCacheKeyFor(namespaces, true))
 	entry, hit := applicationsGraphCache[key]
@@ -635,7 +636,24 @@ func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
 		if hit && time.Since(entry.at) < applicationsGraphCacheTTL {
 			return entry.graph, nil
 		}
-		graph := buildAppGraph(cache, namespaces)
+		var graph *appGraph
+		if shared != nil {
+			// This cache is keyed by namespace scope, not user identity. Scope
+			// only by namespaces here; request-specific authentication refs
+			// are filtered after collection. Never cache a per-user graph.
+			scoped := cloneTopology(shared)
+			deny := make(map[string]bool)
+			for _, node := range scoped.Nodes {
+				ns, _ := node.Data["namespace"].(string)
+				if ns != "" && !topology.MatchesNamespace(namespaces, ns) {
+					deny[node.ID] = true
+				}
+			}
+			scoped.StripNodeIDs(deny)
+			graph = indexAppGraph(cache, scoped)
+		} else {
+			graph = buildAppGraph(cache, namespaces)
+		}
 		applicationsCacheMu.Lock()
 		if len(applicationsGraphCache) >= applicationsCacheMaxEntries {
 			evictOldestApplicationsCacheEntry(applicationsGraphCache)
@@ -712,8 +730,16 @@ func buildAppGraph(cache *k8s.ResourceCache, namespaces []string) *appGraph {
 	if err != nil || topo == nil {
 		return g
 	}
-	g.topo = topo
-	g.idx = topology.IndexByResource(topo)
+	return indexAppGraph(cache, topo)
+}
+
+func indexAppGraph(cache *k8s.ResourceCache, topo *topology.Topology) *appGraph {
+	g := &appGraph{
+		topo: topo, idx: topology.IndexByResource(topo),
+		provider: k8s.NewTopologyResourceProvider(cache),
+		dp:       k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()),
+		byID:     map[string]topology.Node{}, byResource: map[string]string{},
+	}
 	for _, n := range topo.Nodes {
 		g.byID[n.ID] = n
 		ns, _ := n.Data["namespace"].(string)
