@@ -31,9 +31,8 @@ import (
 // per-hit between a namespaced and a cluster-wide index — search
 // returns mixed kinds in one response, so a single index can't get
 // both right.
-func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) summarycontext.Builder {
-	// One cache for issues, topology and the relationship provider.
-	cache := k8s.GetResourceCache()
+func newResourceSummaryContextBuilder(ctx context.Context, cache *k8s.ResourceCache, namespaces []string) summarycontext.Builder {
+	// The rows' cache, for issues, topology and the relationship provider.
 	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil
@@ -49,8 +48,7 @@ func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) 
 // canReadClusterScopedKind) already gates which cluster-scoped kinds
 // are reachable, so composing the cluster-wide index doesn't leak
 // rows the user can't see.
-func newSearchSummaryContextBuilder(ctx context.Context, scanNamespaces []string) summarycontext.Builder {
-	cache := k8s.GetResourceCache()
+func newSearchSummaryContextBuilder(ctx context.Context, cache *k8s.ResourceCache, scanNamespaces []string) summarycontext.Builder {
 	provider := issues.NewCacheProviderFor(cache)
 	if provider == nil {
 		return nil

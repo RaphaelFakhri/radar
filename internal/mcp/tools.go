@@ -970,7 +970,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, cache, idxNamespaces); builder != nil {
 			summarycontext.AttachToTypedList(results, objs, builder)
 		}
 	}
@@ -1010,7 +1010,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, cache, idxNamespaces); builder != nil {
 			summarycontext.AttachToUnstructuredList(allItems, rawItems, builder)
 		}
 	}
@@ -3400,7 +3400,7 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	// builder routes per-hit by scope; CanReadClusterScoped above
 	// already gates which cluster-scoped kinds are reachable.
 	if input.Context != "none" {
-		if builder := newSearchSummaryContextBuilder(ctx, scanNamespaces); builder != nil {
+		if builder := newSearchSummaryContextBuilder(ctx, provider.ResourceCache(), scanNamespaces); builder != nil {
 			opts.SummaryBuilder = search.SummaryBuilderFunc(builder)
 		}
 	}
