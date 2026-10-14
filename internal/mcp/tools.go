@@ -19,11 +19,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/skyhook-io/radar/internal/filter"
 	"github.com/skyhook-io/radar/internal/helm"
@@ -211,26 +213,26 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		Annotations: readOnly,
 	}, logToolCall("get_pod_logs", handleGetPodLogs))
 
-	diagnoseDescription := "Collect a bounded, point-in-time evidence bundle for one narrowed workload, " +
-		"GitOps reconciler, or network entry. It combines signals in one round-trip to support diagnosis; " +
+	diagnoseDescription := "Get a bounded, point-in-time evidence bundle for one narrowed workload, " +
+		"GitOps reconciler or network entry. Combines signals in one round-trip; " +
 		"it does not run an agent and is not an authoritative root-cause verdict or an exhaustive account. " +
-		"After narrowing, use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, GitOps sync/health, " +
-		"or traffic not reaching a service, route, or ingress. For Pod, Deployment, StatefulSet, DaemonSet, or Argo Rollout it " +
-		"bundles resource context, selected/capped current and previous logs, Warning events, startup blockers, " +
-		"related issues, and recent workload/ConfigMap changes. " +
-		"Warning events are a capped sample; use get_events for a broader, dedicated event read. " +
+		"Use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, GitOps sync/health, " +
+		"or traffic not reaching a service, route or ingress. Pod, Deployment, StatefulSet, DaemonSet and Argo Rollout " +
+		"bundle resource context, selected/capped current and previous logs, Warning events, startup blockers, " +
+		"related issues and recent workload/ConfigMap changes. " +
+		"Warning events are a capped sample for the observed resource and Pods; UID-less evidence cannot prove an incarnation. Use get_events for a broader, dedicated event read, including history. " +
 		"`crashCause` is evidence, not a root-cause verdict. `logLineSelection` ranks " +
 		"`" + crashLineFatalPattern + "`, `" + crashLineHeaderOnly + "`, `" +
 		crashLineLastMatchedLine + "`, then `" + crashLineLogTail + "`. Inspect source logs for low-confidence " +
 		"selections; `traceback_header_only` means the informative line was not captured. " +
 		"`auditSummary.highestSeverity` uses static-posture critical|high|medium|low (built-ins high|medium), " +
 		"unlike live `issueSummary` critical|warning. `application_configuration_change: true` classifies an edit; " +
-		"it is not a causal or universal relevance verdict. Application, Kustomization, and Flux HelmRelease return reconciler " +
-		"status and parsed issues without logs. Network entry kinds return per-route reachability evidence: trust " +
+		"it is not a causal or universal relevance verdict. Application, Kustomization and Flux HelmRelease return " +
+		"status and parsed issues; no logs. Network entries give per-route reachability evidence: trust " +
 		"`routes[].outcome` + `confidence` and `headline`/`diagnosis` over coarse `verdict`; `indirect` means only the " +
-		"API-server proxy reached it, not the live path. Point-in-time means the bundle is frozen from this call, " +
+		"API-server proxy reached it, not the live path. Point-in-time means frozen from this call, " +
 		"not that every source was read atomically; preserve collection limits, errors, timestamps, and confidence. " +
-		"Prefer a targeted resource/log/event tool for one facet; use get_resource for other kinds."
+		"For one facet, prefer resource/log/event tools; use get_resource for other kinds."
 	if includeWrites {
 		tool := &mcp.Tool{
 			Name: "diagnose",
@@ -1288,7 +1290,11 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 			}
 			canonicalGroup = gvk.Group
 		}
-		attachResourceExtras(ctx, cache, result, includes, canonicalKind, canonicalGroup, namespace, name)
+		objectMeta, err := meta.Accessor(rawObj)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read resource metadata: %w", err)
+		}
+		attachResourceExtras(ctx, cache, result, includes, canonicalKind, canonicalGroup, namespace, name, objectMeta.GetUID(), types.UID(objectMeta.GetAnnotations()[corev1.MirrorPodAnnotationKey]))
 	}
 	return toJSONResult(result)
 }
@@ -1374,7 +1380,8 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 		}),
 	}
 
-	if topo, prov, dyn, ok := mcpTopologyForContext(namespace); ok {
+	if topo, index, prov, dyn, ok := mcpTopologyForContext(); ok {
+		opts.RelIndex = index
 		opts.Topology = topo
 		opts.Provider = prov
 		opts.DynamicProv = dyn
@@ -1386,7 +1393,7 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 // attachResourceExtras populates optional extras (events, metrics, logs) on
 // the result map based on the includes set. relationship synthesis moved to
 // resourceContext via Build and is no longer routed through this function.
-func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result map[string]any, includes map[string]bool, kind, group, namespace, name string) {
+func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result map[string]any, includes map[string]bool, kind, group, namespace, name string, uid, mirrorUID types.UID) {
 	if includes["drain-plan"] {
 		if normalizeDisplayKind(kind) != "Node" || group != "" {
 			result["drainPlanError"] = "drain-plan is available only for core Nodes"
@@ -1434,9 +1441,13 @@ func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result 
 				// Supplemental include — controller-level events only. Pod-level
 				// events on a workload's pods (CrashLoopBackOff, etc.) require
 				// resolving the pod set; that's the diagnose tool's job, not
-				// this include's. nil podNames intentionally restricts to
+				// this include's. nil podUIDs intentionally restricts to
 				// InvolvedObject == this kind+name.
-				matched := filterEventsByInvolvedObject(events, normalizeDisplayKind(kind), group, name, nil)
+				matched, excluded := filterEventsByInvolvedObject(events, normalizeDisplayKind(kind), group, name, uid, mirrorUID, nil)
+				if excluded > 0 {
+					existing, _ := result["warnings"].([]string)
+					result["warnings"] = append(existing, earlierIncarnationEventsNote(excluded, false))
+				}
 				if len(matched) > 0 {
 					deduplicated, totalGroups := aicontext.DeduplicateEventsN(matched, 10)
 					result["events"] = deduplicated
