@@ -23,8 +23,9 @@ helm upgrade --install radar skyhook/radar -n radar --create-namespace
 Access via port-forward:
 ```bash
 kubectl port-forward svc/radar 9280:9280 -n radar
-open http://localhost:9280
 ```
+
+Then open http://localhost:9280 in your browser.
 
 ## Installation settings
 
@@ -257,6 +258,9 @@ helm upgrade --install radar skyhook/radar \
   -n radar -f values.yaml
 ```
 
+An ingress host left empty matches every hostname. Open Radar at the ingress
+controller's address, shown by `kubectl get ingress radar -n radar`.
+
 ### Subpath Ingress (No Strip-Prefix)
 
 If your ingress forwards `/radar/...` to the Radar service as `/radar/...`, set `basePath` to the same prefix:
@@ -356,6 +360,11 @@ wire up.
    helm upgrade --install radar skyhook/radar \
      -n radar -f values.yaml
    ```
+
+Radar's own authentication is off (auth.mode=none). Everyone who passes your
+ingress authentication can use the permissions granted to Radar's
+ServiceAccount. For per-user permissions, configure
+[authentication](authentication.md).
 
 ### With TLS (HTTPS)
 
