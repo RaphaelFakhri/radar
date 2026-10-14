@@ -162,6 +162,9 @@ func (p inventoryDynamicProvider) record(gvr schema.GroupVersionResource, err er
 	if kind == "" {
 		kind = gvr.Resource
 	}
+	if gvr.Group != "" {
+		kind += "." + gvr.Group
+	}
 	w := InventoryWarning{Resource: gvr.Resource, Group: gvr.Group, State: InventoryUnavailable, Message: kind + " data could not be read"}
 	if p.tracker.warnings == nil {
 		p.tracker.warnings = map[string]InventoryWarning{}
@@ -347,6 +350,8 @@ func relevantInventoryWarnings(topo *Topology, kind, group, namespace string, ob
 		return nil
 	}
 	sources := relationshipInventorySources(kind, group, obj)
+	subject, builtinRoot := resourceid.BuiltinForName(kind)
+	namespaceLocalRoot := builtinRoot && subject.Group == group
 	var warnings []InventoryWarning
 	for _, warning := range topo.IncompleteInventories {
 		builtin, known := resourceid.BuiltinForName(warning.Resource)
@@ -360,7 +365,9 @@ func relevantInventoryWarnings(topo *Topology, kind, group, namespace string, ob
 		if warning.Namespace != "" && namespace != "" && warning.Namespace != namespace {
 			continue
 		}
-		if warning.State == InventoryUncovered && namespace != "" {
+		// Custom controllers can manage resources in other namespaces. Covering
+		// only the root namespace does not establish their complete inventory.
+		if warning.State == InventoryUncovered && namespace != "" && namespaceLocalRoot {
 			if inventory, ok := provider.(ResourceInventoryProvider); ok && inventory.InventoryError(warning.Resource, namespace) == nil {
 				continue
 			}

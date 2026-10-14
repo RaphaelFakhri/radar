@@ -315,7 +315,8 @@ func TestTopologyAdapter_NamespaceCoverageIsNotEmptyInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(core.Stop)
-	provider := NewTopologyResourceProvider(&ResourceCache{ResourceCache: core})
+	cache := &ResourceCache{ResourceCache: core}
+	provider := NewTopologyResourceProvider(cache)
 	client.ClearActions()
 	for _, ns := range []string{"a", "b"} {
 		scoped := provider.(topology.NamespacedResourceProvider).ForNamespace(ns)
@@ -345,6 +346,25 @@ func TestTopologyAdapter_NamespaceCoverageIsNotEmptyInventory(t *testing.T) {
 	}
 	if err := provider.(topology.ResourceInventoryProvider).InventoryError("nodes", ""); err != nil {
 		t.Fatalf("cluster-wide Node inventory: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		scope []string
+		want  string
+	}{
+		{"unrestricted", nil, "Watched namespaces within this authorized scope: a, b. Request one of these namespaces for a complete list."},
+		{"authorized subset", []string{"a", "c"}, "Watched namespaces within this authorized scope: a. Request one of these namespaces for a complete list."},
+		{"denied", []string{}, ""},
+		{"uncovered", []string{"c"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if hint := InventoryNamespaceHint(cache, "pods", tc.scope); hint != tc.want {
+				t.Fatalf("hint = %q, want %q", hint, tc.want)
+			}
+		})
+	}
+	if hint := InventoryNamespaceHint(cache, "secrets", nil); hint != "" {
+		t.Fatalf("unavailable inventory offered recovery: %s", hint)
 	}
 	if actions := client.Actions(); len(actions) != 0 {
 		t.Fatalf("coverage read made API calls: %v", actions)

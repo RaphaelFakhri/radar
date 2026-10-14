@@ -2,6 +2,8 @@ package k8s
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -16,6 +18,23 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 	topology "github.com/skyhook-io/radar/pkg/topology"
 )
+
+// The scope must already be filtered by the caller's authorization gates.
+func InventoryNamespaceHint(cache *ResourceCache, resource string, authorizedScope []string) string {
+	if cache == nil || cache.KindReadinessFor(resource) != k8score.KindReady {
+		return ""
+	}
+	var choices []string
+	for _, namespace := range cache.KindNamespaces(resource) {
+		if authorizedScope == nil || slices.Contains(authorizedScope, namespace) {
+			choices = append(choices, namespace)
+		}
+	}
+	if len(choices) == 0 {
+		return ""
+	}
+	return "Watched namespaces within this authorized scope: " + strings.Join(choices, ", ") + ". Request one of these namespaces for a complete list."
+}
 
 // topologyResourceProvider adapts *ResourceCache to topology.ResourceProvider.
 type topologyResourceProvider struct {

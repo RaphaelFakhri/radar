@@ -25,6 +25,7 @@ import { AlertTriangle, ChevronsDownUp, ChevronsUpDown, Download, Info, Layers, 
 import { PaneLoader } from '../ui/PaneLoader'
 import { Collapse, CollapseChevron, useDisclosure } from '../ui/Collapse'
 import { TopologyOverlayBar } from './TopologyOverlayBar'
+import { topologyViewLimitMessage } from './inventory-notice'
 import { Input } from '../ui/Input'
 import { Tooltip } from '../ui/Tooltip'
 import { useToast } from '../ui/Toast'
@@ -1076,7 +1077,7 @@ export function TopologyGraph({
                     {isAllRbac
                       ? `${pluralize(rbacWarnings.length, 'resource type')} not accessible due to RBAC restrictions.`
                       : isViewLimited
-                        ? 'Large retained run history is summarized to keep the graph readable.'
+                        ? topologyViewLimitMessage(topology.incompleteInventories)
                         : 'Some resources failed to load. Data may be incomplete.'}
                   </span>
                   <button

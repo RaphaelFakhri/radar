@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -151,11 +152,15 @@ func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testi
 	defer resp.Body.Close()
 	var body struct {
 		ErrorCode string `json:"error_code"`
+		Error     string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusServiceUnavailable || body.ErrorCode != "kind_namespace_uncovered" {
 		t.Fatalf("cluster-wide list claimed completeness: %d %+v", resp.StatusCode, body)
+	}
+	if !strings.Contains(body.Error, "Watched namespaces within this authorized scope: a.") || !strings.Contains(body.Error, "Request one of these namespaces") {
+		t.Fatalf("unfiltered scope error provided no usable recovery: %+v", body)
 	}
 }

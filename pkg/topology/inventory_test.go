@@ -128,6 +128,21 @@ func TestInventoryWrapperPreservesBareCRDFallback(t *testing.T) {
 	}
 }
 
+func TestDynamicInventoryWarningQualifiesCollidingKind(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "crd.projectcalico.org", Version: "v1", Resource: "networkpolicies"}
+	tracker := &topologyInventoryTracker{}
+	wrapped := inventoryDynamicProvider{DynamicProvider: &genericIdentityDynamic{kinds: map[schema.GroupVersionResource]string{gvr: "NetworkPolicy"}}, tracker: tracker}
+	wrapped.record(gvr, fmt.Errorf("permission denied"))
+	for _, warning := range tracker.warnings {
+		if warning.Group != gvr.Group || !strings.Contains(warning.Message, "NetworkPolicy.crd.projectcalico.org") {
+			t.Fatalf("custom policy failure looked like a built-in: %+v", warning)
+		}
+	}
+	if len(tracker.warnings) != 1 {
+		t.Fatalf("expected one qualified warning: %+v", tracker.warnings)
+	}
+}
+
 type warmingGraphProvider struct {
 	stubProvider
 	state InventoryState
@@ -228,6 +243,10 @@ func TestRelationshipInventoriesOnlyDescribeRelevantSources(t *testing.T) {
 	rel = GetRelationshipsWithObject("ConfigMap", "team", "settings", &corev1.ConfigMap{}, graph, &partialRelationshipInventory{}, nil, nil)
 	if rel != nil && len(rel.Warnings) > 0 {
 		t.Fatalf("covered namespace inherited global scope warning: %+v", rel)
+	}
+	application := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "Application"}}
+	if warnings := relevantInventoryWarnings(graph, "Application", "argoproj.io", "argocd", application, &partialRelationshipInventory{}); len(warnings) != 1 {
+		t.Fatalf("watched controller root hid cross-namespace inventory gaps: %+v", warnings)
 	}
 	graph.IncompleteInventories = []InventoryWarning{InventoryWarningFor("pods", &InventoryError{Resource: "pods", State: InventoryPending})}
 	rel = GetRelationshipsWithObject("ConfigMap", "team", "settings", &corev1.ConfigMap{}, graph, &stubProvider{}, nil, nil)

@@ -398,15 +398,20 @@ func (s *Server) gateAIResourceRead(w http.ResponseWriter, kind, group string, n
 		return cache, true
 	}
 	inventory := k8s.NewTopologyResourceProvider(cache).(topology.ResourceInventoryProvider)
-	if len(namespaces) == 0 {
-		namespaces = []string{""}
+	scopes := namespaces
+	if len(scopes) == 0 {
+		scopes = []string{""}
 	}
-	for _, namespace := range namespaces {
+	for _, namespace := range scopes {
 		if err := inventory.InventoryError(key, namespace); err != nil {
 			if key == "limitranges" {
 				s.writeError(w, http.StatusForbidden, "Radar does not have LimitRange visibility for the requested namespace scope")
 			} else {
-				s.writeErrorCode(w, http.StatusServiceUnavailable, "kind_namespace_uncovered", err.Error())
+				message := err.Error()
+				if hint := k8s.InventoryNamespaceHint(cache, key, namespaces); hint != "" {
+					message += ". " + hint
+				}
+				s.writeErrorCode(w, http.StatusServiceUnavailable, "kind_namespace_uncovered", message)
 			}
 			return nil, false
 		}

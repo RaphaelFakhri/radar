@@ -626,3 +626,32 @@ func TestResourceListDefaultsToConfiguredNamespacePin(t *testing.T) {
 		t.Fatalf("outside pin looked like a complete empty list: %v", err)
 	}
 }
+
+func TestResourceListScopeErrorOffersAuthorizedWatchedNamespaces(t *testing.T) {
+	k8s.ResetResourceCache()
+	t.Cleanup(k8s.ResetTestState)
+	if err := k8s.InitScopedTestResourceCache(fake.NewClientset(), map[string]k8score.ResourceScope{k8score.Pods: {Enabled: true, Namespace: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		allowed  []string
+		wantHint bool
+	}{
+		{"unrestricted", nil, true},
+		{"authorized intersection", []string{"a", "b"}, true},
+		{"no authorized watched namespace", []string{"b"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := withTestUserPerms(t, "bob", nil, tc.allowed)
+			_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "Pod", Context: "none"})
+			if err == nil {
+				t.Fatal("uncovered scope claimed a complete list")
+			}
+			hint := strings.Contains(err.Error(), "Watched namespaces within this authorized scope: a.")
+			if hint != tc.wantHint {
+				t.Fatalf("hint visibility = %v, want %v: %v", hint, tc.wantHint, err)
+			}
+		})
+	}
+}

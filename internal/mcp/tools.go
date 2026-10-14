@@ -937,6 +937,11 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 	}
 	for _, namespace := range scopes {
 		if err := typedResourceInventoryError(cache, kind, group, namespace); err != nil {
+			if gvr, known := k8s.BuiltinGVRAnyGroup(kind); known {
+				if hint := k8s.InventoryNamespaceHint(cache, gvr.Resource, listScope); hint != "" {
+					return nil, nil, fmt.Errorf("%w. %s", err, hint)
+				}
+			}
 			return nil, nil, err
 		}
 	}
