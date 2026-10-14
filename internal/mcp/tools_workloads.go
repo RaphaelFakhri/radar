@@ -173,6 +173,10 @@ func handleManageRollout(ctx context.Context, req *mcp.CallToolRequest, input ma
 		return nil, nil, fmt.Errorf("%s failed: %w", action, err)
 	}
 
+	return toJSONResult(rolloutResponse(action, result))
+}
+
+func rolloutResponse(action string, result rollouts.OperationResult) map[string]any {
 	resp := map[string]any{
 		"status":    "ok",
 		"message":   result.Message,
@@ -184,10 +188,20 @@ func handleManageRollout(ctx context.Context, req *mcp.CallToolRequest, input ma
 	if result.NoChange {
 		resp["noChange"] = true
 	}
+	if result.Outcome != "" {
+		resp["outcome"] = result.Outcome
+	}
+	switch result.Outcome {
+	case rollouts.OutcomeUnderway:
+		resp["note"] = "The new revision is not live yet. Poll get_resource kind=Rollout until status.stableRS equals status.currentPodHash."
+	case rollouts.OutcomeUnconfirmed:
+		resp["note"] = "The controller was not seen acting on the promotion. Poll get_resource kind=Rollout until status.stableRS equals status.currentPodHash. " +
+			"If status.promoteFull is gone before then, the controller dropped it: send promote-full again."
+	}
 	if action == "abort" {
 		resp["note"] = "The Rollout stays aborted until manage_rollout action=retry, or a new revision is pushed."
 	}
-	return toJSONResult(resp)
+	return resp
 }
 
 func handleManageCronJob(ctx context.Context, req *mcp.CallToolRequest, input manageCronJobInput) (*mcp.CallToolResult, any, error) {

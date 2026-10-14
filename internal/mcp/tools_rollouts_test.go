@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/skyhook-io/radar/pkg/rollouts"
 )
 
 func TestNormalizeWorkloadKindAcceptsRollout(t *testing.T) {
@@ -62,5 +64,32 @@ func TestRevisionsIsAKnownIncludeToken(t *testing.T) {
 
 	if msg, present := result["includeError"]; present {
 		t.Errorf("revisions reported as unknown include: %v", msg)
+	}
+}
+
+// status "ok" covers a promotion that landed and one still under way, so the outcome and
+// a poll instruction are what tell an agent whether to check back.
+func TestRolloutResponseCarriesPromoteFullOutcome(t *testing.T) {
+	cases := map[rollouts.Outcome]bool{
+		rollouts.OutcomeLanded:      false,
+		rollouts.OutcomeUnderway:    true,
+		rollouts.OutcomeUnconfirmed: true,
+	}
+	for outcome, wantPoll := range cases {
+		t.Run(string(outcome), func(t *testing.T) {
+			resp := rolloutResponse("promote-full", rollouts.OperationResult{Operation: "promote-full", Outcome: outcome})
+			if resp["outcome"] != outcome {
+				t.Errorf("outcome = %v, want %q", resp["outcome"], outcome)
+			}
+			note, _ := resp["note"].(string)
+			if got := strings.Contains(note, "status.stableRS equals status.currentPodHash"); got != wantPoll {
+				t.Errorf("note = %q, want poll instruction: %v", note, wantPoll)
+			}
+		})
+	}
+
+	resp := rolloutResponse("promote", rollouts.OperationResult{Operation: "promote"})
+	if _, ok := resp["outcome"]; ok {
+		t.Errorf("promote response carries an outcome it never measured: %v", resp)
 	}
 }
