@@ -106,7 +106,7 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 	clearApplicationsCache()
 	t.Cleanup(clearApplicationsCache)
 	for _, visible := range [][]string{{"demo", "gitops"}, {"demo"}, {"demo", "gitops"}} {
-		got, err := listApplicationsForRequest(context.Background(), []string{"demo"}, visible, false, func() *topology.Topology { return shared })
+		got, err := listApplicationsForRequest(context.Background(), []string{"demo"}, visible, false, func(uint64) *topology.Topology { return shared })
 		if err != nil || len(got.Applications) != 1 {
 			t.Fatalf("Applications: err=%v rows=%+v", err, got)
 		}
@@ -145,8 +145,8 @@ func TestApplicationsReuseSharedGraphWithoutMutatingVisibility(t *testing.T) {
 		{ID: "deployment/demo/web", Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
 		{ID: "helmrelease/gitops/release", Kind: topology.KindHelmRelease, Name: "release", Data: map[string]any{"namespace": "gitops", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
 	}, Edges: []topology.Edge{{ID: "manager-to-web", Source: "helmrelease/gitops/release", Target: "deployment/demo/web", Type: topology.EdgeManages}}}
-	full := cachedAppGraph(k8s.GetResourceCache(), nil, func() *topology.Topology { return shared })
-	limited := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"}, func() *topology.Topology { return shared })
+	full := cachedAppGraph(k8s.GetResourceCache(), nil, func(uint64) *topology.Topology { return shared })
+	limited := cachedAppGraph(k8s.GetResourceCache(), []string{"demo"}, func(uint64) *topology.Topology { return shared })
 	root, _ := full.structuralRoot("deployment/demo/web")
 	if root.Kind != topology.KindHelmRelease {
 		t.Fatal("shared-only ownership edge was not reused")
@@ -158,7 +158,7 @@ func TestApplicationsReuseSharedGraphWithoutMutatingVisibility(t *testing.T) {
 	if len(shared.Nodes) != 2 || len(shared.Edges) != 1 {
 		t.Fatal("scope filtering mutated shared graph")
 	}
-	if cachedAppGraph(k8s.GetResourceCache(), nil, func() *topology.Topology { t.Fatal("cache hit rebuilt broadcaster"); return nil }) != full {
+	if cachedAppGraph(k8s.GetResourceCache(), nil, func(uint64) *topology.Topology { t.Fatal("cache hit rebuilt broadcaster"); return nil }) != full {
 		t.Fatal("full scope cache was contaminated")
 	}
 }
@@ -184,9 +184,22 @@ func TestApplicationsRejectsPreviousClusterSnapshotBeforeCallbacks(t *testing.T)
 	}
 	clearApplicationsCache()
 	t.Cleanup(clearApplicationsCache)
-	graph := cachedAppGraph(k8s.GetResourceCache(), nil, b.GetCachedTopology)
+	graph := cachedAppGraph(k8s.GetResourceCache(), nil, b.GetCachedTopologyForGeneration)
 	root, ok := graph.structuralRoot("deployment/demo/web")
 	if !ok || root.Kind != topology.KindDeployment {
 		t.Fatalf("previous cluster owner was cached: %+v", root)
+	}
+}
+
+func TestSharedSnapshotRejectsDifferentRequestSource(t *testing.T) {
+	useTestResourceCache(t, clusterWithDeployment("web"))
+	previous := k8s.GetResourceCache().Generation()
+	useTestResourceCache(t, clusterWithDeployment("web"))
+	b := NewSSEBroadcaster()
+	snapshot := &topology.Topology{}
+	current := k8s.GetResourceCache().Generation()
+	b.updateCachedTopology(snapshot, b.topoEpoch.Load(), current)
+	if b.GetCachedTopologyForGeneration(previous) != nil || b.GetCachedTopologyForGeneration(current) != snapshot {
+		t.Fatal("request source was ignored")
 	}
 }

@@ -36,7 +36,7 @@ func newResourceSummaryContextBuilder(ctx context.Context, namespaces []string) 
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
-	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), idx, idx, nil, newMCPRequestScopedChecker(ctx))
+	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(ctx, scopedNamespacesForUser(ctx, nil)), idx, idx, nil, newMCPRequestScopedChecker(ctx))
 }
 
 // newSearchSummaryContextBuilder is the MCP search variant. Mirrors
@@ -56,7 +56,7 @@ func newSearchSummaryContextBuilder(ctx context.Context, scanNamespaces []string
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: issueClusterScopedAccess(ctx), CanReadRelated: issueRelatedResourceAccess(ctx), CanReadSubject: issueSubjectAccess(ctx), CanReadEvidence: issueEvidenceAccess(ctx)})
 	}
-	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(scopedNamespacesForUser(ctx, nil)), namespacedIdx, clusterIdx, nil, newMCPRequestScopedChecker(ctx))
+	return summarycontext.BuilderFromIndexes(ctx, buildSummaryContextTopology(ctx, scopedNamespacesForUser(ctx, nil)), namespacedIdx, clusterIdx, nil, newMCPRequestScopedChecker(ctx))
 }
 
 // summaryCtxTopoMemo caches topology builds for the list_resources and search
@@ -76,7 +76,7 @@ var summaryCtxTopoMemo = topology.NewMemoizer(5 * time.Second)
 // resolving managedBy pointers, reusing a cached snapshot when one is
 // fresh. Returns nil on failure — the caller falls back to a
 // managedBy-less ResourceSummaryContext rather than failing the response.
-func buildSummaryContextTopology(namespaces []string) *topology.Topology {
-	topo, _, _, _ := mcpTopologyForContext(namespaces)
+func buildSummaryContextTopology(ctx context.Context, namespaces []string) *topology.Topology {
+	topo, _, _, _ := mcpTopologyForContext(ctx, namespaces)
 	return topo
 }

@@ -107,12 +107,18 @@ func IsGitOpsManagerKind(kind NodeKind, group string) bool {
 // Origin labels remain useful when no inventory is available. Once an observed
 // Flux controller records inventory (or targets another cluster), membership
 // must follow the graph, including an owner chain for generated descendants.
-func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef) bool {
+func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef, annotations map[string]string) bool {
 	if idx == nil || (ref.Group != fluxHelmGroup && ref.Group != fluxKustomizeGroup) {
 		return true
 	}
 	manager := idx.nodesByResourceKey[resourceid.ResourceKey(ref.Group, ref.Kind, ref.Namespace, ref.Name)]
 	if manager == nil || !manager.gitopsManagementAuthoritative {
+		return true
+	}
+	// Helm deliberately excludes hooks from managed inventory. Their origin
+	// still identifies the release whose lifecycle created them; this does not
+	// add an inventory edge or promise pruning. Remote hints cannot match here.
+	if ref.Group == fluxHelmGroup && ref.Kind == "HelmRelease" && annotations["helm.sh/hook"] != "" && !manager.gitopsRemoteDestination {
 		return true
 	}
 	targetKey := resourceid.ResourceKey(target.Group, target.Kind, target.Namespace, target.Name)
@@ -169,7 +175,7 @@ func detectManagedByFromMeta(obj metav1.Object, idx *RelationshipsIndex, target 
 			Namespace: ns,
 			Name:      name,
 		}
-		if idx.AcceptsManagerHint(ref, target) {
+		if idx.AcceptsManagerHint(ref, target, annos) {
 			return &ref
 		}
 	}
@@ -180,7 +186,7 @@ func detectManagedByFromMeta(obj metav1.Object, idx *RelationshipsIndex, target 
 			Namespace: ns,
 			Name:      name,
 		}
-		if idx.AcceptsManagerHint(ref, target) {
+		if idx.AcceptsManagerHint(ref, target, annos) {
 			return &ref
 		}
 	}

@@ -291,7 +291,7 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology)
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.GetCachedTopologyForGeneration)
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -321,7 +321,7 @@ func (s *Server) handleApplicationHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology)
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.GetCachedTopologyForGeneration)
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -574,7 +574,7 @@ func ListApplications(ctx context.Context, namespaces []string) (*applicationsRe
 
 // namespaces selects workloads; graphNamespaces bounds readable relationship
 // evidence independently so a namespace pick does not hide a Flux manager.
-func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool, shared func() *topology.Topology) (*applicationsResponse, error) {
+func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool, shared func(uint64) *topology.Topology) (*applicationsResponse, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, errResourceCacheUnavailable
@@ -624,7 +624,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 
 // cachedAppGraph shares immutable ownership evidence across namespace picks.
 // Its key depends on the cache source and readable scope, not selected workloads.
-func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared func() *topology.Topology) *appGraph {
+func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared func(uint64) *topology.Topology) *appGraph {
 	applicationsCacheMu.Lock()
 	key := fmt.Sprintf("%d|%d|%s", applicationsCacheGeneration, cache.Generation(), applicationsCacheKeyFor(namespaces, true))
 	entry, hit := applicationsGraphCache[key]
@@ -642,21 +642,13 @@ func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared func()
 		var graph *appGraph
 		var snapshot *topology.Topology
 		if shared != nil {
-			snapshot = shared()
+			snapshot = shared(cache.Generation())
 		}
 		if snapshot != nil {
 			// This cache is keyed by namespace scope, not user identity. Scope
 			// only by namespaces here; request-specific authentication refs
 			// are filtered after collection. Never cache a per-user graph.
-			scoped := cloneTopology(snapshot)
-			deny := make(map[string]bool)
-			for _, node := range scoped.Nodes {
-				ns, _ := node.Data["namespace"].(string)
-				if ns != "" && !topology.MatchesNamespace(namespaces, ns) {
-					deny[node.ID] = true
-				}
-			}
-			scoped.StripNodeIDs(deny)
+			scoped := snapshot.ForNamespaces(namespaces)
 			graph = indexAppGraph(cache, scoped)
 		} else {
 			graph = buildAppGraph(cache, namespaces)
@@ -946,7 +938,7 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 			signals := append([]subject.Signal{overlay.Winner}, overlay.Conflicts...)
 			valid := signals[:0]
 			for _, signal := range signals {
-				if g.idx.AcceptsManagerHint(topology.ResourceRef{Kind: signal.Ref.Kind, Group: signal.Ref.Group, Namespace: signal.Ref.Namespace, Name: signal.Ref.Name}, topology.ResourceRef{Kind: kind, Group: group, Namespace: ns, Name: name}) {
+				if g.idx.AcceptsManagerHint(topology.ResourceRef{Kind: signal.Ref.Kind, Group: signal.Ref.Group, Namespace: signal.Ref.Namespace, Name: signal.Ref.Name}, topology.ResourceRef{Kind: kind, Group: group, Namespace: ns, Name: name}, anns) {
 					valid = append(valid, signal)
 				}
 			}

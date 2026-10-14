@@ -217,7 +217,7 @@ func computeMCPAuditSummary(ctx context.Context, cache *k8s.ResourceCache, group
 // build cost across get_resource and list_resources / search calls. nil
 // return is fine — Build then skips topology-derived fields and the
 // remaining sidecar still populates.
-func mcpTopologyForContext(namespaces []string) (*topo.Topology, topo.ResourceProvider, topo.DynamicProvider, bool) {
+func mcpTopologyForContext(ctx context.Context, namespaces []string) (*topo.Topology, topo.ResourceProvider, topo.DynamicProvider, bool) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, nil, nil, false
@@ -241,6 +241,11 @@ func mcpTopologyForContext(namespaces []string) (*topo.Topology, topo.ResourcePr
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
 	topology, err := summaryCtxTopoMemo.GetScoped(cache.Generation(), opts, func() (*topo.Topology, error) {
+		if get, ok := ctx.Value(topologySnapshotKey{}).(topologySnapshotGetter); ok {
+			if shared := get(cache.Generation()); shared != nil {
+				return shared.ForNamespaces(namespaces), nil
+			}
+		}
 		return topo.NewBuilder(provider).WithDynamic(dyn).Build(opts)
 	})
 	if err != nil || topology == nil {

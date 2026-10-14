@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"context"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
+	topo "github.com/skyhook-io/radar/pkg/topology"
 )
 
 func TestMCPContextKeepsReadableCrossNamespaceFluxInventory(t *testing.T) {
@@ -125,7 +129,7 @@ func TestMCPContextWithNoNamespacesKeepsClusterResources(t *testing.T) {
 	}
 	ctx := withTestUserPerms(t, "cluster-only-context", nil, []string{})
 	grantClusterRead(t, "cluster-only-context", "/nodes", "karpenter.sh/nodeclaims")
-	graph, _, _, ok := mcpTopologyForContext(scopedNamespacesForUser(ctx, nil))
+	graph, _, _, ok := mcpTopologyForContext(ctx, scopedNamespacesForUser(ctx, nil))
 	if !ok || !hasNode(graph, "node-1") || hasNode(graph, "alpha-pod") {
 		t.Fatalf("cluster-only context scope=%+v", graph)
 	}
@@ -133,5 +137,59 @@ func TestMCPContextWithNoNamespacesKeepsClusterResources(t *testing.T) {
 	got := buildMCPResourceContext(ctx, node, "Node", "", node.Name, resourcecontext.TierBasic, nil)
 	if len(got.ManagedBy) != 1 || got.ManagedBy[0].Name != "claim" || got.ManagedBy[0].Group != "karpenter.sh" {
 		t.Fatalf("authorized cluster owner lost: %+v", got)
+	}
+}
+
+func TestHTTPContextReusesSourceSnapshotWithinReadableScope(t *testing.T) {
+	freshSummaryCtxTopoMemo(t)
+	useSwitchTestCluster(t, "web")
+	shared := &topo.Topology{Nodes: []topo.Node{
+		{ID: "readable", Data: map[string]any{"namespace": "demo"}},
+		{ID: "hidden", Data: map[string]any{"namespace": "private"}},
+		{ID: "cluster", Data: map[string]any{"namespace": ""}},
+	}, Edges: []topo.Edge{{Source: "readable", Target: "hidden"}, {Source: "readable", Target: "cluster"}}}
+	calls := 0
+	ctx := context.WithValue(context.Background(), topologySnapshotKey{}, topologySnapshotGetter(func(generation uint64) *topo.Topology {
+		calls++
+		if generation != k8s.GetResourceCache().Generation() {
+			t.Fatal("wrong source")
+		}
+		return shared
+	}))
+	graph, _, _, ok := mcpTopologyForContext(ctx, []string{"demo"})
+	if !ok || len(graph.Nodes) != 2 || len(graph.Edges) != 1 {
+		t.Fatal("HTTP snapshot not scoped/reused", graph)
+	}
+	mcpTopologyForContext(ctx, []string{"demo"})
+	if calls != 1 || len(shared.Nodes) != 3 {
+		t.Fatal("memo miss or shared mutation")
+	}
+	summaryCtxTopoMemo = topo.NewMemoizer(5 * time.Second)
+	ctx = context.WithValue(context.Background(), topologySnapshotKey{}, topologySnapshotGetter(func(uint64) *topo.Topology { return nil }))
+	fallback, _, _, ok := mcpTopologyForContext(ctx, []string{"demo"})
+	if !ok || !hasNode(fallback, "web") {
+		t.Fatal("standalone/cold fallback lost", fallback)
+	}
+}
+
+func TestHTTPToolReceivesSharedSnapshotProvider(t *testing.T) {
+	freshSummaryCtxTopoMemo(t)
+	useSwitchTestCluster(t, "web")
+	var calls atomic.Int32
+	handler := WithTopologySnapshot(NewHandler(), func(generation uint64) *topo.Topology { calls.Add(1); return &topo.Topology{} })
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "snapshot-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcpsdk.StreamableClientTransport{Endpoint: httpServer.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_resource", Arguments: map[string]any{"kind": "Deployment", "group": "apps", "namespace": "demo", "name": "web"}})
+	if err != nil || res.IsError {
+		t.Fatalf("tool: %v %+v", err, res)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("HTTP MCP did not use shared provider: %d", calls.Load())
 	}
 }

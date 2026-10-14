@@ -1396,3 +1396,20 @@ func authorizedSecretTuples(topo *topology.Topology, authorize func(group, resou
 	}
 	return allowed
 }
+
+// GetCachedTopologyForGeneration bounds snapshot reuse to the requesting source.
+func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) *topology.Topology {
+	topo := b.GetCachedTopology()
+	b.cachedTopologyMu.RLock()
+	defer b.cachedTopologyMu.RUnlock()
+	if b.cachedTopology != topo || b.cachedTopologyGeneration != generation {
+		return nil
+	}
+	return topo
+}
+
+// GetCachedTopologyForGeneration exposes the immutable source-bound snapshot to
+// HTTP MCP and Applications; standalone readers can build their own graph.
+func (s *Server) GetCachedTopologyForGeneration(generation uint64) *topology.Topology {
+	return s.broadcaster.GetCachedTopologyForGeneration(generation)
+}

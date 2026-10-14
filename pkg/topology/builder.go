@@ -5684,6 +5684,7 @@ func addGitOpsManagedResourceEdges(
 			// stale origin labels after this observed controller says otherwise.
 			if node := nodesByID[sourceID]; node != nil {
 				node.gitopsManagementAuthoritative = true
+				node.gitopsRemoteDestination = !local
 			}
 		}
 		if !local {

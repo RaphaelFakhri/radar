@@ -83,7 +83,9 @@ func BuilderFromIndexes(ctx context.Context, topo *topology.Topology, namespaced
 				// Authorize its exact identity before the compact projection drops
 				// the API group, just as the detail ResourceContext does.
 				if ref != nil && (checker == nil || checker.CanRead(ctx, ref.Group, ref.Kind, ref.Namespace)) {
-					managedBy = ManagedByFromRelationships(rel)
+					managedBy = resourcecontext.ManagedByFromOwner(ref.Kind, ref.Group, ref.Namespace, ref.Name)
+				} else if owner := rel.Owner; owner != nil && (checker == nil || checker.CanRead(ctx, owner.Group, owner.Kind, owner.Namespace)) {
+					managedBy = resourcecontext.ManagedByFromOwner(owner.Kind, owner.Group, owner.Namespace, owner.Name)
 				}
 			}
 		}
