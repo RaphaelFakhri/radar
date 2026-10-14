@@ -601,6 +601,11 @@ Only named PodSpec declarations are included: implicit workload defaults and
 template-generated PVC names are not inferred. An absent omission does not by
 itself establish cache freshness or complete namespace coverage.
 
+Resource context's `ingressSummary.tlsSecrets` lists named TLS Secrets in the
+Ingress's namespace. A Secret's `referencedBy` includes readable Ingresses with
+the path `spec.tls[].secretName`. Resource-view topology links only observed,
+visible TLS Secrets. Empty Secret names do not resolve controller defaults.
+
 ### Write Tools
 
 | Tool | Description | Parameters |
