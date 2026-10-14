@@ -88,17 +88,22 @@ func (s *Server) handleWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		beforeSeq = n
 	}
+	// The workload, its attachments and the timeline queried for them must
+	// describe one cluster. Take the cache first, then the store and context,
+	// and refuse the request if a switch replaced the cache in between.
+	cache := k8s.GetResourceCache()
 	store := timeline.GetStore()
 	if store == nil {
 		s.writeTimelineStoreUnavailable(w)
 		return
 	}
+	clusterContext := k8s.ActiveClusterContext()
+	if k8s.GetResourceCache() != cache {
+		s.writeError(w, http.StatusServiceUnavailable, "cluster changed while reading history; retry")
+		return
+	}
 
 	key := resourceid.NewRef(group, kind, namespace, name)
-	clusterContext := k8s.ActiveClusterContext()
-	// One cache for the workload, its attachments and their UIDs, so a switch
-	// mid-request can't join one cluster's workload to another's attachments.
-	cache := k8s.GetResourceCache()
 	live := liveWorkloadIdentity(r.Context(), cache, chi.URLParam(r, "kind"), group, namespace, name)
 	attached := s.workloadAttachments(r, cache, key, live.Object)
 	live.AttachedUIDs = liveAttachmentUIDs(r.Context(), cache, attached)

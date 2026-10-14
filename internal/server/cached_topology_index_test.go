@@ -1,7 +1,9 @@
 package server
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -163,5 +165,50 @@ func TestCachedTopologyRepairIsSingleFlight(t *testing.T) {
 		} else if topo != first {
 			t.Fatal("concurrent readers each rebuilt the graph")
 		}
+	}
+}
+
+// A dirty-flag rebuild and a generation repair share one build: a second
+// reader arriving while the first rebuild is stalled must not start another,
+// whether the graph it finds is stale or missing.
+func TestDirtyRebuildAndRepairShareOneBuild(t *testing.T) {
+	for _, stale := range []bool{true, false} {
+		t.Run(map[bool]string{true: "stale graph", false: "no graph"}[stale], func(t *testing.T) {
+			useTestResourceCache(t, fake.NewClientset(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "demo"}}))
+			current := k8s.GetResourceCache().Generation()
+			b := NewSSEBroadcaster()
+			if stale {
+				b.updateCachedTopology(topoWithEdge("deployment/demo/previous", "replicaset/demo/previous-1"), b.topoEpoch.Load(), current+1)
+			}
+			b.markCachedTopologyDirty()
+
+			var builds atomic.Int32
+			entered, release := make(chan struct{}), make(chan struct{})
+			real := rebuildCachedTopology
+			rebuildCachedTopology = func(b *SSEBroadcaster) bool {
+				if builds.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+				return real(b)
+			}
+			t.Cleanup(func() { rebuildCachedTopology = real })
+
+			first := make(chan *topology.Topology, 1)
+			go func() { topo, _ := b.GetCachedTopologyForGeneration(current); first <- topo }()
+			<-entered
+			second := make(chan *topology.Topology, 1)
+			go func() { topo, _ := b.GetCachedTopologyForGeneration(current); second <- topo }()
+			// Let the second reader reach the rebuild lock while the first holds it.
+			time.Sleep(100 * time.Millisecond)
+			close(release)
+			a, c := <-first, <-second
+			if a == nil || a != c {
+				t.Fatalf("readers didn't share the rebuilt graph: %p %p", a, c)
+			}
+			if n := builds.Load(); n != 1 {
+				t.Fatalf("%d builds for one repair", n)
+			}
+		})
 	}
 }

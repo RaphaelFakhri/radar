@@ -57,10 +57,10 @@ type SSEBroadcaster struct {
 	// but the new resource cache is published before they do; a reader holding
 	// that cache must not pair it with the previous cluster's graph.
 	cachedTopologyGeneration uint64
-	// cachedTopologyRepairMu serializes repairs of a graph from another
-	// generation, so concurrent readers wait for one rebuild instead of each
-	// starting their own.
-	cachedTopologyRepairMu sync.Mutex
+	// cachedTopologyRebuildMu admits one request-driven rebuild at a time:
+	// the dirty-flag rebuild and the repair of a graph from another
+	// generation. Repairing readers wait for it; dirty readers don't.
+	cachedTopologyRebuildMu sync.Mutex
 
 	// warmupDone is closed when deferred informers finish syncing. During warmup,
 	// topology broadcasts use longer debounce and skip the expensive full-topology
@@ -1142,7 +1142,14 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 	b.cachedTopologyMu.RUnlock()
 
 	if dirty && k8s.GetResourceCache() != nil {
-		// Gate: only one goroutine proceeds to rebuild
+		// One rebuild at a time, shared with generation repair. A reader that
+		// finds one in progress keeps the current graph rather than waiting,
+		// as it always has; this also keeps the repair path, which holds the
+		// lock, from rebuilding through here.
+		if !b.cachedTopologyRebuildMu.TryLock() {
+			return topo
+		}
+		defer b.cachedTopologyRebuildMu.Unlock()
 		b.cachedTopologyMu.Lock()
 		if !b.cachedTopologyDirty {
 			topo = b.cachedTopology
@@ -1152,7 +1159,7 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 		b.cachedTopologyDirty = false
 		b.cachedTopologyMu.Unlock()
 
-		if !b.rebuildCachedTopology() {
+		if !rebuildCachedTopology(b) {
 			// Rebuild failed — mark dirty again so next call retries
 			b.cachedTopologyMu.Lock()
 			b.cachedTopologyDirty = true
@@ -1179,8 +1186,8 @@ func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) (*top
 	if !isCurrentCacheGeneration(generation) {
 		return nil, nil
 	}
-	b.cachedTopologyRepairMu.Lock()
-	defer b.cachedTopologyRepairMu.Unlock()
+	b.cachedTopologyRebuildMu.Lock()
+	defer b.cachedTopologyRebuildMu.Unlock()
 	// Another reader may have repaired it, or a switch landed, while this one
 	// waited.
 	if topo, index := b.cachedTopologyIfGeneration(generation); topo != nil {
@@ -1191,7 +1198,7 @@ func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) (*top
 	}
 	// Built here rather than through the dirty flag: another reader could claim
 	// that rebuild and leave this one looking at the old graph.
-	b.rebuildCachedTopology()
+	rebuildCachedTopology(b)
 	return b.cachedTopologyIfGeneration(generation)
 }
 
@@ -1246,6 +1253,10 @@ func (b *SSEBroadcaster) GetCachedTopologyWithIndex() (*topology.Topology, *topo
 	b.cachedTopologyMu.Unlock()
 	return topo, built
 }
+
+// rebuildCachedTopology is the request-driven rebuild; tests replace it to
+// count and stall builds.
+var rebuildCachedTopology = (*SSEBroadcaster).rebuildCachedTopology
 
 // rebuildCachedTopology rebuilds the full topology for relationship lookups.
 // Returns true if the rebuild succeeded, false otherwise.
