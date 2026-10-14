@@ -180,7 +180,7 @@ func (s *Server) resolveGitOpsTree(r *http.Request, req *gitopsRequest) (*gitops
 	resolver.canReadClusterScoped = s.issueClusterScopedAccess(r)
 	resolver.canReadSubject = s.issueSubjectAccess(r)
 	resolver.canReadEvidence = s.issueEvidenceAccess(r)
-	memoKey := gitopsIssuesMemoKey(auth.UserFromContext(r.Context()), req.AllowedNamespaces)
+	memoKey := gitopsIssuesMemoKey(req.Cache.Generation(), auth.UserFromContext(r.Context()), req.AllowedNamespaces)
 	resolver.composed = func() ([]issues.Issue, []issues.Issue) {
 		return s.gitopsIssuesMemo.load(memoKey, resolver.composeIssues)
 	}

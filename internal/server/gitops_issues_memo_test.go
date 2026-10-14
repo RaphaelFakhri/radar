@@ -15,9 +15,9 @@ func TestGitopsIssuesMemo_ComposesOncePerKeyWithinTTL(t *testing.T) {
 		calls++
 		return []issues.Issue{{ID: "a"}}, nil
 	}
-	alice := gitopsIssuesMemoKey(&auth.User{Username: "alice", Groups: []string{"b", "a"}}, []string{"prod", "dev"})
-	aliceAgain := gitopsIssuesMemoKey(&auth.User{Username: "alice", Groups: []string{"a", "b"}}, []string{"dev", "prod"})
-	bob := gitopsIssuesMemoKey(&auth.User{Username: "bob"}, []string{"prod", "dev"})
+	alice := gitopsIssuesMemoKey(1, &auth.User{Username: "alice", Groups: []string{"b", "a"}}, []string{"prod", "dev"})
+	aliceAgain := gitopsIssuesMemoKey(1, &auth.User{Username: "alice", Groups: []string{"a", "b"}}, []string{"dev", "prod"})
+	bob := gitopsIssuesMemoKey(1, &auth.User{Username: "bob"}, []string{"prod", "dev"})
 
 	m.load(alice, compose)
 	m.load(aliceAgain, compose)
@@ -32,6 +32,12 @@ func TestGitopsIssuesMemo_ComposesOncePerKeyWithinTTL(t *testing.T) {
 	m.load(alice, compose)
 	if calls != 3 {
 		t.Fatalf("clear must drop entries, got %d calls", calls)
+	}
+	// The same user and namespaces on the next cluster's cache compose afresh:
+	// a request landing before the post-switch clear can't read the old set.
+	m.load(gitopsIssuesMemoKey(2, &auth.User{Username: "alice", Groups: []string{"a", "b"}}, []string{"dev", "prod"}), compose)
+	if calls != 4 {
+		t.Fatalf("another cache generation must not share a composition, got %d calls", calls)
 	}
 }
 

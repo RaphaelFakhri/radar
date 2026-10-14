@@ -475,3 +475,19 @@ func TestWorkloadHistory_StandalonePodNotAdoptedByName(t *testing.T) {
 		t.Errorf("StatefulSet web history = %s, want [missed-pod sts]: the unknown-owner Pod by name, not the standalone one", got)
 	}
 }
+
+// Mid-switch there is no resource cache to tie the timeline store and context
+// to a cluster, so history is refused rather than read against whichever
+// store happens to be current.
+func TestWorkloadHistory_RefusesWithoutAResourceCache(t *testing.T) {
+	withWorkloadHistoryStore(t)
+	k8s.ResetResourceCache()
+	t.Cleanup(func() {
+		if err := k8s.InitTestResourceCache(testFakeClient); err != nil {
+			t.Fatalf("restore package fixture cache: %v", err)
+		}
+	})
+	if code, _ := getWorkloadHistory(t, "/api/workloads/deployments/default/web/history"); code != http.StatusServiceUnavailable {
+		t.Errorf("status %d without a resource cache, want 503", code)
+	}
+}

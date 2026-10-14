@@ -62,10 +62,11 @@ func newSearchSummaryContextBuilder(ctx context.Context, cache *k8s.ResourceCach
 }
 
 // summaryCtxTopoMemo caches topology builds for the list_resources and search
-// summary context, and for the resource context get_resource and diagnose
-// attach (mcpTopologyForContext). MCP has no shared broadcaster cache, so without
-// memoization every one of those calls from an agent pays a full topology
-// build (multi-second on multi-thousand-resource clusters). 5s TTL matches
+// summary context, and for resource context (get_resource, diagnose) when the
+// host's shared relationship graph isn't usable for the request's cache (see
+// SetRelationshipTopologySource). Without memoization every one of those
+// calls from an agent pays a full topology build (multi-second on
+// multi-thousand-resource clusters). 5s TTL matches
 // the REST broadcaster's cadence, long enough that a burst of agent calls
 // amortizes the build cost. Callers scope each build to the generation of
 // the resource cache it reads, so a context switch never serves the previous

@@ -92,6 +92,11 @@ func (s *Server) handleWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 	// describe one cluster. Take the cache first, then the store and context,
 	// and refuse the request if a switch replaced the cache in between.
 	cache := k8s.GetResourceCache()
+	if cache == nil {
+		// Mid-switch: no cache ties the store and context to a cluster.
+		s.writeError(w, http.StatusServiceUnavailable, "cluster cache not ready; retry")
+		return
+	}
 	store := timeline.GetStore()
 	if store == nil {
 		s.writeTimelineStoreUnavailable(w)

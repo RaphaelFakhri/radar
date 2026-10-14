@@ -2,6 +2,7 @@ package server
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,9 @@ import (
 // The composed set is per user: Compose redacts related refs the caller
 // can't read and is scoped to their namespaces, so the key carries the
 // identity and the namespace set. Cleared on context switch like the other
-// post-switch caches.
+// post-switch caches; the key also carries the resource-cache generation, so
+// a request landing while a switch finishes, or a composition that started on
+// the previous cache, can't hand one cluster's issues to the other.
 type gitopsIssuesMemo struct {
 	ttl     time.Duration
 	mu      sync.Mutex
@@ -37,8 +40,10 @@ func newGitopsIssuesMemo(ttl time.Duration) *gitopsIssuesMemo {
 	return &gitopsIssuesMemo{ttl: ttl, entries: map[string]*gitopsIssuesEntry{}}
 }
 
-func gitopsIssuesMemoKey(user *auth.User, namespaces []string) string {
+func gitopsIssuesMemoKey(generation uint64, user *auth.User, namespaces []string) string {
 	var b strings.Builder
+	b.WriteString(strconv.FormatUint(generation, 10))
+	b.WriteString("\x00")
 	if user != nil {
 		b.WriteString(user.Username)
 		groups := append([]string(nil), user.Groups...)
