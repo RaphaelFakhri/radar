@@ -145,6 +145,11 @@ type inventoryDynamicProvider struct {
 	tracker *topologyInventoryTracker
 }
 
+// Bare-kind discovery can resolve a built-in with the same kind as a CRD.
+func (p inventoryDynamicProvider) IsCRDGVR(gvr schema.GroupVersionResource) bool {
+	return isCRDGVR(p.DynamicProvider, gvr, p.GetKindForGVR(gvr))
+}
+
 func (p inventoryDynamicProvider) record(gvr schema.GroupVersionResource, err error) {
 	if err == nil {
 		return

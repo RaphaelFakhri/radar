@@ -1,12 +1,83 @@
 package topology
 
 import (
+	"testing"
+
+	"github.com/skyhook-io/radar/pkg/k8score"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"strings"
-	"testing"
 )
+
+type inventoryDiscoveryDynamic struct {
+	*genericIdentityDynamic
+	discovery *k8score.ResourceDiscovery
+}
+
+func (p *inventoryDiscoveryDynamic) IsCRD(kind string) bool {
+	return p.discovery.IsCRD(kind)
+}
+
+func (p *inventoryDiscoveryDynamic) IsCRDGVR(gvr schema.GroupVersionResource) bool {
+	return p.discovery.IsCRDGVR(gvr)
+}
+
+func TestInventoryWrapperPreservesExactCRDDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		kind, builtinGroup, group, resource string
+	}{
+		{"Job", "batch", "batch.volcano.sh", "jobs"},
+		{"Service", "", "platform.example.io", "services"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			discovery, err := k8score.NewResourceDiscovery(fakeclientset.NewClientset().Discovery())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gvr := schema.GroupVersionResource{Group: tc.group, Version: "v1", Resource: tc.resource}
+			discovery.AddAPIResource(k8score.APIResource{Group: tc.builtinGroup, Version: "v1", Kind: tc.kind, Name: tc.resource, Namespaced: true})
+			discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Kind: tc.kind, Name: gvr.Resource, Namespaced: true, IsCRD: true})
+			if discovery.IsCRD(tc.kind) || !discovery.IsCRDGVR(gvr) {
+				t.Fatal("fixture must distinguish the bare built-in kind from the exact CRD")
+			}
+			owner := metav1.OwnerReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "parent"}
+			dynamic := &inventoryDiscoveryDynamic{genericIdentityDynamic: &genericIdentityDynamic{
+				watched:   []schema.GroupVersionResource{gvr},
+				kinds:     map[schema.GroupVersionResource]string{gvr: tc.kind},
+				resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {genericIdentityObject(gvr, tc.kind, "team", "child", owner)}},
+				listCalls: map[schema.GroupVersionResource]int{},
+			}, discovery: discovery}
+			provider := &mockProvider{deployments: []*appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "parent", Namespace: "team"}}}}
+			graph, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := strings.ToLower(tc.kind) + "/team/child/" + tc.group
+			if nodeByID(graph.Nodes, id) == nil {
+				t.Fatalf("cached CRD %s disappeared behind the inventory wrapper", id)
+			}
+			for _, edge := range graph.Edges {
+				if edge.Source == "deployment/team/parent" && edge.Target == id && edge.Type == EdgeManages {
+					return
+				}
+			}
+			t.Fatalf("cached CRD %s lost its owner relationship", id)
+		})
+	}
+}
+
+func TestInventoryWrapperPreservesBareCRDFallback(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	source := &genericIdentityDynamic{kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}}
+	wrapped := inventoryDynamicProvider{DynamicProvider: &dynamicProviderWithoutExactCRD{DynamicProvider: source}}
+	if !isCRDGVR(wrapped, gvr, "Widget") {
+		t.Fatal("provider without exact discovery lost its supported bare-kind lookup")
+	}
+}
 
 type warmingGraphProvider struct {
 	stubProvider
