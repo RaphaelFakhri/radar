@@ -133,6 +133,14 @@ type ResourceCache struct {
 	generation uint64
 }
 
+func (rc *ResourceCache) AssessKindRead(resource string, requested []string) k8score.KindReadAssessment {
+	var core *k8score.ResourceCache
+	if rc != nil {
+		core = rc.ResourceCache
+	}
+	return core.AssessKindRead(resource, requested)
+}
+
 // Generation identifies the construction this cache came from. Every
 // context switch and namespace rescope replaces the cache through
 // ResetResourceCache, so the replacement always has a different value. Use
