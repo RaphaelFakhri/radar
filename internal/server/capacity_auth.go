@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 func (s *Server) capacityNamespacesForUser(r *http.Request) []string {
@@ -36,6 +37,10 @@ func (s *Server) capacityNamespacesForSource(r *http.Request, namespaces []strin
 		return s.filterNamespacesByCanRead(r, group, resource, "list", allNamespaceNames())
 	}
 	return s.filterNamespacesByCanRead(r, group, resource, "list", namespaces)
+}
+
+type kindReadSource interface {
+	AssessKindRead(string, []string) k8score.KindReadAssessment
 }
 
 type capacityInformerScope interface {
