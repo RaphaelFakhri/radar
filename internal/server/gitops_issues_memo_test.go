@@ -1,8 +1,15 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/skyhook-io/radar/internal/k8s"
 
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/pkg/auth"
@@ -49,5 +56,33 @@ func TestGitopsIssuesMemo_DisabledComposesEveryTime(t *testing.T) {
 	m.load("k", compose)
 	if calls != 2 {
 		t.Fatalf("nil memo must compose inline, got %d calls", calls)
+	}
+}
+
+// The composition reads the request's cache, the one its memo key names, so a
+// switch after the request captured it can't compose the next cluster's
+// issues under the previous cluster's key.
+func TestGitopsComposeIssuesReadsTheRequestCache(t *testing.T) {
+	crashing := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "demo"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: "app", RestartCount: 9,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+		}}},
+	}
+	useTestResourceCache(t, fake.NewClientset(crashing))
+	requestCache := k8s.GetResourceCache()
+	resolver := newInsightsResolver(context.Background(), requestCache, []string{"demo"}, nil)
+
+	useTestResourceCache(t, fake.NewClientset())
+	flat, _ := resolver.composeIssues()
+	found := false
+	for _, issue := range flat {
+		if issue.Name == "web-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("composition didn't come from the request's cache: %+v", flat)
 	}
 }

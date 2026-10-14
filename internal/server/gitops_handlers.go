@@ -1229,9 +1229,10 @@ func (r *insightsResolver) RecentEvents(group, kind, namespace, name string) []g
 }
 
 // composeIssues runs the cluster-wide issues engine for this request's
-// namespaces, redacting related refs the caller can't read.
+// namespaces, redacting related refs the caller can't read. It reads the
+// request's cache, the one its memo key names, never a newer one.
 func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
-	flat := issues.Compose(issues.NewCacheProvider(), issues.Filters{
+	flat := issues.Compose(issues.NewCacheProviderFor(r.cache), issues.Filters{
 		SkipPodTemplateContext: true,
 		Namespaces:             r.allowedNamespaces,
 		Limit:                  issues.NoLimit,
