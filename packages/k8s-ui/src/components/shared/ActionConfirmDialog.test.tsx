@@ -149,6 +149,6 @@ it('locks a partial result and explains that changes completed', () => {
 it('keeps an empty known-refusal message distinct from an uncertain outcome', () => {
   render({ result: { state: 'error', message: '' } })
   expect(button('Scale').disabled).toBe(false)
-  expect(document.body.textContent).toContain('Refresh the review before another attempt.')
+  expect(document.body.textContent).toContain('The action could not be completed')
   expect(document.body.textContent).not.toContain('Check the object’s current state')
 })

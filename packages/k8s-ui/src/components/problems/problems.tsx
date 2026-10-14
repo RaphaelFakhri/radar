@@ -131,8 +131,9 @@ export function WorkspaceProblemCallout({
   subjectIsSelf?: boolean
 }) {
   const severity = healthToSeverity(problem.tone)
+  const variant = severity === 'neutral' ? 'unknown' : severity
   return (
-    <AlertBanner variant={severity} title={problem.title} message={problem.detail}>
+    <AlertBanner variant={variant} title={problem.title} message={problem.detail}>
       {problem.rawDetail && <FoldSection title={problem.rawDetailLabel ?? "Original evidence"} summary="" attention={false}><div className="break-words text-xs text-theme-text-secondary">{problem.rawDetail}</div></FoldSection>}
       <ProblemMeta problem={problem} rootKind={rootKind} onNavigate={onNavigate} subjectIsSelf={subjectIsSelf}>
         {action}

@@ -207,7 +207,7 @@ export function ActionConfirmDialog({
           <AlertBanner
             variant={outcomeLocked ? 'warning' : 'error'}
             title={result.title ?? (result.state === 'partial' ? 'Some changes completed' : result.state === 'unknown' ? 'Radar could not tell whether this took effect' : 'The action could not be completed')}
-            message={result.message || (outcomeLocked ? 'Check the object’s current state before another attempt.' : 'Refresh the review before another attempt.')}
+            message={result.message || (outcomeLocked ? 'Check the object’s current state before another attempt.' : undefined)}
           />
         )}
       </div>
