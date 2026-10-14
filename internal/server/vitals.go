@@ -14,7 +14,6 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/health"
-	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // GET /api/vitals — a cluster's vital signs: a compact scale + capacity
@@ -196,15 +195,11 @@ func (s *Server) handleVitals(w http.ResponseWriter, r *http.Request) {
 		// numbers as the caller's whole world.
 		podsPartial = len(podNamespaces) < len(namespaces)
 	}
-	// The SA cache itself can be namespace-scoped (startup RBAC fallback);
-	// a cluster-wide caller reading a scoped cache is partial too.
-	if perm := k8s.GetCachedPermissionResult(); perm != nil {
-		if scope, ok := perm.Scopes[k8score.Pods]; ok && scope.Enabled && scope.Namespace != "" {
-			podsPartial = true
-		}
-	}
+	podAssessment := cache.AssessKindRead("pods", podNamespaces)
+	podsPartial = podsPartial || (podAssessment.Readiness == k8s.KindReady && !podAssessment.Complete)
+
 	var scopedPods []*corev1.Pod
-	if podsReadable {
+	if podsReadable && podAssessment.Readiness == k8s.KindReady {
 		scopedPods = readscope.ListPodsScoped(cache.Pods(), podNamespaces)
 	}
 	if podsReadable && cache.Pods() != nil {
