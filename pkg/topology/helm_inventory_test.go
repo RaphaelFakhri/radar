@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"github.com/skyhook-io/radar/pkg/k8score"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -68,5 +69,26 @@ func TestInventoryKeepsManagerForObjectsOmittedFromGraph(t *testing.T) {
 		if rel != nil && len(rel.ManagedBy) > 0 {
 			t.Fatal("labels overrode contradictory inventory", rel)
 		}
+	}
+}
+
+type clusterIssuerInventoryDynamic struct{ *genericIdentityDynamic }
+
+func (d *clusterIssuerInventoryDynamic) GetResourceWithGroup(kind, group string) (k8score.APIResource, bool) {
+	return k8score.APIResource{Kind: "ClusterIssuer", Group: "cert-manager.io", Namespaced: false}, kind == "ClusterIssuer" && group == "cert-manager.io"
+}
+func TestInventoryNormalizesDiscoveredClusterCRDOmittedFromGraph(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases"}
+	hr := genericIdentityObject(gvr, "HelmRelease", "flux", "release")
+	hr.Object["status"] = map[string]any{"inventory": map[string]any{"entries": []any{map[string]any{"id": "prod_global_cert-manager.io_ClusterIssuer"}}}}
+	d := &clusterIssuerInventoryDynamic{&genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "HelmRelease"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {hr}}, listCalls: map[schema.GroupVersionResource]int{}}}
+	topo, err := NewBuilder(&mockProvider{}).WithDynamic(d).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "cert-manager.io/v1", "kind": "ClusterIssuer", "metadata": map[string]any{"name": "global", "labels": map[string]any{fluxHelmNameLabel: "release", fluxHelmNSLabel: "flux"}}}}
+	refs := SynthesizeManagedBy(obj, "ClusterIssuer", "", "global", topo, d, IndexByResource(topo))
+	if len(refs) != 1 || refs[0].Kind != "HelmRelease" || refs[0].Name != "release" {
+		t.Fatalf("cluster CRD ownership lost: %+v", refs)
 	}
 }

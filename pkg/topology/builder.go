@@ -5567,7 +5567,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	for key, id := range helmReleaseIDs {
 		fluxIDs["HelmRelease/"+key] = id
 	}
+	scope, _ := b.dynamic.(gitops.ResourceScopeProvider)
 	edges = addGitOpsManagedResourceEdges(
+		scope,
 		nodes,
 		edges,
 		applicationResources,
@@ -5596,6 +5598,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 }
 
 func addGitOpsManagedResourceEdges(
+	scope gitops.ResourceScopeProvider,
 	nodes []Node,
 	edges []Edge,
 	applications []*unstructured.Unstructured,
@@ -5711,6 +5714,12 @@ func addGitOpsManagedResourceEdges(
 			group, kind, namespace, name, ok := gitops.ParseFluxInventoryID(gitops.StringValue(m["id"]))
 			if !ok {
 				continue
+			}
+			namespace = gitops.FluxInventoryNamespace(group, kind, namespace, scope)
+			// Other hosts can establish scope from an observed exact-group
+			// cluster object even without a discovery adapter.
+			if namespace != "" && resourceIDs[resourceid.ResourceKey(group, kind, namespace, name)] == "" && resourceIDs[resourceid.ResourceKey(group, kind, "", name)] != "" {
+				namespace = ""
 			}
 			if node := nodesByID[sourceID]; node != nil {
 				node.managedResourceKeys[resourceid.ResourceKey(group, kind, namespace, name)] = true

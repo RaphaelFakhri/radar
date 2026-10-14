@@ -90,6 +90,9 @@ const (
 
 var applicationsCacheMaxEntries = 256
 
+// Graphs retain much more evidence than rows; keep their scope cache smaller.
+const applicationsGraphCacheMaxEntries = 8
+
 var (
 	applicationsCacheMu         sync.Mutex
 	applicationsCache           = map[string]applicationsCacheEntry{}
@@ -288,7 +291,7 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology())
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology)
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -318,7 +321,7 @@ func (s *Server) handleApplicationHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	namespaces := s.parseNamespacesForUser(r)
-	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology())
+	resp, err := listApplicationsForRequest(r.Context(), namespaces, s.getUserNamespaces(r, nil), s.canRead(r, "argoproj.io", "clusterworkflowtemplates", "", "list"), s.broadcaster.GetCachedTopology)
 	if err != nil {
 		if errors.Is(err, errResourceCacheUnavailable) {
 			s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -571,7 +574,7 @@ func ListApplications(ctx context.Context, namespaces []string) (*applicationsRe
 
 // namespaces selects workloads; graphNamespaces bounds readable relationship
 // evidence independently so a namespace pick does not hide a Flux manager.
-func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool, shared *topology.Topology) (*applicationsResponse, error) {
+func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces []string, canListClusterWorkflowTemplates bool, shared func() *topology.Topology) (*applicationsResponse, error) {
 	cache := k8s.GetResourceCache()
 	if cache == nil {
 		return nil, errResourceCacheUnavailable
@@ -621,7 +624,7 @@ func listApplicationsForRequest(ctx context.Context, namespaces, graphNamespaces
 
 // cachedAppGraph shares immutable ownership evidence across namespace picks.
 // Its key depends on the cache source and readable scope, not selected workloads.
-func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared *topology.Topology) *appGraph {
+func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared func() *topology.Topology) *appGraph {
 	applicationsCacheMu.Lock()
 	key := fmt.Sprintf("%d|%d|%s", applicationsCacheGeneration, cache.Generation(), applicationsCacheKeyFor(namespaces, true))
 	entry, hit := applicationsGraphCache[key]
@@ -637,11 +640,15 @@ func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared *topol
 			return entry.graph, nil
 		}
 		var graph *appGraph
+		var snapshot *topology.Topology
 		if shared != nil {
+			snapshot = shared()
+		}
+		if snapshot != nil {
 			// This cache is keyed by namespace scope, not user identity. Scope
 			// only by namespaces here; request-specific authentication refs
 			// are filtered after collection. Never cache a per-user graph.
-			scoped := cloneTopology(shared)
+			scoped := cloneTopology(snapshot)
 			deny := make(map[string]bool)
 			for _, node := range scoped.Nodes {
 				ns, _ := node.Data["namespace"].(string)
@@ -655,7 +662,7 @@ func cachedAppGraph(cache *k8s.ResourceCache, namespaces []string, shared *topol
 			graph = buildAppGraph(cache, namespaces)
 		}
 		applicationsCacheMu.Lock()
-		if len(applicationsGraphCache) >= applicationsCacheMaxEntries {
+		if len(applicationsGraphCache) >= applicationsGraphCacheMaxEntries {
 			evictOldestApplicationsCacheEntry(applicationsGraphCache)
 		}
 		applicationsGraphCache[key] = applicationsCacheEntry{at: time.Now(), graph: graph}

@@ -139,6 +139,20 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 		topoByRef[refKey(ResourceRef{Kind: ref.Kind, Namespace: ref.Namespace, Name: ref.Name})] = n
 		topoByID[n.ID] = n
 	}
+	if tool == ToolFluxCD && !remote {
+		scope, _ := b.dynamic.(gitops.ResourceScopeProvider)
+		for i := range managed {
+			ref := &managed[i].Ref
+			ref.Namespace = gitops.FluxInventoryNamespace(ref.Group, ref.Kind, ref.Namespace, scope)
+			clusterRef := *ref
+			clusterRef.Namespace = ""
+			if _, namespaced := topoByRef[refKey(*ref)]; !namespaced {
+				if node, clusterScoped := topoByRef[refKey(clusterRef)]; clusterScoped && refFromTopologyNode(node).Group == ref.Group {
+					ref.Namespace = ""
+				}
+			}
+		}
+	}
 	topoIDByTreeID := map[string]string{}
 	treeIDByTopoID := map[string]string{}
 	if liveRoot, ok := findTopoNode(topoByRef, rootRef); ok {

@@ -24,7 +24,7 @@ func TestAddGitOpsManagedResourceEdgesPreservesArgoAPIGroup(t *testing.T) {
 		}},
 	}}
 
-	edges := addGitOpsManagedResourceEdges(
+	edges := addGitOpsManagedResourceEdges(nil,
 		nodes,
 		nil,
 		[]*unstructured.Unstructured{app},
@@ -53,7 +53,7 @@ func TestAddGitOpsManagedResourceEdgesTreatsArgoGroupAsExact(t *testing.T) {
 			"spec":     map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc", "namespace": "ml"}},
 			"status":   map[string]any{"resources": []any{resource}},
 		}}
-		return addGitOpsManagedResourceEdges(
+		return addGitOpsManagedResourceEdges(nil,
 			nodes,
 			nil,
 			[]*unstructured.Unstructured{app},
@@ -86,7 +86,7 @@ func TestAddGitOpsManagedResourceEdgesParsesFluxIdentityFromRight(t *testing.T) 
 		}}},
 	}}
 
-	edges := addGitOpsManagedResourceEdges(
+	edges := addGitOpsManagedResourceEdges(nil,
 		nodes,
 		nil,
 		nil,
@@ -127,7 +127,7 @@ func TestAddGitOpsManagedResourceEdgesIgnoresRemoteDestinations(t *testing.T) {
 		}}},
 	}}
 
-	edges := addGitOpsManagedResourceEdges(
+	edges := addGitOpsManagedResourceEdges(nil,
 		nodes,
 		nil,
 		[]*unstructured.Unstructured{app("sealed-prod", "https://prod.example.com"), app("sealed-hub", "https://kubernetes.default.svc")},
@@ -183,5 +183,18 @@ func TestBuildLinksOnlyLocalHelmReleasesByLabel(t *testing.T) {
 	}
 	if src, ok := targets["deployment/apps/api"]; ok {
 		t.Fatalf("remote release %s claimed a local workload", src)
+	}
+}
+
+func TestFluxInventoryUsesObservedClusterCRDIdentity(t *testing.T) {
+	nodes := []Node{
+		{ID: "helmrelease/flux/release", Kind: KindHelmRelease, Name: "release", Data: map[string]any{"namespace": "flux", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
+		{ID: "cluster-issuer", Kind: NodeKind("ClusterIssuer"), Name: "issuer", Data: map[string]any{"kind": "ClusterIssuer", "apiVersion": "cert-manager.io/v1", "namespace": ""}},
+		{ID: "namespaced-collision", Kind: NodeKind("ClusterIssuer"), Name: "issuer", Data: map[string]any{"kind": "ClusterIssuer", "apiVersion": "example.io/v1", "namespace": "prod"}},
+	}
+	hr := &unstructured.Unstructured{Object: map[string]any{"kind": "HelmRelease", "metadata": map[string]any{"namespace": "flux", "name": "release"}, "status": map[string]any{"inventory": map[string]any{"entries": []any{map[string]any{"id": "prod_issuer_cert-manager.io_ClusterIssuer"}}}}}}
+	edges := addGitOpsManagedResourceEdges(nil, nodes, nil, nil, nil, nil, []*unstructured.Unstructured{hr}, map[string]string{"HelmRelease/flux/release": "helmrelease/flux/release"})
+	if len(edges) != 1 || edges[0].Target != "cluster-issuer" {
+		t.Fatalf("exact cluster CRD edge = %+v", edges)
 	}
 }
