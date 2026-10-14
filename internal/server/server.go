@@ -3002,13 +3002,13 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 		// resource so ManagedBy synthesis disambiguates by group (avoids
 		// kind/plural collisions like Knative Service vs core Service).
 		var relationships *topology.Relationships
-		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyWithIndex(); cachedTopo != nil {
+		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyForGeneration(cache.Generation()); cachedTopo != nil {
 			if auth.UserFromContext(r.Context()) != nil {
 				cachedTopo = s.relationshipTopologyForUser(r, cachedTopo)
 				relIdx = nil
 			}
 			relationships = topology.GetRelationshipsWithObject(kind, namespace, name, resource, cachedTopo,
-				k8s.NewTopologyResourceProvider(k8s.GetResourceCache()),
+				k8s.NewTopologyResourceProvider(cache),
 				k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), relIdx)
 		}
 
@@ -3231,7 +3231,7 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	// could otherwise pass the nil check on one handle and hand the provider a
 	// different (or nil) one.
 	if promoted := k8s.GetResourceCache(); promoted != nil {
-		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyWithIndex(); cachedTopo != nil {
+		if cachedTopo, relIdx := s.broadcaster.GetCachedTopologyForGeneration(promoted.Generation()); cachedTopo != nil {
 			if auth.UserFromContext(r.Context()) != nil {
 				cachedTopo = s.relationshipTopologyForUser(r, cachedTopo)
 				relIdx = nil
@@ -4430,7 +4430,12 @@ func (s *Server) handleCascadeDeletePreview(w http.ResponseWriter, r *http.Reque
 		namespace = ""
 	}
 
-	cachedTopo := s.broadcaster.GetCachedTopology()
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "cluster cache not ready")
+		return
+	}
+	cachedTopo, _ := s.broadcaster.GetCachedTopologyForGeneration(cache.Generation())
 	dp := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 	preview := topology.GetCascadeDeletePreview(topology.ResourceRef{
 		Kind:      kind,

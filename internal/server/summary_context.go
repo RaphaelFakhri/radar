@@ -13,7 +13,9 @@ import (
 	"net/http"
 
 	"github.com/skyhook-io/radar/internal/issues"
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/summarycontext"
+	"github.com/skyhook-io/radar/pkg/topology"
 )
 
 // newResourceSummaryContextBuilder assembles the per-request closure for the
@@ -35,7 +37,7 @@ func (s *Server) newResourceSummaryContextBuilder(r *http.Request, namespaces []
 		return nil
 	}
 	idx := summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: namespaces, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
-	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), idx, idx)
+	return summarycontext.BuilderFromIndexes(s.summaryContextTopology(), idx, idx)
 }
 
 // newSearchSummaryContextBuilder is the search-specific variant. Search
@@ -68,5 +70,17 @@ func (s *Server) newSearchSummaryContextBuilder(r *http.Request, scanNamespaces 
 	if scanNamespaces != nil {
 		clusterIdx = summarycontext.BuildIssueIndex(provider, issues.Filters{Namespaces: nil, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
 	}
-	return summarycontext.BuilderFromIndexes(s.broadcaster.GetCachedTopology(), namespacedIdx, clusterIdx)
+	return summarycontext.BuilderFromIndexes(s.summaryContextTopology(), namespacedIdx, clusterIdx)
+}
+
+// summaryContextTopology is the broadcaster's graph when it describes the
+// resource cache the summaries read, so managedBy never names an object from
+// the cluster just left; nil otherwise.
+func (s *Server) summaryContextTopology() *topology.Topology {
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		return nil
+	}
+	topo, _ := s.broadcaster.GetCachedTopologyForGeneration(cache.Generation())
+	return topo
 }

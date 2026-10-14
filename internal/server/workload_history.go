@@ -398,10 +398,11 @@ func resolveWorkloadKind(resource, group string) (kind, resolvedGroup string, ok
 // object, when there is one, keeps a CRD whose kind collides with another's
 // (a Volcano Job and a batch Job) on its own topology node.
 func (s *Server) workloadAttachments(r *http.Request, key resourceid.Ref, obj metav1.Object) []resourceid.Ref {
-	if s.broadcaster == nil {
+	cache := k8s.GetResourceCache()
+	if s.broadcaster == nil || cache == nil {
 		return nil
 	}
-	cachedTopo, relIdx := s.broadcaster.GetCachedTopologyWithIndex()
+	cachedTopo, relIdx := s.broadcaster.GetCachedTopologyForGeneration(cache.Generation())
 	if cachedTopo == nil {
 		return nil
 	}
@@ -414,7 +415,7 @@ func (s *Server) workloadAttachments(r *http.Request, key resourceid.Ref, obj me
 		object = obj
 	}
 	rel := topology.GetRelationshipsWithObject(key.Kind, key.Namespace, key.Name, object, cachedTopo,
-		k8s.NewTopologyResourceProvider(k8s.GetResourceCache()),
+		k8s.NewTopologyResourceProvider(cache),
 		k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery()), relIdx)
 	return attachedRefs(rel, key.Namespace)
 }

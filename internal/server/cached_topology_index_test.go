@@ -3,6 +3,12 @@ package server
 import (
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/skyhook-io/radar/internal/k8s"
+
 	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
@@ -84,5 +90,43 @@ func TestCachedTopologyForGenerationRejectsAnotherCache(t *testing.T) {
 	}
 	if topo, idx := b.GetCachedTopologyForGeneration(2); topo != nil || idx != nil {
 		t.Fatalf("reader of the new cache got the previous cluster's graph: %v", topo)
+	}
+}
+
+// A switch publishes the new resource cache before its callbacks reset the
+// broadcaster, and a failed init never runs them. A reader of the current
+// cache rebuilds the shared graph once instead of falling back on every call;
+// a reader still holding the replaced cache gets nothing.
+func TestCachedTopologyForGenerationRepairsForTheCurrentCache(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "current-web", Namespace: "demo"}}))
+	current := k8s.GetResourceCache().Generation()
+	b := NewSSEBroadcaster()
+	b.updateCachedTopology(topoWithEdge("deployment/demo/previous-web", "replicaset/demo/previous-web-1"), b.topoEpoch.Load(), current-1)
+
+	topo, idx := b.GetCachedTopologyForGeneration(current)
+	if topo == nil || idx == nil || !topologyHasNode(topo.Nodes, "current-web") || topologyHasNode(topo.Nodes, "previous-web") {
+		t.Fatalf("reader of the current cache didn't get a graph built from it: %+v", topo)
+	}
+	if again, _ := b.GetCachedTopologyForGeneration(current); again != topo {
+		t.Fatal("the repaired graph wasn't reused")
+	}
+	if stale, _ := b.GetCachedTopologyForGeneration(current - 1); stale != nil {
+		t.Fatal("a reader of the replaced cache got the current cluster's graph")
+	}
+}
+
+// The real build path stamps the generation it read, so a matching reader
+// reuses the graph without a rebuild.
+func TestRebuiltTopologyCarriesItsCacheGeneration(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "demo"}}))
+	b := NewSSEBroadcaster()
+	if !b.rebuildCachedTopology() {
+		t.Fatal("rebuild failed")
+	}
+	b.cachedTopologyMu.RLock()
+	built := b.cachedTopology
+	b.cachedTopologyMu.RUnlock()
+	if topo, _ := b.cachedTopologyIfGeneration(k8s.GetResourceCache().Generation()); topo == nil || topo != built {
+		t.Fatal("the built graph wasn't stamped with the generation of the cache it read")
 	}
 }

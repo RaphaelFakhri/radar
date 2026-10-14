@@ -114,7 +114,9 @@ func TestResourceContextUsesHostRelationshipGraph(t *testing.T) {
 		t.Fatalf("resource context served the previous cluster's graph after a switch: %+v", built)
 	}
 
-	// Before the host has a graph, resource context still builds one.
+	// Before the host has a graph, resource context still builds one: a
+	// fresh memo, so the build above can't answer for it.
+	summaryCtxTopoMemo = topology.NewMemoizer(5 * time.Second)
 	SetRelationshipTopologySource(func(uint64) (*topology.Topology, *topology.RelationshipsIndex) { return nil, nil })
 	if built, _, _, _, ok := mcpTopologyForContext(); !ok || !hasNode(built, "new-cluster-api") {
 		t.Fatalf("fallback build missing: %+v", built)
