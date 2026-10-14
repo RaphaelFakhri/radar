@@ -882,7 +882,13 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 	//   []string{} — user has no namespace access
 	//   [...]     — restrict reads to these namespaces
 	allowed := filterNamespacesForUser(ctx, requested)
+	if !clusterScoped {
+		allowed = scopedNamespacesForUser(ctx, requested)
+	}
 	if !clusterScoped && allowed != nil && len(allowed) == 0 {
+		if deniedScopeReason(requested) == ReasonOutsideNamespaceScope {
+			return nil, nil, fmt.Errorf("requested namespace is outside Radar's configured namespace scope")
+		}
 		return toJSONResult([]any{})
 	}
 

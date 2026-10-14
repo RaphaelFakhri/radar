@@ -593,3 +593,36 @@ func TestNeighborhoodRootOutsideCacheCoverageIsExplicit(t *testing.T) {
 		t.Fatalf("list_resources claimed absence: %v", err)
 	}
 }
+
+func TestResourceListDefaultsToConfiguredNamespacePin(t *testing.T) {
+	oldForce, oldTarget := k8s.ForceNamespaceScope, k8s.GetNamespaceScopeTarget()
+	k8s.ResetResourceCache()
+	t.Cleanup(func() {
+		k8s.ForceNamespaceScope = oldForce
+		k8s.SetNamespaceScopeOverride(oldTarget)
+		k8s.ResetTestState()
+	})
+	if err := k8s.InitScopedTestResourceCache(fake.NewClientset(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "visible", Namespace: "pinned"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "outside", Namespace: "other"}},
+	), map[string]k8score.ResourceScope{k8score.Pods: {Enabled: true, Namespace: "pinned"}}); err != nil {
+		t.Fatal(err)
+	}
+	k8s.ForceNamespaceScope = true
+	k8s.SetNamespaceScopeOverride("pinned")
+	result, _, err := handleListResources(t.Context(), nil, listResourcesInput{Kind: "Pod", Context: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := []byte(result.Content[0].(*mcp.TextContent).Text)
+	var rows []map[string]any
+	if err := json.Unmarshal(encoded, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0]["name"] != "visible" {
+		t.Fatalf("default namespace pin lost: %s", encoded)
+	}
+	if _, _, err := handleListResources(t.Context(), nil, listResourcesInput{Kind: "Pod", Namespace: "other", Context: "none"}); err == nil || !strings.Contains(err.Error(), "namespace scope") {
+		t.Fatalf("outside pin looked like a complete empty list: %v", err)
+	}
+}

@@ -178,8 +178,12 @@ func (b *Builder) Build(opts BuildOptions) (*Topology, error) {
 		if builtin, known := resourceid.BuiltinForName(warning.Resource); warning.State == InventoryUnavailable && known && builtin.Group == warning.Group {
 			continue
 		}
-		if !slices.Contains(topo.Warnings, warning.Message) {
-			topo.Warnings = append(topo.Warnings, warning.Message)
+		message := warning.Message
+		if warning.State == InventoryPending || warning.State == InventoryUncovered {
+			message = "Topology view: " + message
+		}
+		if !slices.Contains(topo.Warnings, message) {
+			topo.Warnings = append(topo.Warnings, message)
 		}
 	}
 	// Set large cluster flags in response

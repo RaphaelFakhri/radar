@@ -3,8 +3,12 @@ package topology
 import (
 	"errors"
 	"fmt"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sort"
 	"strings"
 
@@ -273,38 +277,66 @@ func relationshipInventorySources(kind, group string, obj any) map[string]bool {
 			}
 		}
 	}
-	if object, ok := obj.(runtime.Object); ok && builtin.Kind != "Pod" {
-		data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
-		if err == nil {
-			path := []string{"spec", "template", "spec"}
-			if builtin.Kind == "CronJob" {
-				path = []string{"spec", "jobTemplate", "spec", "template", "spec"}
+	var podSpec *corev1.PodSpec
+	switch object := obj.(type) {
+	case *appsv1.Deployment:
+		podSpec = &object.Spec.Template.Spec
+	case *appsv1.StatefulSet:
+		podSpec = &object.Spec.Template.Spec
+	case *appsv1.DaemonSet:
+		podSpec = &object.Spec.Template.Spec
+	case *appsv1.ReplicaSet:
+		podSpec = &object.Spec.Template.Spec
+	case *batchv1.Job:
+		podSpec = &object.Spec.Template.Spec
+	case *batchv1.CronJob:
+		podSpec = &object.Spec.JobTemplate.Spec.Template.Spec
+	case *networkingv1.Ingress:
+		for _, tls := range object.Spec.TLS {
+			if tls.SecretName != "" {
+				add("secrets")
+				break
 			}
-			spec, found, _ := unstructured.NestedMap(data, path...)
-			if found {
-				refs, _ := extractWorkloadReferencesFromMap(spec, true)
-				addRefs(refs)
-				if node, _ := spec["nodeName"].(string); node != "" {
-					add("nodes")
-				}
+		}
+	case *autoscalingv2.HorizontalPodAutoscaler:
+		target := object.Spec.ScaleTargetRef
+		if b, known := resourceid.BuiltinForName(target.Kind); known && b.Group == resourceid.GroupFromAPIVersion(target.APIVersion) {
+			add(b.Resource)
+		}
+	case *unstructured.Unstructured:
+		path := []string{"spec", "template", "spec"}
+		if builtin.Kind == "CronJob" {
+			path = []string{"spec", "jobTemplate", "spec", "template", "spec"}
+		}
+		if spec, found, _ := unstructured.NestedMap(object.Object, path...); found {
+			refs, _ := extractWorkloadReferencesFromMap(spec, true)
+			addRefs(refs)
+			if node, _ := spec["nodeName"].(string); node != "" {
+				add("nodes")
 			}
-			if builtin.Kind == "Ingress" {
-				tls, _, _ := unstructured.NestedSlice(data, "spec", "tls")
-				for _, entry := range tls {
-					if row, ok := entry.(map[string]any); ok {
-						if name, _ := row["secretName"].(string); name != "" {
-							add("secrets")
-						}
+		}
+		if builtin.Kind == "Ingress" {
+			tls, _, _ := unstructured.NestedSlice(object.Object, "spec", "tls")
+			for _, entry := range tls {
+				if row, ok := entry.(map[string]any); ok {
+					if name, _ := row["secretName"].(string); name != "" {
+						add("secrets")
 					}
 				}
 			}
-			if builtin.Kind == "HorizontalPodAutoscaler" {
-				target, _, _ := unstructured.NestedString(data, "spec", "scaleTargetRef", "kind")
-				version, _, _ := unstructured.NestedString(data, "spec", "scaleTargetRef", "apiVersion")
-				if b, known := resourceid.BuiltinForName(target); known && b.Group == resourceid.GroupFromAPIVersion(version) {
-					add(b.Resource)
-				}
+		}
+		if builtin.Kind == "HorizontalPodAutoscaler" {
+			target, _, _ := unstructured.NestedString(object.Object, "spec", "scaleTargetRef", "kind")
+			version, _, _ := unstructured.NestedString(object.Object, "spec", "scaleTargetRef", "apiVersion")
+			if b, known := resourceid.BuiltinForName(target); known && b.Group == resourceid.GroupFromAPIVersion(version) {
+				add(b.Resource)
 			}
+		}
+	}
+	if podSpec != nil {
+		addRefs(extractWorkloadReferences(*podSpec, true))
+		if podSpec.NodeName != "" {
+			add("nodes")
 		}
 	}
 	return sources

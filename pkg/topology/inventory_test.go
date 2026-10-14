@@ -166,6 +166,9 @@ func TestTopologyPendingInventoryPreservesFirstPaint(t *testing.T) {
 		if len(graph.IncompleteInventories) != 1 || graph.IncompleteInventories[0].State != InventoryPending {
 			t.Fatalf("inventory state lost: %+v", graph.IncompleteInventories)
 		}
+		if len(graph.Warnings) != 1 || !strings.HasPrefix(graph.Warnings[0], "Topology view:") {
+			t.Fatalf("loading was presented as a failed inventory: %v", graph.Warnings)
+		}
 		for _, warning := range graph.Warnings {
 			if strings.Contains(warning, "Failed to list Pods") {
 				t.Fatalf("loading classified as failure: %s", warning)
