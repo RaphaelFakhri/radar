@@ -229,8 +229,16 @@ func relationshipInventorySources(kind, group string, obj any) map[string]bool {
 	}
 	builtin, known := resourceid.BuiltinForName(kind)
 	if !known || builtin.Group != group {
-		for _, resource := range []string{"pods", "services", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs", "cronjobs", "ingresses", "horizontalpodautoscalers", "poddisruptionbudgets", "networkpolicies"} {
-			add(resource)
+		if group == "cert-manager.io" && strings.EqualFold(kind, "Certificate") {
+			// Issuance uses a same-namespace Secret, and an Ingress can own
+			// the Certificate. Unrelated workload inventories do not feed it.
+			add("secrets", "ingresses")
+			return sources
+		}
+		// Arbitrary custom controllers can own or reference built-ins.
+		// Use the shared identity catalog instead of a second incomplete list.
+		for _, resource := range resourceid.Builtins {
+			add(resource.Resource)
 		}
 		if object, ok := obj.(*unstructured.Unstructured); ok && object.GetKind() == "Rollout" && resourceid.GroupFromAPIVersion(object.GetAPIVersion()) == "argoproj.io" {
 			spec, _, _ := unstructured.NestedMap(object.Object, "spec", "template", "spec")
@@ -351,7 +359,8 @@ func relevantInventoryWarnings(topo *Topology, kind, group, namespace string, ob
 	}
 	sources := relationshipInventorySources(kind, group, obj)
 	subject, builtinRoot := resourceid.BuiltinForName(kind)
-	namespaceLocalRoot := builtinRoot && subject.Group == group
+	certificateRoot := group == "cert-manager.io" && strings.EqualFold(kind, "Certificate")
+	namespaceLocalRoot := builtinRoot && subject.Group == group || certificateRoot
 	var warnings []InventoryWarning
 	for _, warning := range topo.IncompleteInventories {
 		builtin, known := resourceid.BuiltinForName(warning.Resource)
@@ -360,6 +369,8 @@ func relevantInventoryWarnings(topo *Topology, kind, group, namespace string, ob
 				continue
 			}
 		} else if subject, builtinRoot := resourceid.BuiltinForName(kind); builtinRoot && subject.Group == group {
+			continue
+		} else if certificateRoot && warning.Group != "cert-manager.io" && warning.Group != "acme.cert-manager.io" && warning.Group != "traefik.io" {
 			continue
 		}
 		if warning.Namespace != "" && namespace != "" && warning.Namespace != namespace {

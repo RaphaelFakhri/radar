@@ -14,6 +14,7 @@ import { isFetchError } from '../../types/fetch-error'
 //   loading                  → <PaneLoader/>
 //   error (403)              → "Access denied"            + error.message
 //   error (404)              → notFoundMessage            + error.message
+//   error (409 scope)        → "Namespace not watched"   + error.message
 //   error (503 sync failed)  → "Couldn't load this view"  + error.message
 //   error (503)              → "Cluster unavailable"      + error.message
 //   error (401)              → "Sign-in required"         (apiFetch redirects; fallback)
@@ -115,10 +116,12 @@ function classify(error: unknown, notFoundMessage: string): Classified {
         return { headline: notFoundMessage, detail: error.message, icon: AlertTriangle }
       case 401:
         return { headline: 'Sign-in required', detail: error.message, icon: LogIn }
-      case 503:
+      case 409:
         if (errorCodeOf(error) === 'kind_namespace_uncovered') {
           return { headline: 'Namespace not watched', detail: error.message, icon: Info }
         }
+        return { headline: "Couldn't load this view", detail: error.message, icon: AlertTriangle }
+      case 503:
         // The cluster is connected; one kind's informer missed its sync
         // deadline, so "Cluster unavailable" would send the reader the wrong way.
         if (errorCodeOf(error) === 'kind_sync_failed') {

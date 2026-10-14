@@ -2812,7 +2812,7 @@ func (s *Server) gateResourceRead(w http.ResponseWriter, kind, group string, nam
 		return cache, true
 	default: // KindReady
 		if key != "limitranges" && len(namespace) > 0 && namespace[0] != "" && !cache.KindCoversNamespace(key, namespace[0]) {
-			s.writeErrorCode(w, http.StatusServiceUnavailable, "kind_namespace_uncovered", "Radar does not watch "+key+" in namespace "+namespace[0])
+			s.writeErrorCode(w, http.StatusConflict, "kind_namespace_uncovered", "Radar does not watch "+key+" in namespace "+namespace[0])
 			return nil, false
 		}
 		return cache, true

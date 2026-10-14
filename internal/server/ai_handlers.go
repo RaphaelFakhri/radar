@@ -411,7 +411,7 @@ func (s *Server) gateAIResourceRead(w http.ResponseWriter, kind, group string, n
 				if hint := k8s.InventoryNamespaceHint(cache, key, namespaces); hint != "" {
 					message += ". " + hint
 				}
-				s.writeErrorCode(w, http.StatusServiceUnavailable, "kind_namespace_uncovered", message)
+				s.writeErrorCode(w, http.StatusConflict, "kind_namespace_uncovered", message)
 			}
 			return nil, false
 		}

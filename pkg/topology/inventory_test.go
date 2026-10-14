@@ -143,6 +143,24 @@ func TestDynamicInventoryWarningQualifiesCollidingKind(t *testing.T) {
 	}
 }
 
+func TestCertificateRelationshipsQualifySecretGapsWithoutUnrelatedFailures(t *testing.T) {
+	cert := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "cert-manager.io/v1", "kind": "Certificate", "metadata": map[string]any{"name": "tls", "namespace": "team"}, "spec": map[string]any{"secretName": "tls-secret"}}}
+	secret := InventoryWarningFor("secrets", &InventoryError{Resource: "secrets", State: InventoryPending})
+	graph := &Topology{IncompleteInventories: []InventoryWarning{
+		secret,
+		InventoryWarningFor("pods", &InventoryError{Resource: "pods", State: InventoryPending}),
+		{Resource: "nodepools", Group: "karpenter.sh", State: InventoryUnavailable, Message: "NodePool.karpenter.sh data could not be read"},
+	}}
+	rel := GetRelationshipsWithObject("Certificate", "team", "tls", cert, graph, &stubProvider{}, nil, nil)
+	if rel == nil || len(rel.IncompleteInventories) != 1 || rel.IncompleteInventories[0].Resource != "secrets" {
+		t.Fatalf("Certificate omitted its Secret gap or inherited unrelated sources: %+v", rel)
+	}
+	graph.IncompleteInventories = []InventoryWarning{InventoryWarningFor("secrets", &InventoryError{Resource: "secrets", State: InventoryUncovered})}
+	if warnings := relevantInventoryWarnings(graph, "Certificate", "cert-manager.io", "team", cert, &partialRelationshipInventory{}); len(warnings) != 0 {
+		t.Fatalf("covered Certificate inherited unrelated namespace gaps: %+v", warnings)
+	}
+}
+
 type warmingGraphProvider struct {
 	stubProvider
 	state InventoryState
@@ -298,6 +316,12 @@ func TestServiceAndCustomSubjectsRetainSupportingWarnings(t *testing.T) {
 		warnings := relevantInventoryWarnings(graph, subject.kind, subject.group, "team", nil, &stubProvider{})
 		if len(warnings) != 1 {
 			t.Fatalf("%s lost missing workload evidence: %+v", subject.kind, warnings)
+		}
+	}
+	for _, resource := range []string{"secrets", "configmaps", "nodes"} {
+		graph.IncompleteInventories = []InventoryWarning{InventoryWarningFor(resource, &InventoryError{Resource: resource, State: InventoryPending})}
+		if warnings := relevantInventoryWarnings(graph, "Widget", "example.io", "team", nil, &stubProvider{}); len(warnings) != 1 {
+			t.Fatalf("generic ownership/reference source %s lost qualification: %+v", resource, warnings)
 		}
 	}
 }

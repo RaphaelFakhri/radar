@@ -93,6 +93,7 @@ func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testi
 	), map[string]k8score.ResourceScope{
 		k8score.Pods:        {Enabled: true, Namespace: "a"},
 		k8score.Nodes:       {Enabled: true},
+		k8score.Secrets:     {Enabled: true, Namespace: "a"},
 		k8score.LimitRanges: {Enabled: true, Namespace: "a"},
 	}); err != nil {
 		t.Fatal(err)
@@ -139,6 +140,8 @@ func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testi
 	perms = &auth.UserPermissions{AllowedNamespaces: []string{"a", "b"}}
 	perms.SetCanI("get", "", "limitranges", "b", true)
 	perms.SetCanI("list", "", "limitranges", "b", true)
+	perms.SetCanI("get", "", "secrets", "b", true)
+	perms.SetCanI("list", "", "secrets", "b", true)
 	env.srv.permCache.Set("bob", nil, perms)
 	for _, path := range []string{"/api/ai/resources/limitranges/b/missing", "/api/ai/resources/limitranges?namespace=b"} {
 		resp := env.authGet(t, path, "bob", "")
@@ -147,8 +150,19 @@ func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testi
 			t.Fatalf("%s: got %d, want 403", path, resp.StatusCode)
 		}
 	}
+	resp := env.authGet(t, "/api/secrets/certificate-expiry?namespace=b", "bob", "")
+	var expiryError struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&expiryError); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || expiryError.ErrorCode != "kind_namespace_uncovered" {
+		t.Fatalf("certificate expiry scope conflict: %d %+v", resp.StatusCode, expiryError)
+	}
 	env.srv.permCache.Set("bob", nil, &auth.UserPermissions{AllowedNamespaces: nil})
-	resp := env.authGet(t, "/api/ai/resources/pods?context=none", "bob", "")
+	resp = env.authGet(t, "/api/ai/resources/pods?context=none", "bob", "")
 	defer resp.Body.Close()
 	var body struct {
 		ErrorCode string `json:"error_code"`
@@ -157,7 +171,7 @@ func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testi
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusServiceUnavailable || body.ErrorCode != "kind_namespace_uncovered" {
+	if resp.StatusCode != http.StatusConflict || body.ErrorCode != "kind_namespace_uncovered" {
 		t.Fatalf("cluster-wide list claimed completeness: %d %+v", resp.StatusCode, body)
 	}
 	if !strings.Contains(body.Error, "Watched namespaces within this authorized scope: a.") || !strings.Contains(body.Error, "Request one of these namespaces") {

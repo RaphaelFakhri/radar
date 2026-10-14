@@ -545,10 +545,16 @@ older VictoriaMetrics operators place such finalizers on managed objects.
 For `issues`, `unchecked_sources` lists the issue sources Radar couldn't check for this answer, so their issues may be missing; don't read the response as healthy for them. Today the only source is `helm` (failed or stuck Helm releases), with reason `read_failed`. Treat any other value as unchecked too. Read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
 
 Topology graph responses retain observed resources while inventories are
-incomplete. `incompleteInventories` identifies each affected source by `group`,
+incomplete. `incompleteInventories` identifies recorded typed-inventory gaps and
+dynamic-list errors by `group`,
 `resource`, `state` and `message`; an omitted `group` means core Kubernetes.
 States are `pending`, `failed`, `uncovered` and `unavailable`. Summary responses
 carry the messages in `warnings`. An incomplete result does not establish absence.
+This does not track dynamic informer initial-sync completeness or continuous
+watch freshness. Supporting relationship notices qualify known relevant sources;
+generic custom controllers conservatively include potential ownership sources.
+An omitted notice is not proof that every integration or neighborhood hop was
+evaluated.
 
 Resource context marks incomplete `relationships`, `scaledBy` and
 `scaledBy.hpaSummary` in `omitted`. Loading inventories use `cache_cold`; failed,
@@ -558,7 +564,9 @@ evidence of absence.
 
 A neighborhood root with a loading or failed built-in inventory returns an
 error (REST 503 with `kind_sync_pending` or `kind_sync_failed`).
-`kind_namespace_uncovered` means Radar does not cover the root's namespace.
+REST 409 `kind_namespace_uncovered` means Radar's configured inventory does not
+cover the requested namespace scope. Retrying unchanged will not resolve it;
+choose a watched namespace from the error guidance or change Radar's watch scope.
 A missing root in a ready, covered inventory keeps its not-found result.
 Incomplete supporting inventories mark `subgraph.nodes` in `omitted` with
 `cache_cold` for loading data or `unavailable` for other unreadable data.

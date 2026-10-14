@@ -199,6 +199,7 @@ func (s *Server) handleSecretCertExpiry(w http.ResponseWriter, r *http.Request) 
 		var inventory *topology.InventoryError
 		if errors.As(err, &inventory) {
 			code := "kind_inventory_unavailable"
+			status := http.StatusServiceUnavailable
 			switch inventory.State {
 			case topology.InventoryPending:
 				code = "kind_sync_pending"
@@ -206,8 +207,9 @@ func (s *Server) handleSecretCertExpiry(w http.ResponseWriter, r *http.Request) 
 				code = "kind_sync_failed"
 			case topology.InventoryUncovered:
 				code = "kind_namespace_uncovered"
+				status = http.StatusConflict
 			}
-			s.writeErrorCode(w, http.StatusServiceUnavailable, code, inventory.Error())
+			s.writeErrorCode(w, status, code, inventory.Error())
 			return
 		}
 		log.Printf("[certificate] Failed to get certificate expiry: %v", err)

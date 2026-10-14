@@ -127,7 +127,7 @@ describe('guardRadarFeature', () => {
 
 describe('shouldRetryRadarQuery', () => {
   it('does not retry an unchanged namespace coverage gap', () => {
-    expect(shouldRetryRadarQuery(0, new ApiError('Radar does not watch this namespace', 503, { error_code: 'kind_namespace_uncovered' }))).toBe(false)
+    expect(shouldRetryRadarQuery(0, new ApiError('Radar does not watch this namespace', 409, { error_code: 'kind_namespace_uncovered' }))).toBe(false)
   })
   it('does not retry an unsupported feature or a settled client error', () => {
     expect(shouldRetryRadarQuery(0, new RadarFeatureUnsupportedError('resourceIssues', {}))).toBe(false)

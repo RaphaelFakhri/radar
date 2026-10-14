@@ -73,7 +73,7 @@ describe('FetchResult', () => {
   })
 
   it('explains an unwatched namespace without calling the cluster unavailable', () => {
-    const html = renderToString(<FetchResult loading={false} error={shaped('Radar does not watch pods in namespace other', 503, { error_code: 'kind_namespace_uncovered' })} />)
+    const html = renderToString(<FetchResult loading={false} error={shaped('Radar does not watch pods in namespace other', 409, { error_code: 'kind_namespace_uncovered' })} />)
     expect(html).toContain('Namespace not watched')
     expect(html).toContain('Radar does not watch pods in namespace other')
     expect(html).not.toContain('Cluster unavailable')

@@ -198,7 +198,7 @@ func TestTypedRootsOutsideCacheCoverageDoNotClaimAbsence(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusServiceUnavailable || body.ErrorCode != "kind_namespace_uncovered" {
+		if resp.StatusCode != http.StatusConflict || body.ErrorCode != "kind_namespace_uncovered" {
 			t.Fatalf("%s claimed absence: %d %+v", path, resp.StatusCode, body)
 		}
 	}
