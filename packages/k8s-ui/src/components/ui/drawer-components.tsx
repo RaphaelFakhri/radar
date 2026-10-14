@@ -866,7 +866,7 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     <Section title="Related Resources" icon={Link} defaultExpanded>
       <div className="space-y-3">
         {relationships.warnings?.map((warning) => (
-          <p key={warning} role="status" className="text-sm text-warning-text">{warning}</p>
+          <p key={warning} role="status" className={relationships.incompleteInventories?.some((inventory) => inventory.message === warning && inventory.state === 'unavailable') ? 'text-sm text-theme-text-tertiary' : 'text-sm text-warning-text'}>{warning}</p>
         ))}
         {relationships.owner && (
           <RelationshipGroup label="Owner" refs={[relationships.owner]} onNavigate={onNavigate} />

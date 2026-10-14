@@ -429,8 +429,9 @@ type ReflectionRelationships struct {
 type Relationships struct {
 	// PodPlacementObserved and PodPlacementError carry in-process lookup state
 	// for context builders. They are not transport fields or cached counts.
-	PodPlacementObserved bool  `json:"-"`
-	PodPlacementError    error `json:"-"`
+	PodPlacementObserved    bool  `json:"-"`
+	PodPlacementError       error `json:"-"`
+	PodPlacementUnavailable bool  `json:"-"`
 
 	// IstioServiceDomain is the configured registry domain or upstream default; omitted when unknown.
 	IstioServiceDomain    string             `json:"istioServiceDomain,omitempty"`

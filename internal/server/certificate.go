@@ -92,8 +92,8 @@ func (s *Server) handleCertificates(w http.ResponseWriter, r *http.Request) {
 
 	// kubernetes.io/tls secrets. We only read tls.crt (the public chain) and
 	// emit metadata; tls.key never leaves the cluster. A nil error with no
-	// secrets is a benign deferred-cache state; a non-nil error means we
-	// genuinely couldn't read secrets.
+	// secrets means the inventory is ready and empty; a non-nil error means
+	// the inventory is incomplete or could not be read.
 	//
 	// The cache holds every secret (the SA can have cluster-wide secrets RBAC
 	// the calling user doesn't), so the TLS leg must respect per-user secrets

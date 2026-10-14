@@ -144,6 +144,7 @@ export async function guardRadarFeature<T>(
  */
 export function shouldRetryRadarQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof RadarFeatureUnsupportedError) return false
+  if ((error as { data?: { error_code?: unknown } } | null)?.data?.error_code === 'kind_namespace_uncovered') return false
   const status = (error as { status?: unknown } | null)?.status
   if (typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429) {
     return false

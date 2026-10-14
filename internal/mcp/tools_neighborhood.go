@@ -322,7 +322,7 @@ func typedResourceInventoryError(cache *k8s.ResourceCache, kind, group, namespac
 				return fmt.Errorf("forbidden: Radar does not have LimitRange visibility for namespace %q", namespace)
 			}
 			if namespace == "" {
-				return fmt.Errorf("Radar only watches selected namespaces for %s; cluster-wide absence is not established", gvr.Resource)
+				return fmt.Errorf("Radar only watches selected namespaces for %s; cluster-wide absence is not established. Specify a watched namespace for a complete list", gvr.Resource)
 			}
 			return fmt.Errorf("Radar does not watch %s in namespace %s; absence is not established", gvr.Resource, namespace)
 		}

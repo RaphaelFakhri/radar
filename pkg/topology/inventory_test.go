@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -12,6 +13,54 @@ import (
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"strings"
 )
+
+type unavailablePodInventory struct{ mockProvider }
+
+func (*unavailablePodInventory) InventoryError(resource, _ string) error {
+	if resource == "pods" {
+		return &InventoryError{Resource: resource, State: InventoryUnavailable}
+	}
+	return nil
+}
+
+func (*unavailablePodInventory) Pods() ([]*corev1.Pod, error) {
+	return nil, fmt.Errorf("pods not available (RBAC not granted)")
+}
+
+func TestUnavailableInventoryDoesNotDuplicateRBACWarning(t *testing.T) {
+	graph, err := NewBuilder(&unavailablePodInventory{}).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.IncompleteInventories) != 1 || graph.IncompleteInventories[0].State != InventoryUnavailable {
+		t.Fatalf("missing structured unavailable evidence: %+v", graph.IncompleteInventories)
+	}
+	if len(graph.Warnings) != 1 || !strings.Contains(graph.Warnings[0], "RBAC not granted") {
+		t.Fatalf("duplicated or relabeled RBAC warning: %v", graph.Warnings)
+	}
+}
+
+type inventoryNamespaceReadCounter struct {
+	mockProvider
+	namespaceReads int
+}
+
+func (p *inventoryNamespaceReadCounter) Namespaces() ([]*corev1.Namespace, error) {
+	p.namespaceReads++
+	return nil, fmt.Errorf("namespaces not available (RBAC not granted)")
+}
+
+func TestAbsentCalicoDoesNotReadNamespaceLabels(t *testing.T) {
+	provider := &inventoryNamespaceReadCounter{}
+	dynamic := &genericIdentityDynamic{}
+	graph, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.namespaceReads != 0 || len(graph.IncompleteInventories) != 0 {
+		t.Fatalf("absent integration requested namespace evidence: reads=%d inventories=%+v", provider.namespaceReads, graph.IncompleteInventories)
+	}
+}
 
 type inventoryDiscoveryDynamic struct {
 	*genericIdentityDynamic

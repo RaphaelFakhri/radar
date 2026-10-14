@@ -61,6 +61,20 @@ func TestAIResourceInventoryReadiness(t *testing.T) {
 	}
 }
 
+func TestAIResourceContextWaitsForFullConnection(t *testing.T) {
+	old := k8s.GetConnectionStatus()
+	t.Cleanup(func() { k8s.SetConnectionStatus(old) })
+	k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnecting})
+	for _, path := range []string{
+		"/api/ai/resources/configmaps/default/does-not-exist",
+		"/api/ai/resources/configmaps?namespace=default",
+	} {
+		assertGateResponse(t, path, http.StatusServiceUnavailable, "cluster_connecting")
+	}
+	assertGateResponse(t, "/api/ai/resources/configmaps?namespace=default&context=none", http.StatusOK, "")
+	assertGateResponse(t, "/api/ai/resources/configmaps/default/does-not-exist?context=none", http.StatusNotFound, "")
+}
+
 func TestAIResourceInventoryCoveragePreservesReadyReadsAndAuthorization(t *testing.T) {
 	old := k8s.GetConnectionStatus()
 	t.Cleanup(func() {

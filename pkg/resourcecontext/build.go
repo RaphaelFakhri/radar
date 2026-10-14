@@ -618,7 +618,10 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 		pods, err := provider.Pods()
 		if err != nil {
 			omitted.add("referencedBy", inventoryOmissionReason(err))
-			return nil
+			var incomplete *topology.InventoryError
+			if !errors.As(err, &incomplete) {
+				return nil
+			}
 		}
 		if inventory, ok := provider.(topology.ResourceInventoryProvider); ok {
 			if err := inventory.InventoryError("pods", ""); err != nil {

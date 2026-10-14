@@ -39,7 +39,7 @@ func (e *InventoryError) Error() string {
 		if e.Namespace != "" {
 			return fmt.Sprintf("%s inventory does not cover namespace %q", e.Resource, e.Namespace)
 		}
-		return fmt.Sprintf("%s inventory only covers selected namespaces", e.Resource)
+		return fmt.Sprintf("%s inventory only covers selected namespaces; specify a watched namespace for a complete list", e.Resource)
 	default:
 		return fmt.Sprintf("%s inventory is not available", e.Resource)
 	}
@@ -84,7 +84,7 @@ func InventoryWarningFor(resource string, err error) InventoryWarning {
 			w.Message = kind + " data may be incomplete: Radar only watches selected namespaces"
 		}
 	default:
-		w.Message = kind + " data could not be read"
+		w.Message = kind + " data is not available in Radar's cache"
 	}
 	return w
 }
@@ -277,9 +277,6 @@ func relationshipInventorySources(kind, group string, obj any) map[string]bool {
 		data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
 		if err == nil {
 			path := []string{"spec", "template", "spec"}
-			if builtin.Kind == "Pod" {
-				path = []string{"spec"}
-			}
 			if builtin.Kind == "CronJob" {
 				path = []string{"spec", "jobTemplate", "spec", "template", "spec"}
 			}

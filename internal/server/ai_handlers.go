@@ -159,7 +159,7 @@ func parseVerbosity(r *http.Request, defaultLevel aicontext.VerbosityLevel) aico
 // at Summary verbosity by default. Pass ?context=none to opt out for a
 // bare list.
 func (s *Server) handleAIListResources(w http.ResponseWriter, r *http.Request) {
-	if !s.requireConnectedOrSyncing(w) {
+	if !s.requireAIResourceConnection(w, r) {
 		return
 	}
 	kind := normalizeKind(chi.URLParam(r, "kind"))
@@ -319,7 +319,7 @@ func (s *Server) aiListDynamic(w http.ResponseWriter, r *http.Request, cache *k8
 //
 //	<minified>
 func (s *Server) handleAIGetResource(w http.ResponseWriter, r *http.Request) {
-	if !s.requireConnectedOrSyncing(w) {
+	if !s.requireAIResourceConnection(w, r) {
 		return
 	}
 	kind := normalizeKind(chi.URLParam(r, "kind"))
@@ -376,6 +376,14 @@ func (s *Server) handleAIGetResource(w http.ResponseWriter, r *http.Request) {
 		"resource":        minified,
 		"resourceContext": rc,
 	})
+}
+
+func (s *Server) requireAIResourceConnection(w http.ResponseWriter, r *http.Request) bool {
+	// Context depends on indexes published after the cache finishes startup.
+	if r.URL.Query().Get("context") == "none" {
+		return s.requireConnectedOrSyncing(w)
+	}
+	return s.requireConnected(w)
 }
 
 // AI lists must cover every requested namespace before treating an empty result

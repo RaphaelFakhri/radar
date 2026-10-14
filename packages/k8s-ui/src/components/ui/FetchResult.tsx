@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ShieldOff, AlertTriangle, ServerCrash, LogIn, Copy, Check, RefreshCw, type LucideIcon } from 'lucide-react'
+import { ShieldOff, AlertTriangle, ServerCrash, LogIn, Copy, Check, RefreshCw, Info, type LucideIcon } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PaneLoader } from './PaneLoader'
 import { isFetchError } from '../../types/fetch-error'
@@ -116,6 +116,9 @@ function classify(error: unknown, notFoundMessage: string): Classified {
       case 401:
         return { headline: 'Sign-in required', detail: error.message, icon: LogIn }
       case 503:
+        if (errorCodeOf(error) === 'kind_namespace_uncovered') {
+          return { headline: 'Namespace not watched', detail: error.message, icon: Info }
+        }
         // The cluster is connected; one kind's informer missed its sync
         // deadline, so "Cluster unavailable" would send the reader the wrong way.
         if (errorCodeOf(error) === 'kind_sync_failed') {

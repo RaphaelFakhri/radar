@@ -142,6 +142,10 @@ func TestBuild_ReverseReferenceSourceFailureIsExplicit(t *testing.T) {
 
 type pendingPodInventoryProvider struct{ mockResourceProvider }
 
+func (p pendingPodInventoryProvider) Pods() ([]*corev1.Pod, error) {
+	return p.pods, p.InventoryError("pods", "")
+}
+
 func (p pendingPodInventoryProvider) InventoryError(resource, _ string) error {
 	if resource == "pods" {
 		return &topology.InventoryError{Resource: "pods", State: topology.InventoryPending}

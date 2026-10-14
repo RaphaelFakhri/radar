@@ -174,6 +174,10 @@ func (b *Builder) Build(opts BuildOptions) (*Topology, error) {
 	b.serviceJobComparisons = working.serviceJobComparisons
 	topo.IncompleteInventories = inventory.snapshot()
 	for _, warning := range topo.IncompleteInventories {
+		// Typed disabled inventories already have the provider's RBAC warning.
+		if builtin, known := resourceid.BuiltinForName(warning.Resource); warning.State == InventoryUnavailable && known && builtin.Group == warning.Group {
+			continue
+		}
 		if !slices.Contains(topo.Warnings, warning.Message) {
 			topo.Warnings = append(topo.Warnings, warning.Message)
 		}

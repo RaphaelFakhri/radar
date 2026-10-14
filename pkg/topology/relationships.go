@@ -703,7 +703,9 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 			recordLookupError("Pod", err)
 			rel.PodPlacementObserved = true
 			rel.PodPlacementError = err
-			if listErr != nil {
+			rel.PodPlacementUnavailable = err != nil
+			var incomplete *InventoryError
+			if listErr != nil && !errors.As(listErr, &incomplete) {
 				break
 			}
 			for _, pod := range allPods {
