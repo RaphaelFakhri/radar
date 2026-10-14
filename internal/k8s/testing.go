@@ -63,6 +63,7 @@ func InitLoadTestResourceCache(client kubernetes.Interface) error {
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 
 	cacheOnce = new(sync.Once)
@@ -111,6 +112,7 @@ func InitTestPromotedSyncingCache(client kubernetes.Interface, syncTimeout, defe
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 	cacheOnce = new(sync.Once)
 	cacheOnce.Do(func() {})
@@ -123,7 +125,7 @@ func InitTestPromotedSyncingCache(client kubernetes.Interface, syncTimeout, defe
 //
 // This is intended for integration tests only.
 func InitTestResourceCache(client kubernetes.Interface) error {
-	return initTestResourceCache(client, nil)
+	return initTestResourceCache(client, nil, nil)
 }
 
 // InitScopedTestResourceCache is InitTestResourceCache with per-kind scopes,
@@ -131,10 +133,16 @@ func InitTestResourceCache(client kubernetes.Interface) error {
 // cluster-wide. It is what lets a test reach the paths that must refuse to
 // read an informer covering other namespaces.
 func InitScopedTestResourceCache(client kubernetes.Interface, scopes map[string]k8score.ResourceScope) error {
-	return initTestResourceCache(client, scopes)
+	return initTestResourceCache(client, scopes, nil)
 }
 
-func initTestResourceCache(client kubernetes.Interface, scopes map[string]k8score.ResourceScope) error {
+// InitScopedTestResourceCacheNamespaces is InitScopedTestResourceCache for
+// kinds the probe found listable in several namespaces.
+func InitScopedTestResourceCacheNamespaces(client kubernetes.Interface, scopes map[string]k8score.ResourceScope, namespaces map[string][]string) error {
+	return initTestResourceCache(client, scopes, namespaces)
+}
+
+func initTestResourceCache(client kubernetes.Interface, scopes map[string]k8score.ResourceScope, scopeNamespaces map[string][]string) error {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 
@@ -154,8 +162,9 @@ func initTestResourceCache(client kubernetes.Interface, scopes map[string]k8scor
 		Client:        client,
 		ResourceTypes: enabled,
 		// No deferred types for tests — all sync immediately
-		DeferredTypes:  map[string]bool{},
-		ResourceScopes: scopes,
+		DeferredTypes:           map[string]bool{},
+		ResourceScopes:          scopes,
+		ResourceScopeNamespaces: scopeNamespaces,
 		OnTransform: func(obj any) {
 			secretWriteTimes.capture(obj)
 		},
@@ -179,6 +188,7 @@ func initTestResourceCache(client kubernetes.Interface, scopes map[string]k8scor
 		secretsEnabled:              true,
 		cronJobScheduleObservations: cronJobScheduleObservations,
 		secretWriteTimes:            secretWriteTimes,
+		generation:                  cacheGeneration,
 	})
 
 	// Mark cacheOnce as "already executed" so InitResourceCache is a no-op.
@@ -262,6 +272,16 @@ func InitTestDynamicResourceCache(dynClient dynamic.Interface, resources []APIRe
 	discoveryMu.Unlock()
 
 	return InitDynamicResourceCache(nil)
+}
+
+// SetTestDynamicSyncStallAfter sets how long a dynamic informer may stay
+// unsynced before it reads as stalled, for dynamic caches initialized after
+// the call. The production threshold, 30 seconds, is longer than a test should
+// wait. Returns a restore func.
+func SetTestDynamicSyncStallAfter(d time.Duration) func() {
+	previous := dynamicSyncStallAfter
+	dynamicSyncStallAfter = d
+	return func() { dynamicSyncStallAfter = previous }
 }
 
 // ResetTestDynamicState tears down the dynamic cache + discovery singletons
@@ -595,10 +615,19 @@ func SetTestPermissionResult(result *PermissionCheckResult) func() {
 	cachedPermResult = result
 	resourcePermsExpiry = time.Now().Add(time.Minute)
 	resourcePermsMu.Unlock()
+	cache := GetResourceCache()
+	var previousBound *PermissionCheckResult
+	if cache != nil {
+		previousBound = cache.permissionResult
+		cache.permissionResult = clonePermissionCheckResult(result)
+	}
 
 	return func() {
 		resourcePermsMu.Lock()
 		cachedPermResult, resourcePermsExpiry = prevResult, prevExpiry
+		if cache != nil {
+			cache.permissionResult = previousBound
+		}
 		resourcePermsMu.Unlock()
 	}
 }

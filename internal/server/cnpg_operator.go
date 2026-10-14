@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/skyhook-io/radar/internal/k8s"
-	"github.com/skyhook-io/radar/internal/readscope"
 )
 
 const (
@@ -335,13 +334,25 @@ func (s *Server) cnpgOperatorConfigMap(r *http.Request, cache *k8s.ResourceCache
 		state.Reason = "no permission to get ConfigMaps in " + namespace
 		return ref
 	}
-	lister := cache.ConfigMaps()
-	if lister == nil {
-		state.Reason = "ConfigMaps are still loading"
+	assessment := cache.AssessKindRead("configmaps", []string{namespace})
+	if len(assessment.Uncovered) > 0 {
+		state.Reason = "Radar does not watch ConfigMaps in " + namespace
 		return ref
 	}
-	if !readscope.CacheCoversNamespace(cache, "configmaps", namespace) {
-		state.Reason = "Radar does not watch ConfigMaps in " + namespace
+	switch assessment.Readiness {
+	case k8s.KindPending:
+		state.Reason = "ConfigMaps are still loading"
+		return ref
+	case k8s.KindFailed:
+		state.Reason = "ConfigMaps failed to load"
+		return ref
+	case k8s.KindUnavailable:
+		state.Reason = "Radar is not collecting ConfigMaps"
+		return ref
+	}
+	lister := cache.ConfigMaps()
+	if lister == nil {
+		state.Reason = "could not read the ConfigMap"
 		return ref
 	}
 	cm, err := lister.ConfigMaps(namespace).Get(name)

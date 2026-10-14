@@ -154,7 +154,7 @@ func TestParseNamespaces(t *testing.T) {
 	}
 }
 
-// --- noNamespaceAccess (nil vs empty contract) ---
+// --- readscope.NoNamespaceAccess (nil vs empty contract) ---
 
 func TestNoNamespaceAccess(t *testing.T) {
 	tests := []struct {
@@ -170,7 +170,7 @@ func TestNoNamespaceAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := readscope.NoNamespaceAccess(tt.ns); got != tt.want {
-				t.Errorf("noNamespaceAccess(%v) = %v, want %v", tt.ns, got, tt.want)
+				t.Errorf("readscope.NoNamespaceAccess(%v) = %v, want %v", tt.ns, got, tt.want)
 			}
 		})
 	}
@@ -861,7 +861,7 @@ func TestProxyAuth_NamespaceFiltering_NoAccess(t *testing.T) {
 	}
 }
 
-// --- handleAuthMe: noNamespaceAccess ---
+// --- handleAuthMe: readscope.NoNamespaceAccess ---
 
 func authMeBody(t *testing.T, s *Server, user *auth.User) map[string]any {
 	t.Helper()
@@ -884,7 +884,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: []string{}})
 		if got := authMeBody(t, s, user)["noNamespaceAccess"]; got != true {
-			t.Errorf("noNamespaceAccess = %v, want true", got)
+			t.Errorf("readscope.NoNamespaceAccess = %v, want true", got)
 		}
 	})
 
@@ -893,7 +893,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: []string{"team-a"}})
 		if got := authMeBody(t, s, user)["noNamespaceAccess"]; got != false {
-			t.Errorf("noNamespaceAccess = %v, want false for a user who can read team-a", got)
+			t.Errorf("readscope.NoNamespaceAccess = %v, want false for a user who can read team-a", got)
 		}
 	})
 
@@ -902,7 +902,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: nil})
 		if got := authMeBody(t, s, user)["noNamespaceAccess"]; got != false {
-			t.Errorf("noNamespaceAccess = %v, want false for cluster-wide access", got)
+			t.Errorf("readscope.NoNamespaceAccess = %v, want false for cluster-wide access", got)
 		}
 	})
 
@@ -913,7 +913,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		if _, has := authMeBody(t, s, user)["noNamespaceAccess"]; has {
-			t.Error("noNamespaceAccess present with no cached permissions")
+			t.Error("readscope.NoNamespaceAccess present with no cached permissions")
 		}
 	})
 
@@ -931,7 +931,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		if _, has := body["noNamespaceAccess"]; has {
-			t.Error("noNamespaceAccess reported from a discovery that never ran")
+			t.Error("readscope.NoNamespaceAccess reported from a discovery that never ran")
 		}
 	})
 
@@ -942,7 +942,7 @@ func TestHandleAuthMe_NoNamespaceAccess(t *testing.T) {
 		s := newAuthServer(auth.Config{Mode: "proxy"})
 		s.permCache.Set(user.Username, user.Groups, &auth.UserPermissions{AllowedNamespaces: []string{}})
 		if _, has := authMeBody(t, s, user)["noNamespaceAccess"]; has {
-			t.Error("noNamespaceAccess present before the cluster is connected")
+			t.Error("readscope.NoNamespaceAccess present before the cluster is connected")
 		}
 	})
 }

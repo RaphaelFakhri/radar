@@ -20,6 +20,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -118,7 +119,8 @@ type ResourceChange = k8score.ResourceChange
 // status, pod workload lookup, timeline integration).
 type ResourceCache struct {
 	*k8score.ResourceCache
-	secretsEnabled bool // Whether secrets informer is running (requires RBAC)
+	permissionResult *PermissionCheckResult
+	secretsEnabled   bool // Whether secrets informer is running (requires RBAC)
 	// argoDrift tracks how long each manual-sync ArgoCD Application has been
 	// continuously OutOfSync. Lives here so its lifecycle is the cache's:
 	// recreated per cluster, dropped on a kubeconfig context switch.
@@ -129,6 +131,18 @@ type ResourceCache struct {
 	// secretWriteTimes preserves verified Secret data-owner write times that
 	// the shared informer transform intentionally strips before caching.
 	secretWriteTimes *secretDataManagerWriteIndex
+	// generation is the cacheGeneration this cache was built under.
+	generation uint64
+}
+
+// Generation identifies the construction this cache came from. Every
+// context switch and namespace rescope replaces the cache through
+// ResetResourceCache, so the replacement always has a different value. Use
+// it to scope anything derived from the cache's contents, so a result built
+// from the previous cluster is never served to a request holding the new
+// cache.
+func (c *ResourceCache) Generation() uint64 {
+	return c.generation
 }
 
 type secretDataManagerWrite struct {
@@ -360,9 +374,19 @@ func InitResourceCache(ctx context.Context) error {
 		// runs under contextOpMu, so the operation that superseded the probe is
 		// already tearing this cache down, and the ctx.Err() check below drops
 		// out of the boot path that does not hold that lock.
-		permResult, _ := CheckResourcePermissions(rbacCtx)
+		permResult, probeErr := bootstrapResourcePermissions(rbacCtx, func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+			if retry {
+				InvalidateResourcePermissionsCache()
+			}
+			return CheckResourcePermissions(ctx)
+		})
 		cancel()
 		logTiming("    Resource access probes: %v", time.Since(rbacStart))
+
+		if probeErr != nil {
+			initErr = probeErr
+			return
+		}
 
 		if ctx.Err() != nil {
 			initErr = ctx.Err()
@@ -451,10 +475,12 @@ func InitResourceCache(ctx context.Context) error {
 		}
 
 		wrapped := &ResourceCache{
+			permissionResult:            clonePermissionCheckResult(permResult),
 			secretsEnabled:              scopes["secrets"].Enabled,
 			argoDrift:                   newArgoDriftTracker(),
 			cronJobScheduleObservations: cronJobScheduleObservations,
 			secretWriteTimes:            secretWriteTimes,
+			generation:                  gen,
 		}
 		// OnInformersStarted runs synchronously inside NewResourceCache, so
 		// wrapped.ResourceCache is visible-before-publication under cacheMu.
@@ -664,6 +690,7 @@ func recordK8sEventToTimeline(clusterContext string, obj any) {
 
 	store := timeline.GetStore()
 	if store == nil {
+		timeline.RecordDrop("K8sEvent:"+event.InvolvedObject.Kind, event.InvolvedObject.Namespace, event.InvolvedObject.Name, timeline.DropReasonStoreDown, "add", clusterContext)
 		return
 	}
 
@@ -682,6 +709,7 @@ func recordK8sEventToTimeline(clusterContext string, obj any) {
 	ctx := context.Background()
 	if err := timeline.RecordEvent(ctx, timelineEvent); err != nil {
 		log.Printf("Warning: failed to record K8s event to timeline store: %v", err)
+		timeline.RecordDrop("K8sEvent:"+event.InvolvedObject.Kind, event.InvolvedObject.Namespace, event.InvolvedObject.Name, timeline.DropReasonStoreFailed, "add", clusterContext)
 	} else if DebugEvents {
 		timeline.IncrementRecorded("K8sEvent:" + event.InvolvedObject.Kind)
 	}
@@ -853,6 +881,64 @@ func generationBumpSignalsSpecChange(kind string, oldObj, newObj any) bool {
 	return !apiequality.Semantic.DeepEqual(oldDeployment.Spec, newDeployment.Spec)
 }
 
+// isSyncAdd reports whether an add is an object that already existed rather
+// than one just created: everything listed before the initial sync completes,
+// and adds for objects older than 30s (a relist after a watch gap).
+func isSyncAdd(obj any) bool {
+	if !initialSyncComplete.Load() {
+		return true
+	}
+	if meta, ok := obj.(metav1.Object); ok {
+		return time.Since(meta.GetCreationTimestamp().Time) > 30*time.Second
+	}
+	return false
+}
+
+// timelineUpdateDiff returns the diff an update is recorded with, and false when
+// the update carries nothing the timeline records (a heartbeat, a
+// managedFields-only write, a reconcile counter). The no-store path asks the same
+// question, so an outage counts only the changes it actually lost.
+func timelineUpdateDiff(kind string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) (*timeline.DiffInfo, bool) {
+	var diff *timeline.DiffInfo
+	// Reuse the cache layer's already-computed diff on the hot path; only
+	// recompute for callers (tests / non-cache) that didn't precompute it.
+	localDiff := precomputedDiff
+	if !diffPrecomputed {
+		localDiff = ComputeDiff(kind, oldObj, newObj)
+	}
+	if localDiff != nil {
+		diff = &timeline.DiffInfo{
+			Fields:  make([]timeline.FieldChange, len(localDiff.Fields)),
+			Summary: localDiff.Summary,
+		}
+		for i, f := range localDiff.Fields {
+			diff.Fields[i] = timeline.FieldChange{
+				Path:     f.Path,
+				OldValue: f.OldValue,
+				NewValue: f.NewValue,
+			}
+		}
+	} else if KindHasDiffer(kind) || isUnstructuredUpdate(oldObj, newObj) {
+		// Diff handling found nothing observable — usually a heartbeat,
+		// managedFields-only update, or reconcile counter.
+		// Before dropping, use metadata.generation to catch spec fields our
+		// audited differ does not yet track.
+		if oldGen, newGen := getGeneration(oldObj), getGeneration(newObj); oldGen != newGen && oldGen > 0 && newGen > 0 && generationBumpSignalsSpecChange(kind, oldObj, newObj) {
+			diff = &timeline.DiffInfo{
+				Fields: []timeline.FieldChange{{
+					Path:     "metadata.generation",
+					OldValue: oldGen,
+					NewValue: newGen,
+				}},
+				Summary: fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen),
+			}
+		} else {
+			return nil, false
+		}
+	}
+	return diff, true
+}
+
 // recordToTimelineStore records a resource change to the timeline.
 // clusterContext is the wiring-time capture (see InitResourceCache), not the
 // live active context — a late callback must stamp the cluster it came from.
@@ -862,11 +948,6 @@ func generationBumpSignalsSpecChange(kind string, oldObj, newObj any) bool {
 // per-update path; callers without one (tests, non-cache paths) pass nil +
 // false and the diff is computed here.
 func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) {
-	store := timeline.GetStore()
-	if store == nil {
-		return
-	}
-
 	obj := newObj
 	if obj == nil {
 		obj = oldObj
@@ -874,6 +955,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
+
 	apiVersion := extractAPIVersion(kind, obj)
 	apiGroup := ""
 	if gvr, ok := BuiltinGVRAnyGroup(kind); ok {
@@ -881,6 +963,30 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	}
 	if apiVersion != "" {
 		apiGroup = resourceid.GroupFromAPIVersion(apiVersion)
+	}
+
+	store := timeline.GetStore()
+	if store == nil {
+		if op == "delete" {
+			timeline.NoteDeletedWhileUnavailable(clusterContext, apiGroup, kind, namespace, name)
+		}
+		// No store means a configured backend could not be opened. Count the
+		// change the same way a failed write is counted, so a timeline that is
+		// quietly losing history still moves the drop counter an operator
+		// watches. Objects listed at startup and updates with nothing to record
+		// (heartbeats) would not have been recorded either, so they are not
+		// counted as lost.
+		if op == "add" && isSyncAdd(obj) {
+			return
+		}
+		if op == "update" && oldObj != nil && newObj != nil {
+			if _, recordable := timelineUpdateDiff(kind, oldObj, newObj, precomputedDiff, diffPrecomputed); !recordable {
+				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
+				return
+			}
+		}
+		timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreDown, op, clusterContext)
+		return
 	}
 
 	if op == "add" {
@@ -930,45 +1036,13 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 
 	var diff *timeline.DiffInfo
 	if op == "update" && oldObj != nil && newObj != nil {
-		// Reuse the cache layer's already-computed diff on the hot path; only
-		// recompute for callers (tests / non-cache) that didn't precompute it.
-		localDiff := precomputedDiff
-		if !diffPrecomputed {
-			localDiff = ComputeDiff(kind, oldObj, newObj)
-		}
-		if localDiff != nil {
-			diff = &timeline.DiffInfo{
-				Fields:  make([]timeline.FieldChange, len(localDiff.Fields)),
-				Summary: localDiff.Summary,
+		var recordable bool
+		if diff, recordable = timelineUpdateDiff(kind, oldObj, newObj, precomputedDiff, diffPrecomputed); !recordable {
+			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
+			if DebugEvents {
+				log.Printf("[DEBUG] No-diff update, skipping: %s/%s/%s", kind, namespace, name)
 			}
-			for i, f := range localDiff.Fields {
-				diff.Fields[i] = timeline.FieldChange{
-					Path:     f.Path,
-					OldValue: f.OldValue,
-					NewValue: f.NewValue,
-				}
-			}
-		} else if KindHasDiffer(kind) || isUnstructuredUpdate(oldObj, newObj) {
-			// Diff handling found nothing observable — usually a heartbeat,
-			// managedFields-only update, or reconcile counter.
-			// Before dropping, use metadata.generation to catch spec fields our
-			// audited differ does not yet track.
-			if oldGen, newGen := getGeneration(oldObj), getGeneration(newObj); oldGen != newGen && oldGen > 0 && newGen > 0 && generationBumpSignalsSpecChange(kind, oldObj, newObj) {
-				diff = &timeline.DiffInfo{
-					Fields: []timeline.FieldChange{{
-						Path:     "metadata.generation",
-						OldValue: oldGen,
-						NewValue: newGen,
-					}},
-					Summary: fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen),
-				}
-			} else {
-				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
-				if DebugEvents {
-					log.Printf("[DEBUG] No-diff update, skipping: %s/%s/%s", kind, namespace, name)
-				}
-				return
-			}
+			return
 		}
 	}
 
@@ -1035,26 +1109,7 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	}
 
 	if op == "add" {
-		isSyncEvent := false
-
-		if !initialSyncComplete.Load() {
-			isSyncEvent = true
-		}
-
-		if !isSyncEvent && obj != nil {
-			if meta, ok := obj.(metav1.Object); ok {
-				creationTime := meta.GetCreationTimestamp().Time
-				age := time.Since(creationTime)
-				if age > 30*time.Second {
-					isSyncEvent = true
-					if DebugEvents {
-						log.Printf("[DEBUG] Skipping stale add event (age=%v): %s/%s/%s", age, kind, namespace, name)
-					}
-				}
-			}
-		}
-
-		if isSyncEvent {
+		if isSyncAdd(obj) {
 			if DebugEvents {
 				log.Printf("[DEBUG] Skipping sync add event: %s/%s/%s (extracted %d historical events)", kind, namespace, name, len(events))
 			}
@@ -1457,7 +1512,7 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 		return nil, fmt.Errorf("%w: dynamic cache", ErrDynamicNotReady)
 	}
 
-	if shouldBypassDynamicInformer(gvr) {
+	if ShouldBypassDynamicInformer(gvr) {
 		return dynamicCache.ListDirect(ctx, gvr, namespace)
 	}
 
@@ -1518,7 +1573,7 @@ func builtinGVRFallback(kind, group string) (schema.GroupVersionResource, bool) 
 	return BuiltinGVR(kind, group)
 }
 
-func shouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
+func ShouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
 	return (gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices") ||
 		(gvr.Group == "coordination.k8s.io" && gvr.Resource == "leases") ||
 		(gvr.Group == "" && gvr.Resource == "endpoints")
@@ -1611,7 +1666,7 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	var err error
 	if preserveLastApplied {
 		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
-	} else if shouldBypassDynamicInformer(gvr) {
+	} else if ShouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
@@ -2180,4 +2235,69 @@ func (c *ResourceCache) GetPodsForWorkload(namespace string, selector *metav1.La
 	}
 
 	return matchingPods
+}
+
+func (rc *ResourceCache) AssessKindRead(resource string, requested []string) k8score.KindReadAssessment {
+	var core *k8score.ResourceCache
+	if rc != nil {
+		core = rc.ResourceCache
+	}
+	return core.AssessKindRead(resource, requested)
+}
+
+// PermissionResult returns the probes that selected this cache's informer
+// scope. A later global refresh must not re-label rows from this cache.
+func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
+	if rc == nil {
+		return nil
+	}
+	return clonePermissionCheckResult(rc.permissionResult)
+}
+
+// A transient startup 401 must not freeze a narrowed informer set for the
+// lifetime of the connection. Retry once within the existing probe budget;
+// persistent rejection fails initialization into the connection's auth owner.
+// Non-auth probe budget expiry retains established grants; outer cancellation
+// is checked by initialization before any informer is wired.
+func bootstrapResourcePermissions(ctx context.Context, check func(context.Context, bool) (*PermissionCheckResult, bool)) (*PermissionCheckResult, error) {
+	var rejected error
+	for attempt := 0; attempt < 2; attempt++ {
+		result, _ := check(ctx, attempt > 0)
+		if err := permissionUnauthorized(result); err != nil {
+			rejected = err
+			if attempt == 1 || ctx.Err() != nil {
+				return nil, fmt.Errorf("resource access probe rejected credentials: %w", err)
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			if rejected != nil {
+				return nil, fmt.Errorf("resource access probe could not confirm recovered credentials within its budget: %w", rejected)
+			}
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, ctx.Err()
+			}
+		}
+		return result, nil
+	}
+	panic("unreachable")
+}
+
+func permissionUnauthorized(result *PermissionCheckResult) error {
+	if result == nil {
+		return nil
+	}
+	for _, err := range result.ProbeErrors {
+		if apierrors.IsUnauthorized(err) {
+			return err
+		}
+	}
+	for _, byNamespace := range result.NamespaceProbeErrors {
+		for _, err := range byNamespace {
+			if apierrors.IsUnauthorized(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -10,10 +10,11 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	listerscorev1 "k8s.io/client-go/listers/core/v1"
 
-	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/pkg/packages"
 	"github.com/skyhook-io/radar/pkg/resourceid"
+
+	"github.com/skyhook-io/radar/internal/readscope"
 )
 
 // resourceLister is the slice of the resource cache the app identity resolver
@@ -969,7 +970,7 @@ var argoWorkloadKinds = map[string]bool{
 func collectArgoClaims(items []*unstructured.Unstructured, sourcePaths map[string]string, appSetByKey map[string]appSetFanout, namespaces []string) []argoClaim {
 	// Scope claims to the caller's visibility. namespaces is nil for full access
 	// (no-auth local / the fleet hub), a non-nil EMPTY slice for explicit no
-	// access (noNamespaceAccess), and a non-nil non-empty set when scoped. A claim
+	// access (readscope.NoNamespaceAccess), and a non-nil non-empty set when scoped. A claim
 	// exposes an Application's destination + managed workloads, so a no-access
 	// caller gets nothing, and a scoped caller gets a claim only when it can see at
 	// least one of the workloads the Application MANAGES — filtering by the

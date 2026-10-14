@@ -98,7 +98,7 @@ func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
 		// leak Service config + pod IPs + findings the handler did not
 		// authorize. A nil list means single-user / auth-disabled, where
 		// every namespace is in scope; the non-nil empty (no access) case
-		// is handled above by noNamespaceAccess before we reach here.
+		// is handled above by readscope.NoNamespaceAccess before we reach here.
 		AllowedNamespaces: namespaces,
 	}
 	opts := trace.Options{

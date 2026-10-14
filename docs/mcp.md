@@ -447,6 +447,113 @@ Only the highest-spending namespaces get individual `type: namespace` series, ea
 
 Both tools return `guidance` as an array of interpretation notes; read notes about missing evidence and scope before reporting a conclusion.
 
+## Resource read errors
+
+`list_resources` and `get_resource` return MCP tool errors (`isError: true`)
+when Radar cannot establish a readable, synchronized view. Complete lists keep
+their array shape; `[]` means no objects were found within the readable requested
+scope. Unrestricted partial lists return [rows with coverage](#partial-lists).
+Workload and GitOps `diagnose` root reads apply the same readiness checks.
+
+Classified errors carry `<reason>: <explanation>` in text and the same reason
+and explanation in `structuredContent`:
+
+```json
+{
+  "isError": true,
+  "content": [{"type": "text", "text": "rbac_denied: your role cannot list resource \"secrets\" in API group \"\" in namespace \"prod\"; ask a cluster administrator to grant access"}],
+  "structuredContent": {
+    "reason": "rbac_denied",
+    "error": "your role cannot list resource \"secrets\" in API group \"\" in namespace \"prod\"; ask a cluster administrator to grant access"
+  }
+}
+```
+
+Branch on `structuredContent.reason`. Confirmed missing objects, disconnected
+clusters and serialization failures retain text-only errors. Reason codes are
+defined in `pkg/readreason`.
+
+| Reason | Meaning | Next step |
+|---|---|---|
+| `rbac_denied` | Your exact Secret or cluster-kind permission check denied the operation. | Ask for access, or use an allowed scope. |
+| `no_namespace_access` | No requested namespace passes the Pods or Deployments list membership check; this is not an exact check of the requested kind. | Check your Pod or Deployment list access. |
+| `permission_check_failed` | Radar could not verify your access. | Retry when the permission check is available. |
+| `outside_namespace_scope` | The namespace is excluded by `--namespace-scope`. | Use the pinned namespace, or change Radar's configuration. |
+| `collector_access_denied` | Kubernetes refused Radar's service account or local kubeconfig identity. | Fix Radar's access; granting the caller access does not repair this. |
+| `collector_unauthorized` | Kubernetes rejected Radar's credentials. | Refresh Radar's credentials or kubeconfig token. |
+| `collector_scope_limited` | The namespace is outside established collector coverage; Radar did not read it. | Retry with a covered namespace, or widen collection. |
+| `kind_sync_pending` | Initial synchronization or discovery is not ready. | Retry shortly. |
+| `kind_sync_failed` | Initial synchronization timed out or stalled. | Check Radar's connection and list/watch permissions. |
+| `kind_not_watched` | Radar has no watch for the kind. | Check collection configuration and permissions. |
+| `collection_not_supported` | The API does not support list/watch. | Do not retry; collection is unsupported. |
+| `unknown_kind` | The kind is absent from the built-in catalog and discovery. | Check spelling, `group`, and API installation. |
+| `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace`. |
+| `read_error` | An unexpected read failure. | Read the explanation; retry or investigate. |
+
+Collector errors omit the API server's response, which may name Radar's identity;
+the raw cause is logged server-side. Errors name only namespaces the caller may
+read or explicitly requested.
+
+### Partial lists
+
+An unrestricted, unscoped `list_resources` call succeeds with this object when
+Radar can read the kind only in some namespaces:
+
+```json
+{
+  "coverage": {
+    "status": "partial",
+    "requested": {"type": "all_namespaces"},
+    "read": {"type": "namespaces", "namespaces": {"names": ["alpha", "gamma"], "total": 2, "omitted": 0}},
+    "gaps": [{"reason": "collector_scope_limited"}],
+    "note": "Radar read services only in namespaces \"alpha,gamma\"; objects in other namespaces were not read, so this result cannot show they don't exist."
+  },
+  "items": [{"kind": "Service", "name": "api", "namespace": "alpha"}]
+}
+```
+
+`items` contains the usual rows, or `[]` when the namespaces read hold nothing.
+`coverage.read.namespaces` previews up to eight sorted names, with the known
+`total` and the number `omitted` from the preview. Omission abbreviates metadata;
+it does not mean those namespaces were unread. Gaps without namespace details
+mean the broader unread set is unknown.
+`coverage.note` explains that missing rows cannot establish absence elsewhere.
+The result is one text block without `structuredContent`. Coverage comes first
+so it survives truncation that retains only the head of a long result.
+
+For partial lists, `coverage.gaps[].reason` is `collector_scope_limited` for informer
+coverage, or `collector_access_denied` when a direct read of Endpoints,
+EndpointSlices or Leases was refused cluster-wide and fell back to namespace
+reads. Complete lists remain bare arrays. Clients must handle both shapes.
+
+Findings shows a coverage caveat, including for empty partial results. A placed
+story card distinguishes an unread subject namespace from a missing object in
+a namespace that was read. When the namespace preview is abbreviated, an
+unlisted namespace stays unknown rather than being called unread.
+
+### Namespace scope
+
+For namespaced resources, a request is **restricted** when it names a
+`namespace`, Radar is pinned with `--namespace-scope`, or the caller has only a
+finite set of authorized namespaces. Otherwise, an auth-off or cluster-wide
+caller's unscoped request is **unrestricted**. The browser namespace picker does
+not scope MCP requests.
+
+- **Restricted:** every requested namespace must be covered, or the read
+  errors even if other namespaces have objects. Covered empty reads return `[]`.
+- **Unrestricted:** read the namespaces the collector covers, returning a
+  partial list when coverage is limited. If no namespace can be read, it errors.
+
+An uncovered namespace is `collector_scope_limited` when it was not collected,
+or `collector_access_denied` when Kubernetes refused Radar's read. Credential
+rejection is always `collector_unauthorized`, even if another namespace succeeds.
+
+Namespace lists use the full collector list after the list-namespaces permission
+check; namespace membership and `--namespace-scope` do not narrow them. Secrets and cluster-scoped
+kinds retain exact per-kind permission checks. Secret lists omit namespaces with
+confirmed-denied Secret list access; an incomplete permission check fails the
+read.
+
 ## Available Tools
 
 ### Read Tools
@@ -461,7 +568,7 @@ For `get_cost` and `get_rightsizing`, see [Cost and rightsizing evidence limits]
 | `diagnose` | Collect a bounded, point-in-time evidence bundle for one narrowed workload, GitOps reconciler, or network entry kind in a single call. It supports diagnosis but does not run an agent, provide an authoritative root-cause verdict, or exhaustively read every source. Pod/Deployment/StatefulSet/DaemonSet and Argo Rollout (`kind=Rollout`, `group=argoproj.io`) get minified resource + `resourceContext` + selected, capped current and previous container logs across pods + `crashCause` evidence that pairs active crashloop status with one highest-signal filtered log line (`logLineSelection` states how the line was chosen, in descending confidence: `fatal_pattern`, `traceback_header_only`, `last_matched_line`, `log_tail`) + filtered events + `startupBlockers`; Application/Kustomization/Flux HelmRelease get reconciler status + related parsed issues; Service/Ingress/HTTPRoute/GRPCRoute/Gateway get coverage-honest [reachability evidence](reachability.md): a `summary` (headline + tested/passed/failed/skipped counts over the intended routes), `routes` (per-route outcome + `confidence` - `indirect` = reached only via the API-server proxy, not the live-traffic path), `notTested` (with why + a copyable command), an optional named `brokenRoute` when established, and `path` (hops with static findings). Optional active reachability test (`probe: true`, bounded to a 3s total budget; a timeout returns an honest partial). The returned bundle is frozen from one call, but its sources are not read atomically; preserve its limits, errors, timestamps, and confidence. In `resourceContext`, `issueSummary` uses live-operational `critical`/`warning`, while `auditSummary` uses the Checks posture-remediation ladder `critical`/`high`/`medium`/`low` (current built-ins are `high`/`medium`) and is not evidence of an active outage. | `kind` (required: workload, GitOps reconciler, or network entry kind), `group` (optional API group; set it for CRDs or same-kind collisions, for example `argoproj.io` for `Rollout`; built-in groups are inferred when omitted), `namespace` (required), `name` (required), `probe` (optional: network kinds only - run DNS/TCP/TLS/HTTP probes as applicable; explicitly non-HTTP Service ports stop at TCP), `in_cluster` (optional on the full `/mcp` endpoint only, **MUTATING** - network kinds only: runs the applicable probe layers from inside the cluster by creating up to 5 short-lived, self-deleting probe pods under your RBAC; the only diagnose option with a side effect, requires `create jobs`, `list pods`, and `get pods/log`; forces `probe` on; omitted from and rejected by `/mcp-readonly`) |
 | `get_dashboard` | Cluster/namespace health overview — resource counts, failing pods, unhealthy workloads, warning-event groups (`warningGroups`, up to 20 recency-ordered; `totalWarningGroups`/`warningGroupsTruncated` signal when more exist), Helm status. Inventory-style triage before drilling in. | `namespace` (optional) |
 | `top_resources` | Live metrics ranked like `kubectl top | sort`, joined with K8s context (status, restarts, owner, requests/limits). Use for CPU/memory/OOM/load symptoms. | `kind` (optional: `pods` default, `workloads`, `nodes`), `namespace` (optional), `sort` (optional: `cpu` default, `memory`), `limit` (optional, default 20, max 100) |
-| `list_resources` | List resources of a kind with minified summaries + per-row `summaryContext` (managedBy / health / issueCount). | `kind` (required), `group` (optional), `namespace` (optional), `context` (optional: default / `none`) |
+| `list_resources` | List resources of a kind with minified summaries + per-row `summaryContext` (managedBy / health / issueCount). A read Radar's collector could serve only in some namespaces returns `{coverage, items}` instead of a bare array ([partial lists](#partial-lists)). | `kind` (required), `group` (optional), `namespace` (optional), `context` (optional: default / `none`) |
 | `search` | Find resources by content/term match (config keys, env refs, images, label values, CRD fields, status messages). Tokens AND'd; secret values never indexed. Supports `kind:`/`ns:`/`label:`/`image:` modifiers and CEL `filter`. | `query` (required), `filter` (optional CEL), `limit` (optional) |
 | `get_resource` | Inspect one known resource: minified spec, status, and metadata, plus default-on `resourceContext` with relationships and available resource-specific summaries. Operational issues and static audit posture remain distinct; audit findings are not evidence of an active outage. See [integration documentation](integrations.md) for controller-specific context and limits. Optional supplemental data adds events, metrics, recent changes, rollback revisions, detailed issue context, or a Node drain estimate. `include=drain-plan` reuses the read-only REST drain estimator with the caller’s credentials and the removal drawer’s explicit options; it returns up to 100 current pods, full summary counts, `drainPlanTotalPods` and `drainPlanPodsTruncated`. It evaluates Eviction API/PDB eligibility, not controller-specific policy or eviction history. `include=issues` returns up to three `relatedIssues`, with `relatedIssuesTotal` and `relatedIssuesTruncated`; this is independent of `context=none`. For logs use `get_pod_logs`, `get_workload_logs`, or `diagnose` for supported kinds. | `kind` (required), `name` (required), `namespace` (optional — omit for cluster-scoped kinds), `group` (optional, for ambiguous kinds), `include` (optional, comma-separated: `events,metrics,changes,revisions,issues,drain-plan`; `revisions` lists rollback targets for Deployment/StatefulSet/DaemonSet/Rollout), `context` (optional: `basic` default, `none` to omit `resourceContext`) |
 | `get_topology` | Whole-namespace/cluster topology graph (nodes + edges). Use `summary` format for LLM-friendly text chains. Once you have a suspect root, prefer `get_neighborhood`. | `namespace` (optional), `view` (optional: `traffic` or `resources`), `format` (optional: `graph` or `summary`) |
@@ -540,7 +647,7 @@ leave Kubernetes resources, infrastructure or storage behind. Dependents with
 their own finalizers can remain stuck even after the controller is restored;
 older VictoriaMetrics operators place such finalizers on managed objects.
 
-For `issues`, read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
+For `issues`, `unchecked_sources` lists the issue sources Radar couldn't check for this answer, so their issues may be missing; don't read the response as healthy for them. Today the only source is `helm` (failed or stuck Helm releases), with reason `read_failed`. Treat any other value as unchecked too. Read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
 
 Resource context distinguishes observed dependency references (`dependencies` and
 `dependents`) from autoscalers (`scaledBy`). A Certificate depends on its issuer;

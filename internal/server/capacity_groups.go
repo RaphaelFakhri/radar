@@ -6,7 +6,6 @@ import (
 
 	capacitymodel "github.com/skyhook-io/radar/internal/capacity"
 	"github.com/skyhook-io/radar/internal/k8s"
-	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/pkg/autoscalerstatus"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,7 +21,7 @@ const (
 // needs: informer scope plus the ConfigMap lister. Narrowed to an interface so
 // the coverage-verdict/detection pairing is testable without an informer.
 type capacityConfigMapSource interface {
-	readscope.InformerScope
+	kindReadSource
 	ConfigMaps() corelisters.ConfigMapLister
 }
 
@@ -54,7 +53,7 @@ func capacityAutoscalerStatus(allowed bool, cache capacityConfigMapSource) (*aut
 	if !allowed {
 		return unavailable(deniedCoverage("autoscaler_status_configmap_denied", impact))
 	}
-	if cache == nil || !readscope.CacheCoversNamespace(cache, "configmaps", autoscalerStatusNamespace) {
+	if cache == nil || !cache.AssessKindRead("configmaps", []string{autoscalerStatusNamespace}).Complete {
 		return unavailable(unavailableCoverage("autoscaler_status_cache_scope", impact))
 	}
 	lister := cache.ConfigMaps()

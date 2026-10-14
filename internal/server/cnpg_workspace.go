@@ -517,31 +517,26 @@ func (s *Server) cnpgTypedScope(r *http.Request, cache *k8s.ResourceCache, names
 	if !ok {
 		return cnpgKindAccess{state: cnpgCoverageDenied}, nil, []string{}
 	}
-	within := readscope.NamespacesWithinCache(cache, resource, allowed)
-	if within.Unavailable {
-		log.Printf("[cnpg] %s cache does not cover the requested scope", resource)
+	assessment := cache.AssessKindRead(resource, allowed)
+	if len(assessment.Uncovered) > 0 && len(assessment.Uncovered) == len(allowed) {
 		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
 	}
-	switch cache.KindReadinessFor(resource) {
+	switch assessment.Readiness {
 	case k8s.KindPending:
 		return cnpgKindAccess{state: cnpgCoverageSyncing}, nil, []string{}
 	case k8s.KindFailed, k8s.KindUnavailable:
 		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
 	}
-	if allowed != nil {
-		for _, ns := range allowed {
-			if slices.Contains(within.Namespaces, ns) {
-				continue
-			}
-			partial = true
-			if namespaces != nil {
-				denied = append(denied, ns)
-			}
-		}
+	if !assessment.Complete && len(assessment.Read) == 0 {
+		log.Printf("[cnpg] %s cache does not cover the requested scope", resource)
+		return cnpgKindAccess{state: cnpgCoverageError}, nil, []string{}
+	}
+	if namespaces != nil {
+		denied = append(denied, assessment.Uncovered...)
 		sort.Strings(denied)
 	}
-	acc = accessFromScope(within.Namespaces, partial || within.Partial)
-	return acc, denied, within.Namespaces
+	acc = accessFromScope(assessment.Read, partial || !assessment.Complete)
+	return acc, denied, assessment.Read
 }
 
 // cnpgWorkspaceReadPods returns the instance Pods of visible Clusters, plus

@@ -56,7 +56,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, search.Result{Hits: []search.Hit{}})
 		return
 	}
-	scanNamespaces := readscope.IntersectNamespaces(allowed, parsed.NSFilter)
+	scanNamespaces := readscope.SelectNamespaces(allowed, parsed.NSFilter)
 	if allowed != nil && len(scanNamespaces) == 0 {
 		// User is namespace-restricted but their `ns:` filter doesn't
 		// intersect — empty result without scanning.
