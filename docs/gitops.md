@@ -191,6 +191,35 @@ Behavior and guarantees:
   annotation-based drift view. Same when the server is unreachable or the
   token expires; the Changes tab keeps working, only the deep diff goes away.
 
+### When Radar connects, and what pages do while it can't
+
+With an Argo CD URL or token configured, Radar connects to argocd-server in
+the background as soon as Kubernetes is connected: at startup, after every
+context switch, and after a settings save. With an empty URL and Radar
+running outside the cluster, that includes opening a port-forward to the
+`argocd-server` Service. Page loads never wait for this connection.
+
+What an Application page does meanwhile:
+
+- **Connecting** (no connection yet, nothing has failed): the page says Radar
+  is still connecting and asks again every 2 seconds.
+- **Retrying** (argocd-server didn't answer, refused the connection, or a
+  proxy in front of it answered 502, 503 or 504): the page shows why Argo's
+  answer is missing and asks again every 30 seconds. Radar re-checks the
+  server at most every 30 seconds, and only while a page has asked in that
+  time, so a closed page stops the retries. Only the page whose own read
+  failed keeps asking; pages for other Applications that loaded fine don't.
+- **Settled**: once Argo's answer is in, or the failure needs you (a rejected
+  token, a certificate Radar can't verify), the page stops asking.
+- **Radar didn't answer** (the page's own request to Radar failed while it was
+  waiting): the page asks again every 30 seconds, and stops after five minutes
+  of failed requests; reload the page to try again.
+
+A timed-out per-resource health read is reused for up to 15 seconds, so several
+people viewing a slow Application share one attempt instead of each waiting
+out their own. Settings shows the last failed read until a read succeeds, or
+for two minutes after the last page stopped asking.
+
 The gitops-demo cluster mints a ready-to-use token into
 `scripts/gitops-demo/.radar-argocd-token` (see the demo section below).
 
