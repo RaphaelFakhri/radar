@@ -52,7 +52,7 @@ func TestRESTContextAndApplicationsKeepReadableCrossNamespaceFluxInventory(t *te
 	}
 	env := newAuthTestServer(t)
 	shared, _, _, _, ok := env.srv.topologyForContext()
-	if !ok || !env.srv.broadcaster.updateCachedTopology(shared, env.srv.broadcaster.topoEpoch.Load()) {
+	if !ok || !env.srv.broadcaster.updateCachedTopology(shared, env.srv.broadcaster.topoEpoch.Load(), k8s.GetResourceCache().Generation()) {
 		t.Fatal("could not seed the shared relationship snapshot")
 	}
 	perms := &auth.UserPermissions{AllowedNamespaces: []string{"demo"}}
@@ -160,5 +160,33 @@ func TestApplicationsReuseSharedGraphWithoutMutatingVisibility(t *testing.T) {
 	}
 	if cachedAppGraph(k8s.GetResourceCache(), nil, func() *topology.Topology { t.Fatal("cache hit rebuilt broadcaster"); return nil }) != full {
 		t.Fatal("full scope cache was contaminated")
+	}
+}
+
+func TestApplicationsRejectsPreviousClusterSnapshotBeforeCallbacks(t *testing.T) {
+	useTestResourceCache(t, clusterWithDeployment("web"))
+	b := NewSSEBroadcaster()
+	old := &topology.Topology{Nodes: []topology.Node{
+		{ID: "deployment/demo/web", Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "demo"}},
+		{ID: "helmrelease/demo/previous-cluster", Kind: topology.KindHelmRelease, Name: "previous-cluster", Data: map[string]any{"namespace": "demo", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
+	}, Edges: []topology.Edge{{ID: "old-owner", Source: "helmrelease/demo/previous-cluster", Target: "deployment/demo/web", Type: topology.EdgeManages}}}
+	b.updateCachedTopology(old, b.topoEpoch.Load(), k8s.GetResourceCache().Generation())
+	if b.GetCachedTopology() != old {
+		t.Fatal("current source snapshot rejected")
+	}
+	k8s.ResetResourceCache()
+	if err := k8s.InitTestResourceCache(clusterWithDeployment("web")); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately do not run switch callbacks: this is their ordering window.
+	if got := b.GetCachedTopology(); got != nil {
+		t.Fatal("previous source snapshot accepted")
+	}
+	clearApplicationsCache()
+	t.Cleanup(clearApplicationsCache)
+	graph := cachedAppGraph(k8s.GetResourceCache(), nil, b.GetCachedTopology)
+	root, ok := graph.structuralRoot("deployment/demo/web")
+	if !ok || root.Kind != topology.KindDeployment {
+		t.Fatalf("previous cluster owner was cached: %+v", root)
 	}
 }

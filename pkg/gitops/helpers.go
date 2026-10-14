@@ -118,8 +118,11 @@ type ResourceScopeProvider interface {
 // FluxInventoryNamespace aligns rendered inventory with the API's scope.
 // Unknown kinds retain their recorded namespace; kind-only inference is unsafe.
 func FluxInventoryNamespace(group, kind, namespace string, scope ResourceScopeProvider) string {
-	if builtin, exists := resourceid.BuiltinForKind(kind); exists && builtin.Group == group && !builtin.Namespaced {
-		return ""
+	if builtin, exists := resourceid.BuiltinForKind(kind); exists && builtin.Group == group {
+		if !builtin.Namespaced {
+			return ""
+		}
+		return namespace
 	}
 	if scope != nil {
 		if resource, exists := scope.GetResourceWithGroup(kind, group); exists && resource.Group == group && !resource.Namespaced {
