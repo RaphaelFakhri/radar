@@ -1174,11 +1174,11 @@ func (b *SSEBroadcaster) GetCachedTopology() *topology.Topology {
 }
 
 // GetCachedTopologyForGeneration is GetCachedTopologyWithIndex for a reader
-// holding the resource cache of the given generation. It never pairs that
-// cache with a graph built from another one: a reader of the current cache
-// rebuilds a graph left from another generation (a switch whose callbacks
-// haven't run yet, or never will after a failed init), and a reader of a
-// replaced cache gets nothing.
+// holding the resource cache of the given generation. Any graph it returns was
+// built from that generation. A reader of the current cache rebuilds a graph
+// left from another generation (a switch whose callbacks haven't run yet, or
+// never will after a failed init); a reader of a replaced cache gets the graph
+// only while it still matches that cache, and nothing otherwise.
 func (b *SSEBroadcaster) GetCachedTopologyForGeneration(generation uint64) (*topology.Topology, *topology.RelationshipsIndex) {
 	if topo, index := b.cachedTopologyIfGeneration(generation); topo != nil {
 		return topo, index

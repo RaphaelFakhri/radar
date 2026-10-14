@@ -194,15 +194,33 @@ func TestDirtyRebuildAndRepairShareOneBuild(t *testing.T) {
 			}
 			t.Cleanup(func() { rebuildCachedTopology = real })
 
+			wait := func(what string, ch <-chan struct{}) {
+				t.Helper()
+				select {
+				case <-ch:
+				case <-time.After(10 * time.Second):
+					t.Fatalf("timed out waiting for %s", what)
+				}
+			}
 			first := make(chan *topology.Topology, 1)
 			go func() { topo, _ := b.GetCachedTopologyForGeneration(current); first <- topo }()
-			<-entered
+			wait("the first build", entered)
 			second := make(chan *topology.Topology, 1)
 			go func() { topo, _ := b.GetCachedTopologyForGeneration(current); second <- topo }()
 			// Let the second reader reach the rebuild lock while the first holds it.
 			time.Sleep(100 * time.Millisecond)
 			close(release)
-			a, c := <-first, <-second
+			receive := func(ch <-chan *topology.Topology) *topology.Topology {
+				t.Helper()
+				select {
+				case topo := <-ch:
+					return topo
+				case <-time.After(10 * time.Second):
+					t.Fatal("timed out waiting for a reader")
+					return nil
+				}
+			}
+			a, c := receive(first), receive(second)
 			if a == nil || a != c {
 				t.Fatalf("readers didn't share the rebuilt graph: %p %p", a, c)
 			}
