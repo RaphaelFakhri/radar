@@ -119,10 +119,10 @@ func newCNPGWorkspaceResponse(namespaces []string, contextName string) CNPGWorks
 		Audit:      []CNPGWorkspaceAuditFinding{},
 	}
 	for _, k := range workspaceKinds {
-		resp.Coverage[k.Key] = integration.KindCoverage{State: integration.KindCoverageNotInstalled}
+		resp.Coverage[k.Key] = integration.KindAccess{State: integration.KindCoverageNotInstalled}.Coverage()
 		resp.Objects[k.Key] = []any{}
 	}
-	resp.Coverage[workspacePodsKey] = integration.KindCoverage{State: integration.KindCoverageNotInstalled}
+	resp.Coverage[workspacePodsKey] = integration.KindAccess{State: integration.KindCoverageNotInstalled}.Coverage()
 	resp.Objects[workspacePodsKey] = []any{}
 	return resp
 }
