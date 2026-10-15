@@ -311,9 +311,11 @@ The Docker image's primary use is [in-cluster deployment](in-cluster.md) with a 
 
 For workload `diagnose` responses, `logCoverage.selectedPods` counts pods selected for log requests, not pods whose logs were successfully read. Per-container errors and `logsError` describe failed collection. `logCoverage.totalLines` counts diagnostic-filter output before the aggregate response cap (including fallback tail lines); `shownLines` counts the lines retained after that cap. Neither describes a container's complete log history. `totalPods` and `shownPods` count pods contributing at least one line before and after that cap—not all selected pods or successful empty reads. `eventsTotalGroups`, recent-change coverage/error fields, and log sampling/truncation must remain qualifications even when an agent reports no problem.
 
-`podNames` lists the pods the diagnosed workload controls, resolved by controller ownership (pod → ReplicaSet → Deployment, pod → Job → CronJob, direct otherwise), sorted and cut to the first 50 with `podNamesTruncated`. It is the set to scope a follow-up `query_prometheus` to (`pod=~'^(a|b)$'`); a name prefix such as `pod=~'api-.*'` also selects a sibling workload's pods and is never the workload's membership. `pods` counts the same set before the cut.
+Warning events in workload `diagnose` exclude events whose `involvedObject.uid` belongs to an earlier incarnation of the resource or its current Pods. `get_resource(include=events)` applies the same check to the requested resource only. UID-less events cannot establish which incarnation they describe. Core Node events that use the Node name as their UID are treated as UID-less; mirror Pod events may use the static UID from `kubernetes.io/config.mirror`. When Warning events were excluded this way, `warnings` says how many (cached Event objects, not occurrences) and that they may still explain what happened before, so an empty list is not read as nothing ever having failed; it covers only the resource and its current Pod names, and its absence does not prove that no predecessor failed. `get_events` can include events from earlier incarnations. `get_workload_logs`, generic metric scope and the live Pod inventory and OOM evidence of single-workload rightsizing apply the same current membership rule as `diagnose`; each reads it at its own time, and rightsizing recommendations still come from retained ownership history. `get_workload_logs` reports a workload the synced cache does not hold as not found rather than as zero Pods.
 
-For Pod, Deployment, StatefulSet, DaemonSet and Argo Rollout targets, `metrics` is a vitals snapshot captured inside the same call: `cpu` (cores, 5m rate), `memory` (working-set bytes) and `restarts` (counter increase over the trailing 1h, rounded per pod) summed over those pods across `since` (default 1h) at a step that yields at most 60 points per series and keeps the samples within an 8 KiB budget, with sample values rounded to four significant digits. Membership is the pods the workload controls at collection time, so a pod replaced earlier in the window is not covered even though the series spans it; a set larger than 50 is cut to the first 50 by name with `partial: true` and `omittedPods`. The field is omitted when no Prometheus is configured, the workload controls no pods, or the caller cannot `get` the diagnosed resource; when the availability probe does not answer within the 3 s budget the field is present with `error` saying so, rather than vanishing as if no Prometheus existed. When Prometheus is configured but unreachable, the branch exceeds its 3 s budget, or the whole field (queries included) exceeds a 24 KiB backstop, `series` is empty and `error` says why; when one category's query fails, that category is left out and named in `error` while the others stand. A workload whose pods the cluster cache cannot establish — a denied lister, an informer still filling, a namespace it does not watch — is reported as an error rather than charted as empty. Each entry carries the PromQL that produced it (`query`), so an empty `series` with no `error` means the window holds no samples, not that nothing was asked. Flat stretches are compressed: the interior of an evenly spaced run of equal values is dropped, keeping the point that opens it and the point that closes it, so an hour of a workload sitting still costs two points rather than sixty. `observedSamples` reports how many points Prometheus actually returned for that category before compression — a two-point series with `observedSamples: 56` is an hour of agreeing samples, one with `observedSamples: 2` is two lonely ones, and the window and step cannot tell them apart on their own because a range query returns nothing for an evaluation with no data. Values are compared after rounding, so movement too small to reach four significant digits is treated as flat; a run is only compressed when its samples are evenly spaced, so a gap in the series survives. The window ends at collection time and is not a shared observation time for the other sources.
+`podNames` lists the Pods controlled by the observed workload, with API group, kind, name and UID matched throughout controller ownership. Names are sorted and capped at 50; `podNamesTruncated` marks the cap, and `pods` counts the full set. Scope a follow-up `query_prometheus` to the listed names and namespace (`pod=~'^(a|b)$'`); a prefix such as `pod=~'api-.*'` can include sibling workloads.
+
+For Pod, Deployment, StatefulSet, DaemonSet and Argo Rollout targets, `metrics` is a vitals snapshot captured inside the same call: `cpu` (cores, 5m rate), `memory` (working-set bytes) and `restarts` (counter increase over the trailing 1h, rounded per pod) summed over those pods across `since` (default 1h) at a step that yields at most 60 points per series and keeps the samples within an 8 KiB budget, with sample values rounded to four significant digits. The selected names come from the Pods the observed workload controls at collection time. Names no longer in that set are excluded, but earlier incarnations with the same name can contribute samples within the window; a set larger than 50 is cut to the first 50 by name with `partial: true` and `omittedPods`. The field is omitted when no Prometheus is configured, the workload controls no pods, or the caller cannot `get` the diagnosed resource; when the availability probe does not answer within the 3 s budget the field is present with `error` saying so, rather than vanishing as if no Prometheus existed. When Prometheus is configured but unreachable, the branch exceeds its 3 s budget, or the whole field (queries included) exceeds a 24 KiB backstop, `series` is empty and `error` says why; when one category's query fails, that category is left out and named in `error` while the others stand. A workload whose pods the cluster cache cannot establish — a denied lister, an informer still filling, a namespace it does not watch — is reported as an error rather than charted as empty. Each entry carries the PromQL that produced it (`query`), so an empty `series` with no `error` means the window holds no samples, not that nothing was asked. Flat stretches are compressed: the interior of an evenly spaced run of equal values is dropped, keeping the point that opens it and the point that closes it, so an hour of a workload sitting still costs two points rather than sixty. `observedSamples` reports how many points Prometheus actually returned for that category before compression — a two-point series with `observedSamples: 56` is an hour of agreeing samples, one with `observedSamples: 2` is two lonely ones, and the window and step cannot tell them apart on their own because a range query returns nothing for an evaluation with no data. Values are compared after rounding, so movement too small to reach four significant digits is treated as flat; a run is only compressed when its samples are evenly spaced, so a gap in the series survives. The window ends at collection time and is not a shared observation time for the other sources.
 
 Collecting vitals costs one Prometheus round trip on every `diagnose` of a pod-backed workload, and that round trip is the call's critical path: against a healthy backend a diagnose without vitals returns in roughly 130ms and one with them in roughly 650ms, because nothing else `diagnose` does takes long enough to hide it. The queries for the three categories run concurrently with each other and with the rest of the bundle, and the branch is bounded by its own 3s budget, so a slow or unreachable Prometheus delays `diagnose` but never fails it. They are collected by default because an agent that has to ask for resource data can silently never ask, which makes a healthy verdict reached without looking indistinguishable from one where the numbers were fine. If that trade stops being worth it, the whole branch is behind one switch (`DiagnoseMetricsEnabled` in `internal/mcp`): turning it off omits the field and leaves the rest of the bundle and `query_prometheus` untouched, so the data stays reachable on request.
 
@@ -491,13 +493,66 @@ API group is part of a resource's identity. Radar infers the canonical group for
 
 This selects the Argo Rollout workload path; it does not imply that `diagnose` supports arbitrary custom resource shapes.
 
-For `issues`, read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
+Watched, synchronized custom resources that remain deleting appear in `issues`
+as `termination_stuck`, timed from the deletion request. Radar starts no new
+watches for this scan; an empty result does not establish that unwatched kinds
+are healthy. These findings also feed Active Issues and AI resource/search
+summaries, but not dashboard health summaries or `cluster://health`.
+
+Findings start at warning after 10 minutes. At 30 minutes, controller-owned
+finalizers follow this policy:
+
+| Controller evidence | Severity | Next step |
+|---|---|---|
+| Recognized controller is fully ready | Warning | Check logs, permissions and deletion-blocking dependencies. No removal. |
+| Recognized controller is installed but not fully ready | Critical | Repair the controller so it can resume cleanup. No removal. |
+| No recognized controller, or all recognized copies are scaled to zero | Warning | Restore it if it should be running. Removal may be offered conditionally. |
+| Owner or controller state cannot be established | Warning | Identify and check the controller. No removal. |
+
+A fully ready controller for any finalizer keeps a mixed-finalizer finding at
+warning; repair advice for other controllers remains. In-use guards and
+GC-only finalizers can reach critical at 30 minutes. Resolve their dependencies
+rather than removing them; orphaning preserves dependents.
+
+The catalog recognizes Argo CD, Flux, VictoriaMetrics and Karpenter through
+known finalizer keys and workload identities. Name-only guesses for uncataloged
+finalizers never establish ownership. Renamed installs and mirrors can be
+recognized through published images; controller-specific identity rules are in
+[`pkg/finalizers/catalog.go`](../pkg/finalizers/catalog.go).
+
+Ordinary namespaced subjects require namespace access; Secrets also require
+Secret access, and cluster-scoped subjects require list on their exact kind.
+Controller evidence follows namespace access for namespaced reads and exact-kind
+list for cluster-wide searches. A missing or down controller requires complete
+cluster-wide Pod, Deployment,
+StatefulSet and DaemonSet visibility. Incomplete inventory cannot enable removal.
+A negative search is not proof of an uninstall; a controller may run elsewhere
+or use an identity Radar does not recognize.
+
+Only Flux and VictoriaMetrics currently opt into `conditional_cleanup`, separate
+from `action`. It contains `condition`, `agent_guidance`, `caution`, and `removals`
+with one entry per finalizer (`finalizer`, `patch_resource`, `kubectl`). An agent
+may propose removal only after the user confirms intentional uninstall or a
+permanent stop. The UI keeps these commands in a collapsed conditional section.
+
+Each command defaults to a server dry run and tests the object's UID and the
+finalizer at its index. Review the preview before applying; re-read after every
+removal because indices change. Removal bypasses controller cleanup and can
+leave Kubernetes resources, infrastructure or storage behind. Dependents with
+their own finalizers can remain stuck even after the controller is restored;
+older VictoriaMetrics operators place such finalizers on managed objects.
+
+For `issues`, `unchecked_sources` lists the issue sources Radar couldn't check for this answer, so their issues may be missing; don't read the response as healthy for them. Today the only source is `helm` (failed or stuck Helm releases), with reason `read_failed`. Treat any other value as unchecked too. Read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
 
 Resource context distinguishes observed dependency references (`dependencies` and
 `dependents`) from autoscalers (`scaledBy`). A Certificate depends on its issuer;
 it does not scale it. These references carry API group and namespace identity,
 are filtered by the caller's reference permissions, and do not establish that
 a controller has successfully reconciled the dependency.
+
+A KEDA ScaledObject summary's `target` includes its API group, for example `Deployment (apps)/web`. Missing or empty target kind and API version default to `Deployment` and `apps/v1`; a `Rollout` target without an API version is reported as `Rollout (apps)/worker`.
+
+HPA `hpaSummary.metrics` matches current values to targets by source and selector. Targets without a current value have `status: missing`; unmatched observations have `status: status_only`. Core Namespace metric names use the HPA's namespace.
 
 Resource context exposes routing direction through `exposedBy` (upstream
 resources routing to this resource, including entrypoints reached through a
@@ -509,6 +564,28 @@ reference permissions independently. Monitoring uses `monitors` and
 `monitorTargets`; policy selections use `protects`, while non-enforcing staged
 policies use `stagedPolicies` rather than `selectedBy`. Cluster API Clusters
 expose their `healthChecks`; a MachineHealthCheck's Cluster is a dependency.
+
+Resource context's `uses` includes declared PodSpec references from regular,
+init and ephemeral containers, projected volumes, image-pull credentials and
+volume-driver credentials. `referencedBy` on core ConfigMaps, Secrets, PVCs and
+ServiceAccounts includes both workload templates and actual Pods, including
+controlled Pods whose admitted spec may differ from the current template.
+ReplicaSet templates remain separate evidence. References are scoped and
+permission-filtered, with field paths and a bounded visible-only count; they
+describe declarations rather than proving a successful mount or active read.
+Capped results round-robin readable resource kinds, preserving examples of
+workload templates, revision templates and admitted Pods even with many replicas.
+If any consumer inventory fails, `omitted` marks `referencedBy` as `unavailable`.
+References from inventories that loaded remain available; an empty result with
+this omission does not establish that no consumers exist.
+Only named PodSpec declarations are included: implicit workload defaults and
+template-generated PVC names are not inferred. An absent omission does not by
+itself establish cache freshness or complete namespace coverage.
+
+Resource context's `ingressSummary.tlsSecrets` lists named TLS Secrets in the
+Ingress's namespace. A Secret's `referencedBy` includes readable Ingresses with
+the path `spec.tls[].secretName`. Resource-view topology links only observed,
+visible TLS Secrets. Empty Secret names do not resolve controller defaults.
 
 ### Write Tools
 
@@ -541,11 +618,32 @@ See [Strimzi Kafka connector evidence](integrations.md#strimzi-kafka-connectors)
   - **Local binary**: the cache uses your kubeconfig identity, so MCP can only see what `kubectl` can see for that user
   - **In-cluster (auth enabled)**: read tools intersect namespaced reads with the calling user's RBAC-allowed namespaces; cluster-scoped reads (Nodes, PVs, ClusterRoles, cluster-scoped CRDs) are gated per-kind via SubjectAccessReview, so cluster-wide pod visibility doesn't implicitly grant Node read; write tools, exec, and logs are fully impersonated so the apiserver enforces the user's RBAC end-to-end
   - **In-cluster (no auth)**: every MCP caller shares the pod ServiceAccount's view — only deploy this way when MCP isn't exposed beyond a trusted boundary
-- **Audit subject access** — audit findings and counts, including resource summaries, require namespace visibility plus an explicit Secret list grant for Secret subjects or the exact resource list grant for cluster-scoped Crossplane subjects. Namespace-local Secret grants are honored even when cluster-wide Secret listing is denied. The HTTP `raw=true` option bypasses local audit settings, never authorization. Unused ConfigMap/Secret findings additionally require adequate consumer evidence; `configmap-references` / `secret-references` in `missingInputs` indicate excluded unknown evaluations. See [audit evidence under partial access](configuration.md#audit-evidence-under-partial-access).
+- **Audit subject access** — audit findings and counts, including resource summaries, require namespace visibility plus an explicit Secret list grant for Secret subjects or the exact resource list grant for cluster-scoped subjects, including PersistentVolumes. Namespace-local Secret grants are honored even when cluster-wide Secret listing is denied. The HTTP `raw=true` option bypasses local audit settings, never authorization. Unused ConfigMap/Secret and no-consumer PVC findings additionally require adequate reference evidence. `missingInputs` lists only inputs whose absence left a subject unevaluated, such as `configmap-references`, `secret-references` or `pvc-consumers`; a gap that still lets a finding fire is stated in the finding. See [audit evidence under partial access](configuration.md#audit-evidence-under-partial-access) and [storage review checks](configuration.md#storage-review-checks).
 - **Prometheus access has two tiers** — PromQL cannot be namespace-scoped server-side (arbitrary queries can aggregate across namespaces), so with auth enabled the unbounded surfaces — `query_prometheus`, `discover_metrics`, `get_prometheus_rules`, and the REST `/prometheus/query` and `/prometheus/cluster` routes — require a SubjectAccessReview for `list pods` across all namespaces, and the denial says so. The curated REST charts (per-resource, per-namespace, HPA) require only reading the resource they chart. Local no-auth mode is unchanged: every caller shares the kubeconfig identity's view
 - **Secret redaction** — Secret `.data` and `.stringData` are never exposed; only key names are shown
 - **Value redaction** — environment variable values and Helm values returned through MCP are scrubbed for known secret patterns; Helm values also use key-aware redaction for names like `password`, `token`, `privateKey`, and `secretKey`
 - **Log redaction** — pod log output and Helm hook log evidence are scrubbed for secret patterns before being returned
+
+### Node placement context
+
+For a core Kubernetes Node, `get_resource` includes `resourceContext.referencedBy`
+with cached, nonterminal Pods assigned through `spec.nodeName`. Controlled Pods
+and assigned Pending Pods are included; unassigned Pods, Pods on other nodes and
+completed Pods are excluded. References are permission-filtered per namespace,
+sorted deterministically and capped at 20. `total` counts only readable Pods;
+`truncated` marks the item cap. This is observed placement in Radar's cache scope,
+not a cluster-wide workload count or a list of potential scheduling candidates.
+When Relationships already collected placement, context reuses that result.
+Unavailable Pod data, including a missing placement provider, records
+`omitted: [{field: "referencedBy", reason:
+"unavailable"}]`, distinguishing a failed lookup from an observed empty result.
+
+ConfigMap and Secret reverse-reference context uses the same omission when a
+scanned workload or Pod source cannot be read. References from available sources
+remain visible. This projection scans selected built-in workload templates and
+controllerless Pods; absence of an omission does not establish complete consumer
+coverage or prove that a resource is unused. Storage audit uses its own consumer
+inventory and coverage rules.
 
 ### Pod/template differences in issue context
 

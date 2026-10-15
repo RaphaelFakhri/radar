@@ -21,6 +21,24 @@ function verbsText(denials: GitOpsPermission[]): string {
 export function gitOpsDenialMessage(denials: GitOpsPermission[]): string {
   const target = denials.filter(denial => !denial.source)
   const source = denials.filter(denial => denial.source)
+  const sources = new Map<string, GitOpsPermission[]>()
+  for (const denial of source) {
+    const key = [denial.group, denial.resource, denial.namespace, denial.name].join('\u0000')
+    const operations = sources.get(key) ?? []
+    operations.push(denial)
+    sources.set(key, operations)
+  }
+  if (sources.size > 1) {
+    const clauses = [...sources.values()].map(operations => {
+      const object = operations[0]
+      return `${verbsText(operations)} source ${object.kind || object.resource} ${object.namespace}/${object.name}`
+    })
+    if (target.length > 0) {
+      const object = target[0]
+      clauses.unshift(`${verbsText(target)} Flux ${object.kind || object.resource}${object.name ? ` ${object.name}` : ''} in ${object.namespace}`)
+    }
+    return `Your role can't ${clauses.join(' or ')}.`
+  }
   const sourceLabel = source[0] && `${source[0].kind || source[0].resource} ${source[0].namespace}/${source[0].name}`
   if (target.length === 0) {
     return sourceLabel

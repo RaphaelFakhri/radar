@@ -82,6 +82,12 @@ type Summary struct {
 	// ResourceHealthAPIError: the controller's API server was asked and
 	// didn't answer usefully — why, in the user's words.
 	ResourceHealthAPIError string `json:"resourceHealthApiError,omitempty"`
+	// ResourceHealthAPIPending: the host is still connecting to the
+	// controller's API server; ask again shortly.
+	ResourceHealthAPIPending bool `json:"resourceHealthApiPending,omitempty"`
+	// ResourceHealthAPIRetrying: the host couldn't reach the controller's API
+	// server and is retrying; ask again now and then.
+	ResourceHealthAPIRetrying bool `json:"resourceHealthApiRetrying,omitempty"`
 }
 
 // IgnoredDifferencesSummary is the comparison-coverage disclosure for an Argo
@@ -225,6 +231,9 @@ type Change struct {
 	RecentEvents []EventSummary `json:"recentEvents,omitempty"`
 	Partial      bool           `json:"partial"`
 	PartialNote  string         `json:"partialNote,omitempty"`
+	// Dependency marks a Flux source or dependsOn target the root consumes
+	// but doesn't manage.
+	Dependency bool `json:"dependency,omitempty"`
 }
 
 // Drift describes the per-field difference between desired and live spec.
@@ -300,6 +309,12 @@ type Capabilities struct {
 	// the connection is down / token rejected" (offer Reconnect), instead of
 	// showing per-resource diff buttons that would fail.
 	ArgoConfigured bool `json:"argoConfigured,omitempty"`
+	// ArgoConnecting: configured, and the host is still making the first
+	// connection; ask again shortly instead of reporting the diff as down.
+	ArgoConnecting bool `json:"argoConnecting,omitempty"`
+	// ArgoRetrying: configured, the connection failed in a way that may pass
+	// on its own, and the host is retrying; ask again now and then.
+	ArgoRetrying bool `json:"argoRetrying,omitempty"`
 	// RevisionMetadataAvailable reports that the Argo CD revision-metadata
 	// endpoint can resolve Git commit details (author, message, signature) for
 	// this Application's deployed revisions. Same gating as ArgoDiffAvailable:
@@ -392,6 +407,8 @@ func Build(root *unstructured.Unstructured, resourceTree *gitopstree.ResourceTre
 		out.Summary.RemoteDestination = resourceTree.RemoteDestination && (tool != "argocd" || gitops.HasArgoDestination(root))
 		out.Summary.ResourceHealthFromAPI = resourceTree.HealthFromAPI
 		out.Summary.ResourceHealthAPIError = resourceTree.HealthAPIError
+		out.Summary.ResourceHealthAPIPending = resourceTree.HealthAPIPending
+		out.Summary.ResourceHealthAPIRetrying = resourceTree.HealthAPIRetrying
 	}
 	return out
 }
@@ -464,11 +481,10 @@ func buildSummary(root *unstructured.Unstructured, tool string) Summary {
 	if s.LastReconcile == "" {
 		s.LastReconcile = newestConditionTime(root)
 	}
-	if ref, ok := nestedRef(root, "spec", "sourceRef"); ok {
-		s.Source = ref.Kind + "/" + ref.Name
-	} else if ref, ok := nestedRef(root, "spec", "chart", "spec", "sourceRef"); ok {
-		s.Source = ref.Kind + "/" + ref.Name
+	if sources := gitops.FluxSourceReferences(root); len(sources) > 0 {
+		s.Source = sources[0].Kind + "/" + sources[0].Name
 	}
+
 	if suspended, _, _ := unstructured.NestedBool(root.Object, "spec", "suspend"); suspended {
 		s.AutoSyncMode = "Suspended"
 	} else {
@@ -682,21 +698,30 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 	} else {
 		for _, c := range conditions(root) {
 			if c.status == "False" && (c.typ == "Ready" || c.typ == "Healthy" || c.typ == "Released" || c.typ == "TestSuccess") {
-				out = append(out, Issue{Severity: SeverityCritical, Scope: ScopeCondition, Reason: fallback(c.reason, c.typ), Message: fallback(c.message, c.typ+" is false"), Action: diagnose.ActionForFluxReason(c.reason)})
+				issue := Issue{Severity: SeverityCritical, Scope: ScopeCondition, Reason: fallback(c.reason, c.typ), Message: fallback(c.message, c.typ+" is false"), Action: diagnose.ActionForFluxReason(c.reason)}
+				out = append(out, attachFluxBlocker(issue, root, resourceTree))
 			}
 			if c.status == "True" && c.typ == "Stalled" {
-				out = append(out, Issue{Severity: SeverityCritical, Scope: ScopeCondition, Reason: fallback(c.reason, "Stalled"), Message: fallback(c.message, "Reconciliation is stalled"), Action: diagnose.ActionForFluxReason(c.reason)})
+				issue := Issue{Severity: SeverityCritical, Scope: ScopeCondition, Reason: fallback(c.reason, "Stalled"), Message: fallback(c.message, "Reconciliation is stalled"), Action: diagnose.ActionForFluxReason(c.reason)}
+				out = append(out, attachFluxBlocker(issue, root, resourceTree))
 			}
 			if c.status == "True" && c.typ == "Reconciling" {
 				out = append(out, Issue{Severity: SeverityInfo, Scope: ScopeCondition, Reason: fallback(c.reason, "Reconciling"), Message: fallback(c.message, "Reconciliation is in progress")})
 			}
 		}
+		out = append(out, fluxSourceWarnings(resourceTree, out)...)
 	}
 	// The events lead is a pointer, so the count stays next to it; a
 	// per-resource finding of any tier already names a resource, so the
 	// count would only restate it.
-	if resourceTree != nil && resourceTree.Summary.Degraded > 0 && !appHealthy && !degradedResourcesExplained(out) && !hasResourceFinding(out) {
-		out = append(out, Issue{Severity: SeverityWarning, Scope: ScopeTree, Reason: "DegradedResources", Message: fmt.Sprintf("%d managed %s degraded", resourceTree.Summary.Degraded, pluralizeResourcesAre(resourceTree.Summary.Degraded)), Action: "Use the graph or Resources tab to inspect affected resources."})
+	if resourceTree != nil && !appHealthy && !degradedResourcesExplained(out) && !hasResourceFinding(out) {
+		degraded := resourceTree.Summary.Degraded
+		if tool == "fluxcd" {
+			degraded = unexplainedFluxDegraded(resourceTree, out)
+		}
+		if degraded > 0 {
+			out = append(out, Issue{Severity: SeverityWarning, Scope: ScopeTree, Reason: "DegradedResources", Message: fmt.Sprintf("%d managed %s degraded", degraded, pluralizeResourcesAre(degraded)), Action: "Use the graph or Resources tab to inspect affected resources."})
+		}
 	}
 	// Dedup by (scope, reason, message) — Flux carries the same failure
 	// reason in multiple status.conditions slots (Released=False *and*
@@ -938,14 +963,31 @@ func buildChanges(root *unstructured.Unstructured, resourceTree *gitopstree.Reso
 	if resourceTree == nil {
 		return nil
 	}
+	related := map[string]gitopstree.EdgeType{}
+	for _, edge := range resourceTree.Edges {
+		if edge.Type == gitopstree.EdgeSource || edge.Type == gitopstree.EdgeDependsOn {
+			related[edge.Target] = edge.Type
+		}
+	}
 	var out []Change
 	for _, n := range resourceTree.Nodes {
 		if n.Role == gitopstree.RoleRoot || n.Role == gitopstree.RoleGroup {
 			continue
 		}
 		category := categorizeFluxChange(n.Sync, n.Health)
+		if n.Dependency && (n.Sync == "" || n.Sync == "Unknown") && (category == CategorySynced || n.Health == "" || n.Health == "Unknown") {
+			category = CategoryUnknown
+		}
 		partial := true
 		note := "Flux inventory confirms this resource is managed; desired manifest content is not available in Radar yet."
+		if n.Dependency {
+			switch related[n.ID] {
+			case gitopstree.EdgeSource:
+				note = "Flux declares this resource as a source dependency; this reference does not establish ownership or a desired manifest."
+			case gitopstree.EdgeDependsOn:
+				note = "Flux declares this resource as an ordering dependency; this reference does not establish ownership or a desired manifest."
+			}
+		}
 		out = append(out, Change{
 			Ref:         refFromTree(n.Ref),
 			Category:    category,
@@ -955,6 +997,7 @@ func buildChanges(root *unstructured.Unstructured, resourceTree *gitopstree.Reso
 			HasDesired:  false,
 			Partial:     partial,
 			PartialNote: note,
+			Dependency:  n.Dependency,
 		})
 	}
 	sortChanges(out)

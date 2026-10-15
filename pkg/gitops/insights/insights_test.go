@@ -1289,52 +1289,6 @@ func TestDedupeIssues_PerResourceIssuesAreDistinct(t *testing.T) {
 	}
 }
 
-// TestResolveFinalizerOwner pins the static finalizer→controller mapping.
-// New Flux/Argo versions may introduce new keys; this test catches
-// regressions when entries get accidentally renamed.
-func TestResolveFinalizerOwner(t *testing.T) {
-	mkObj := func(api string) *unstructured.Unstructured {
-		return &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": api,
-			"kind":       "Whatever",
-		}}
-	}
-	tests := []struct {
-		name      string
-		finalizer string
-		obj       *unstructured.Unstructured
-		want      string // expected Controller name; "" means nil owner
-	}{
-		{"argo standard", "resources-finalizer.argocd.argoproj.io", mkObj(""), "argocd-application-controller"},
-		{"argo legacy cascade", "foreground-cascade.argocd.argoproj.io", mkObj(""), "argocd-application-controller"},
-		{"flux generic on Kustomization", "finalizers.fluxcd.io", mkObj("kustomize.toolkit.fluxcd.io/v1"), "kustomize-controller"},
-		{"flux generic on HelmRelease", "finalizers.fluxcd.io", mkObj("helm.toolkit.fluxcd.io/v2"), "helm-controller"},
-		{"flux generic on GitRepository", "finalizers.fluxcd.io", mkObj("source.toolkit.fluxcd.io/v1"), "source-controller"},
-		{"flux specific kustomize", "finalizers.kustomize.toolkit.fluxcd.io", mkObj(""), "kustomize-controller"},
-		{"flux specific helm", "finalizers.helm.toolkit.fluxcd.io", mkObj(""), "helm-controller"},
-		{"flux specific source", "finalizers.source.toolkit.fluxcd.io", mkObj(""), "source-controller"},
-		{"unknown finalizer returns nil", "example.com/cleanup", mkObj(""), ""},
-		{"unknown apiVersion for generic flux returns nil", "finalizers.fluxcd.io", mkObj("custom.example.com/v1"), ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ResolveFinalizerOwner(tt.finalizer, tt.obj)
-			if tt.want == "" {
-				if got != nil {
-					t.Fatalf("expected nil owner, got %+v", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("expected owner with controller %q, got nil", tt.want)
-			}
-			if got.Controller != tt.want {
-				t.Fatalf("Controller = %q, want %q", got.Controller, tt.want)
-			}
-		})
-	}
-}
-
 // TestBuildIssues_LifecycleVsCriticalOperation pins what happens when a
 // Terminating resource also has a critical operation failure. The
 // backend severity-stable sort puts critical (rank 0) above alert (rank
@@ -1884,5 +1838,62 @@ func TestBuild_DestinationlessAppIsNotReportedRemote(t *testing.T) {
 	tree := &gitopstree.ResourceTree{RemoteDestination: true}
 	if out := Build(root, tree, nil); out.Summary.RemoteDestination {
 		t.Error("an Application with no destination is invalid, not deploying elsewhere")
+	}
+}
+
+func TestFluxDependencyChangesDoNotClaimInventoryOwnership(t *testing.T) {
+	tree := &gitopstree.ResourceTree{
+		Nodes: []gitopstree.Node{
+			{ID: "source", Dependency: true, Role: gitopstree.RoleDeclared, Ref: gitopstree.ResourceRef{Kind: "OCIRepository", Name: "chart"}},
+			{ID: "ordering", Dependency: true, Role: gitopstree.RoleDeclared, Ref: gitopstree.ResourceRef{Kind: "Kustomization", Name: "base"}},
+			{ID: "managed", Role: gitopstree.RoleDeclared, Ref: gitopstree.ResourceRef{Kind: "Deployment", Name: "app"}},
+		},
+		Edges: []gitopstree.Edge{
+			{Source: "root", Target: "source", Type: gitopstree.EdgeSource},
+			{Source: "root", Target: "ordering", Type: gitopstree.EdgeDependsOn},
+			{Source: "root", Target: "managed", Type: gitopstree.EdgeOwns},
+		},
+	}
+	changes := buildChanges(nil, tree, "fluxcd", nil)
+	if len(changes) != 3 {
+		t.Fatalf("changes = %+v", changes)
+	}
+	for _, change := range changes {
+		if change.Ref.Kind == "Deployment" {
+			if !strings.Contains(change.PartialNote, "inventory confirms") {
+				t.Fatalf("managed note = %s", change.PartialNote)
+			}
+		} else if strings.Contains(change.PartialNote, "inventory confirms") || !strings.Contains(change.PartialNote, "dependency") {
+			t.Fatalf("dependency misrepresented as managed: %+v", change)
+		}
+	}
+}
+
+func TestFluxUnobservedDependenciesDoNotClaimSync(t *testing.T) {
+	tree := &gitopstree.ResourceTree{
+		Nodes: []gitopstree.Node{{ID: "source", Dependency: true, Role: gitopstree.RoleDeclared, Ref: gitopstree.ResourceRef{Group: "source.toolkit.fluxcd.io", Kind: "GitRepository", Namespace: "prod", Name: "absent"}}},
+		Edges: []gitopstree.Edge{{Source: "root", Target: "source", Type: gitopstree.EdgeSource}},
+	}
+	changes := buildChanges(nil, tree, "fluxcd", nil)
+	if len(changes) != 1 || changes[0].Category != CategoryUnknown || changes[0].HasLive {
+		t.Fatalf("unobserved source changes = %+v", changes)
+	}
+	tree.Nodes[0].Ref.UID = "observed-source"
+	tree.Nodes[0].Sync, tree.Nodes[0].Health = "Unknown", "Unknown"
+	changes = buildChanges(nil, tree, "fluxcd", nil)
+	if len(changes) != 1 || changes[0].Category != CategoryUnknown || !changes[0].HasLive {
+		t.Fatalf("unknown source status changes = %+v", changes)
+	}
+}
+
+func TestInlineHelmReleaseSummaryKeepsDeclaredSource(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+		"metadata": map[string]any{"namespace": "team", "name": "app"},
+		"spec":     map[string]any{"chart": map[string]any{"spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}}}},
+		"status":   map[string]any{"helmChart": "team/team-app"},
+	}}
+	if got := buildSummary(root, "fluxcd").Source; got != "HelmRepository/repo" {
+		t.Fatalf("source summary = %q", got)
 	}
 }

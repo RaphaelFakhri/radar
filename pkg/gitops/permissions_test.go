@@ -138,14 +138,45 @@ func TestTerminateReportsPolicyDenialNotFinishedOperation(t *testing.T) {
 	}
 }
 
-func TestFluxSyncSourceUnsupported(t *testing.T) {
-	entry, err := ResolveFluxKind("helmrelease")
-	if err != nil {
-		t.Fatal(err)
-	}
-	obj := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"chartRef": map[string]any{"kind": "OCIRepository", "name": "chart"}}}}
-	_, err = FluxSyncSource(obj, entry, "apps", "demo")
-	if !errors.Is(err, ErrSyncWithSourceUnsupported) || !strings.Contains(err.Error(), "spec.chartRef") {
+func TestFluxSyncSourcesUnsupported(t *testing.T) {
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{}}}
+	_, err := FluxSyncSources(obj, func(FluxSyncTarget) (*unstructured.Unstructured, error) {
+		t.Fatal("read source of an unsupported resource")
+		return nil, nil
+	}, nil)
+	if !errors.Is(err, ErrSyncWithSourceUnsupported) || !strings.Contains(err.Error(), "no source reference") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFluxSyncChainPermissionDenials(t *testing.T) {
+	for _, verb := range []string{"get", "patch"} {
+		for _, target := range []struct{ kind, resource, namespace, name, group string }{
+			{"HelmRelease", "helmreleases", "apps", "demo", "helm.toolkit.fluxcd.io"},
+			{"HelmChart", "helmcharts", "charts", "shared", "source.toolkit.fluxcd.io"},
+			{"HelmRepository", "helmrepositories", "charts", "repo", "source.toolkit.fluxcd.io"},
+		} {
+			t.Run(verb+"/"+target.kind, func(t *testing.T) {
+				hr := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{"chartRef": map[string]any{"kind": "HelmChart", "name": "shared", "namespace": "charts"}}}}
+				chart := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmChart", "metadata": map[string]any{"name": "shared", "namespace": "charts"}, "spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}}}}
+				repo := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmRepository", "metadata": map[string]any{"name": "repo", "namespace": "charts"}}}
+				client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), hr, chart, repo)
+				client.PrependReactor(verb, target.resource, func(ktesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: target.group, Resource: target.resource}, target.name, fmt.Errorf(`User "alice" cannot %s resource "%s"`, verb, target.resource))
+				})
+				_, err := SyncFluxWithSource(context.Background(), client, "helmrelease", "apps", "demo")
+				var denied *PermissionDenied
+				if !apierrors.IsForbidden(err) || !errors.As(err, &denied) || denied.Verb != verb || denied.Group != target.group || denied.Resource != target.resource || denied.Namespace != target.namespace || denied.Name != target.name || denied.Kind != target.kind {
+					t.Fatalf("denial=%+v err=%v", denied, err)
+				}
+				if verb == "get" {
+					for _, action := range client.Actions() {
+						if action.GetVerb() == "patch" {
+							t.Fatalf("patch after denied preflight: %v", action)
+						}
+					}
+				}
+			})
+		}
 	}
 }

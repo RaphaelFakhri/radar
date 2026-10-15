@@ -354,14 +354,14 @@ func TestWriteGitOpsAdmissionDenied(t *testing.T) {
 }
 
 func TestWriteGitOpsSyncWithSourceUnsupported(t *testing.T) {
-	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{"chartRef": map[string]any{"kind": "OCIRepository", "name": "chart"}}}}
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{}}}
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), obj)
 	_, err := gitops.SyncFluxWithSource(context.Background(), client, "helmrelease", "apps", "demo")
 	w := httptest.NewRecorder()
 	(&Server{}).writeGitOpsError(w, err, "flux", "sync-with-source", "apps", "demo")
 	var body map[string]any
 	json.Unmarshal(w.Body.Bytes(), &body)
-	if w.Code != http.StatusBadRequest || !strings.Contains(body["error"].(string), "spec.chartRef") {
+	if w.Code != http.StatusBadRequest || !strings.Contains(body["error"].(string), "no source reference") {
 		t.Fatalf("%d %v", w.Code, body)
 	}
 	for _, action := range client.Actions() {
@@ -376,7 +376,6 @@ func TestGitOpsCapabilitiesUnsupportedSyncWithSource(t *testing.T) {
 		name string
 		obj  *unstructured.Unstructured
 	}{
-		{"chartRef", &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{"chartRef": map[string]any{"kind": "OCIRepository", "name": "chart"}}}}},
 		{"no source", &unstructured.Unstructured{Object: map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{}}}},
 	} {
 		for _, allowed := range []bool{false, true} {
@@ -419,5 +418,101 @@ func TestWriteErrorStructuredFieldsPreserveMessage(t *testing.T) {
 	}
 	if w.Code != http.StatusForbidden || w.Header().Get("Content-Type") != "application/json" || body["error"] != "permission denied" || body["error_code"] != "rbac_denied" || body["verb"] != "patch" {
 		t.Fatalf("response=%d %v %v", w.Code, w.Header(), body)
+	}
+}
+
+func TestGitOpsCapabilitiesHelmSourceChain(t *testing.T) {
+	for _, inline := range []bool{false, true} {
+		for _, deniedResource := range []string{"", "helmcharts", "helmrepositories", "helmreleases", "all", "unreadable chart"} {
+			t.Run(fmt.Sprintf("inline=%t/deny=%s", inline, deniedResource), func(t *testing.T) {
+				spec := map[string]any{"chartRef": map[string]any{"kind": "HelmChart", "name": "shared", "namespace": "charts"}}
+				chartName := "shared"
+				if inline {
+					spec = map[string]any{"chart": map[string]any{"spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo", "namespace": "charts"}}}}
+					chartName = "apps-demo"
+				}
+				hr := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": spec, "status": map[string]any{"helmChart": "stale/old-chart"}}}
+				chart := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmChart", "metadata": map[string]any{"name": chartName, "namespace": "charts"}, "spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}, "suspend": true}}}
+				client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), hr, chart)
+				if deniedResource == "unreadable chart" {
+					client.PrependReactor("get", "helmcharts", func(ktesting.Action) (bool, runtime.Object, error) {
+						return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "source.toolkit.fluxcd.io", Resource: "helmcharts"}, chartName, errors.New(`User "alice" cannot get resource "helmcharts"`))
+					})
+				}
+				reviews := map[authv1.ResourceAttributes]int{}
+				actions, err := gitOpsCapabilities(context.Background(), client, "helmreleases", "apps", "demo", func(_ context.Context, attrs authv1.ResourceAttributes) (bool, error) {
+					reviews[attrs]++
+					return deniedResource != "all" && (attrs.Resource != deniedResource || attrs.Verb != "patch") && deniedResource != "unreadable chart", nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sync := actions["sync-with-source"]
+				if sync.Unsupported || sync.Allowed == nil || *sync.Allowed != (deniedResource == "") {
+					t.Fatalf("sync-with-source=%+v", sync)
+				}
+				want := []gitOpsPermission{}
+				for _, target := range []gitOpsPermission{
+					{Group: "helm.toolkit.fluxcd.io", Resource: "helmreleases", Namespace: "apps", Name: "demo", Kind: "HelmRelease"},
+					{Group: "source.toolkit.fluxcd.io", Resource: "helmcharts", Namespace: "charts", Name: chartName, Kind: "HelmChart", Source: true},
+					{Group: "source.toolkit.fluxcd.io", Resource: "helmrepositories", Namespace: "charts", Name: "repo", Kind: "HelmRepository", Source: true},
+				} {
+					if deniedResource == "unreadable chart" && target.Resource == "helmrepositories" {
+						continue
+					}
+					if (deniedResource == "all" && target.Resource == "helmrepositories") || (deniedResource == "unreadable chart" && target.Resource == "helmcharts") {
+						target.Verb = "get"
+						want = append(want, target)
+					}
+					if deniedResource == "all" || deniedResource == "unreadable chart" || deniedResource == target.Resource {
+						target.Verb = "patch"
+						want = append(want, target)
+					}
+				}
+				if !slices.Equal(sync.Denied, want) {
+					t.Fatalf("denied=%+v, want %+v", sync.Denied, want)
+				}
+				if deniedResource != "unreadable chart" {
+					for _, verb := range []string{"get", "patch"} {
+						attrs := authv1.ResourceAttributes{Verb: verb, Group: "source.toolkit.fluxcd.io", Resource: "helmrepositories", Namespace: "charts", Name: "repo"}
+						if reviews[attrs] != 1 {
+							t.Fatalf("upstream permission missing: %+v; reviews=%v", attrs, reviews)
+						}
+					}
+				}
+				for attrs, count := range reviews {
+					if count != 1 {
+						t.Errorf("reviewed %+v %d times", attrs, count)
+					}
+				}
+				for _, action := range client.Actions() {
+					if action.GetVerb() == "patch" || (action.GetResource().Resource == "helmcharts" && action.(ktesting.GetAction).GetName() != chartName) {
+						t.Fatalf("unexpected action: %+v", action)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestGitOpsCapabilitiesExternalArtifact(t *testing.T) {
+	for _, kind := range []string{"Kustomization", "HelmRelease"} {
+		t.Run(kind, func(t *testing.T) {
+			apiVersion, field := "kustomize.toolkit.fluxcd.io/v1", "sourceRef"
+			if kind == "HelmRelease" {
+				apiVersion, field = "helm.toolkit.fluxcd.io/v2", "chartRef"
+			}
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{field: map[string]any{"kind": "ExternalArtifact", "name": "artifact"}}}}
+			client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), obj)
+			actions, err := gitOpsCapabilities(context.Background(), client, kind, "apps", "demo", func(_ context.Context, attrs authv1.ResourceAttributes) (bool, error) {
+				if attrs.Resource == "externalartifacts" {
+					t.Fatal("ExternalArtifact is not reconciled")
+				}
+				return true, nil
+			})
+			if err != nil || actions["sync-with-source"].Allowed == nil || !*actions["sync-with-source"].Allowed || len(client.Actions()) != 1 {
+				t.Fatalf("actions=%v err=%v API calls=%v", actions, err, client.Actions())
+			}
+		})
 	}
 }

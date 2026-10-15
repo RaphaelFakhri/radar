@@ -642,6 +642,8 @@ export interface ResourceRef {
 
 // Computed relationships for a resource
 export interface Relationships {
+  /** Istio registry domain supplied by the producer; omitted when unknown. */
+  istioServiceDomain?: string
   reflection?: {
     source?: ResourceRef
     sourceResourceVersion?: string
@@ -738,6 +740,7 @@ export interface HPADiagnosis extends HPADiagnosisView {
     name?: string
   }
   bounds: HPABounds
+  /** Spec order keeps source references paired with values; unmatched status entries follow. */
   metrics?: HPAMetricSummary[]
 }
 
@@ -795,6 +798,8 @@ export interface APIResource {
   name: string // Plural name (e.g., "deployments")
   namespaced: boolean
   isCrd: boolean
+  /** Confirmed, readable cached CRD identity; never inferred from isCrd. */
+  definitionName?: string
   featured?: boolean
   verbs: string[]
   observation?: DynamicResourceObservation
@@ -1083,10 +1088,21 @@ export interface UpgradeInfo {
   error?: string
   // Machine-readable source-resolution failure, used to make the Helm drawer
   // explain whether tracking an OCI source can help.
-  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository'
+  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository' | 'ambiguous_source' | 'source_unavailable'
   // True only when the error is a genuinely untracked source (registering a
   // chart source could fix it). Kept for compatibility; prefer sourceIssue.
   untracked?: boolean
+}
+
+export type ChartSourceCandidate =
+  | { type: 'repository'; reference: string; url: string }
+  | { type: 'oci'; reference: string; url?: never }
+
+export interface ChartSourceStatus {
+  recorded?: ChartSourceCandidate
+  configured: boolean
+  available: boolean
+  candidates?: ChartSourceCandidate[]
 }
 
 // Batch upgrade info keyed by "storageNamespace/name".

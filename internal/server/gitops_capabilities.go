@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	authv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -107,6 +108,7 @@ func gitOpsCapabilities(ctx context.Context, client dynamic.Interface, kind, nam
 		if err != nil {
 			return nil, err
 		}
+		entry = entry.Served(k8s.ServedGVR)
 	}
 	on := func(verb string, target gitops.FluxKindEntry, ns, targetName string, source bool) gitOpsPermission {
 		return gitOpsPermission{Verb: verb, Group: target.GVR.Group, Resource: target.GVR.Resource, Namespace: ns, Name: targetName, Kind: target.Kind, Source: source}
@@ -144,16 +146,31 @@ func gitOpsCapabilities(ctx context.Context, client dynamic.Interface, kind, nam
 		if entry.Kind == "Kustomization" || entry.Kind == "HelmRelease" {
 			required["sync-with-source"] = []gitOpsPermission{read, patch}
 			if obj != nil {
-				source, err := gitops.FluxSyncSource(obj, entry, namespace, name)
-				if err != nil {
+				_, err := gitops.FluxSyncSources(obj, func(target gitops.FluxSyncTarget) (*unstructured.Unstructured, error) {
+					read := on("get", target.Entry, target.Namespace, target.Name, true)
+					required["sync-with-source"] = append(required["sync-with-source"], read, on("patch", target.Entry, target.Namespace, target.Name, true))
+					if target.Entry.Kind != "HelmChart" {
+						return nil, nil
+					}
+					// Only a HelmChart needs a read to discover another link. Never
+					// use the shared cache to resolve a source the caller can't read.
+					chart, err := client.Resource(target.Entry.GVR).Namespace(target.Namespace).Get(ctx, target.Name, metav1.GetOptions{})
+					err = gitops.ClassifyPermissionError(err, "get", target.Entry.GVR, target.Namespace, target.Name)
+					var denied *gitops.PermissionDenied
+					if errors.As(err, &denied) {
+						reviewed[read] = outcome{allowed: false}
+						return nil, nil
+					}
+					if err == nil {
+						reviewed[read] = outcome{allowed: true}
+					}
+					return chart, err
+				}, k8s.ServedGVR)
+				if errors.Is(err, gitops.ErrSyncWithSourceUnsupported) {
 					delete(required, "sync-with-source")
 					actions["sync-with-source"] = gitOpsActionCapability{Unsupported: true, Reason: err.Error() + "."}
-				} else {
-					sourceEntry, err := gitops.ResolveFluxKind(source.Kind)
-					if err != nil {
-						return nil, err
-					}
-					required["sync-with-source"] = append(required["sync-with-source"], on("get", sourceEntry, source.Namespace, source.Name, true), on("patch", sourceEntry, source.Namespace, source.Name, true))
+				} else if err != nil {
+					return nil, err
 				}
 			}
 		}

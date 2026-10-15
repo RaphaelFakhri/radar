@@ -14,12 +14,14 @@ import (
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/timeline"
+	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -522,5 +524,60 @@ func TestDashboardClusterScopedProblemsNeedListOnTheKind(t *testing.T) {
 	perms.SetCanI("list", "rbac.authorization.k8s.io", "clusterrolebindings", "", true)
 	if !dangling() {
 		t.Fatal("a caller who can list ClusterRoleBindings lost the problem")
+	}
+}
+
+func TestResourceIssuesCountsWithheldTerminatingClusterCR(t *testing.T) {
+	restoreFixtureCache(t)
+	k8s.ResetResourceCache()
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatal(err)
+	}
+	k8s.ResetTestDynamicState()
+	t.Cleanup(k8s.ResetTestDynamicState)
+	gvr := schema.GroupVersionResource{Group: "widgets.example.com", Version: "v1", Resource: "clusterwidgets"}
+	widget := &unstructured.Unstructured{}
+	widget.SetAPIVersion(gvr.Group + "/" + gvr.Version)
+	widget.SetKind("ClusterWidget")
+	widget.SetName("stuck")
+	widget.SetUID("cluster-widget-uid")
+	widget.SetCreationTimestamp(metav1.NewTime(time.Now().Add(-24 * time.Hour)))
+	widget.SetDeletionTimestamp(&metav1.Time{Time: time.Now().Add(-2 * time.Hour)})
+	widget.SetFinalizers([]string{"widgets.example.com/cleanup"})
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "ClusterWidgetList"}, widget)
+	if err := k8s.InitTestDynamicResourceCache(client, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: "ClusterWidget", Name: gvr.Resource, IsCRD: true, Verbs: []string{"list", "watch"}}}); err != nil {
+		t.Fatal(err)
+	}
+	dc := k8s.GetDynamicResourceCache()
+	if err := dc.EnsureWatching(gvr); err != nil {
+		t.Fatal(err)
+	}
+	if !dc.WaitForSync(gvr, 2*time.Second) {
+		t.Fatal("ClusterWidget cache did not sync")
+	}
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"team"}}
+	perms.SetCanI("get", gvr.Group, gvr.Resource, "", true)
+	perms.SetCanI("list", gvr.Group, gvr.Resource, "", false)
+	s.permCache.Set("pg-user", nil, perms)
+	w := resourceIssuesRequest(t, s, "/api/issues/resource/ClusterWidget/_/stuck?coverage=1&group="+gvr.Group)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response ResourceIssuesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Issues) != 0 || response.Coverage != resourceIssuesCoverageOK || response.Withheld == nil || response.Withheld.Issues != 1 {
+		t.Fatalf("a get-only caller must see one withheld issue, not an all-clear: %s", w.Body.String())
+	}
+	perms.SetCanI("list", gvr.Group, gvr.Resource, "", true)
+	w = resourceIssuesRequest(t, s, "/api/issues/resource/ClusterWidget/_/stuck?coverage=1&group="+gvr.Group)
+	response = ResourceIssuesResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Issues) != 1 || response.Issues[0].Category != issuesapi.CategoryTerminationStuck || response.Withheld != nil {
+		t.Fatalf("the list grant must expose the termination issue: %s", w.Body.String())
 	}
 }

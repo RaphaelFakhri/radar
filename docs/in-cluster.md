@@ -446,13 +446,13 @@ Radar doesn't attach image-pull secrets to debug containers or pods — ephemera
 
 ### CRD Permissions
 
-Radar reads CRDs from many popular tools. Each CRD group can be toggled individually:
+Radar reads CRDs from many popular tools. Common CRD groups can be toggled individually:
 
 ```yaml
 rbac:
   crdGroups:
-    all: false          # Wildcard — grant read access to ALL API groups
-    # Individual groups (all default to true):
+    all: false          # get/list/watch on every API group and resource, including Secrets
+    # Individual groups (default true unless noted):
     argo: true          # argoproj.io
     calico: true        # projectcalico.org, crd.projectcalico.org
     certManager: true   # cert-manager.io
@@ -470,6 +470,10 @@ rbac:
 ```
 
 Calico access is read-only (`get`, `list`, and `watch`) for both API groups and is enabled by default. Set `rbac.crdGroups.calico=false` to disable it. If chart-managed Calico access is disabled, grant only the resources you need through `rbac.additionalRules`; both groups may be required while a cluster exposes modern and legacy Calico APIs.
+
+The chart grants cluster-wide `get/list/watch` on VictoriaMetrics VMAgent, VMCluster and VMSingle whenever it grants cluster-wide Secrets reads: `rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or cloud mode. These objects can carry inline credentials, so they share the same grant decision as Secrets; there is no separate VictoriaMetrics setting. All other VictoriaMetrics kinds are excluded from this rule. See the [chart reference](../deploy/helm/radar/README.md#crd-access) for exclusions and wildcard grants.
+
+Radar decides what it can read at startup, so RBAC changes take effect when the Radar pod restarts. `helm upgrade` rolls the pod whenever `rbac` values change; restart Radar yourself after changing its RBAC outside Helm.
 
 ### Graceful RBAC Degradation
 
@@ -582,8 +586,9 @@ Cleanup runs hourly + once at startup. Confirm it's keeping up via `/api/diagnos
 - The DSN is read from a Secret; never put it in Helm values or `config.json`.
 - Restart the Radar Deployment after rotating the Secret because Kubernetes does not refresh environment variables in running containers.
 - There is no built-in import path from SQLite to PostgreSQL. Migrating historical events is not supported.
-- Radar treats an unreachable PostgreSQL as fatal rather than falling back to an in-memory timeline, so a pod that cannot reach the database starts in disconnected mode and serves errors instead of cluster data. This is deliberate: silently degrading to memory would hand you a timeline that disappears on the next restart, without saying so. It also means the database is on Radar's startup path — treat its availability accordingly, and prefer one that lives close to the cluster.
-- Recovery after a database outage is not automatic. Once PostgreSQL is reachable again, either use the retry action in the UI or restart the pod. Verified TLS modes: `require` and `verify-full`.
+- An unreachable PostgreSQL costs you the timeline, not the rest of Radar. Cluster views keep working, the Timeline page says the database can't be reached and points to the logs, which have the connection error (so does the diagnostics overlay), and Radar reconnects on its own once the database answers. Radar logs when the database becomes unreachable, how soon it tries again, and when it answers again, naming the database's host, port, name and user (never the password) with the driver's error; search the logs for `[timeline]`. Events that occur while it is down are not recorded and are not recovered later; the dropped count in diagnostics shows how many. Radar never falls back to an in-memory timeline, because that looks healthy and then loses everything on the next restart.
+- Because the rest of Radar keeps working and `/api/health` stays healthy, an outage is easy to miss. Alert on Radar's `/metrics` instead: `radar_timeline_available` is `0` while the database can't be reached (checked at most every 5s, with a 2s limit on each check), and `radar_timeline_dropped_events_total{reason="store_unavailable"}` and `{reason="store_failed"}` count the changes lost to it. For example, `radar_timeline_available == 0` held for 5 minutes. The reason itself is not in the metrics, because it names the database host; it is in the Timeline page and the diagnostics overlay.
+- Verified TLS modes: `require` and `verify-full`.
 
 ## Configuration Reference
 
@@ -624,7 +629,7 @@ See [Helm Chart README](../deploy/helm/radar/README.md) for all available values
 | `rbac.viewWebhooks` | Show admission webhook configurations | `false` |
 | `rbac.viewNodeRuntime` | Inspect kubelet metrics and effective configuration for upgrade impact | `false` |
 | `rbac.traffic` | Read Hubble TLS certs | `true` |
-| `rbac.crdGroups.all` | Wildcard CRD read access | `false` |
+| `rbac.crdGroups.all` | `get/list/watch` on every API group and resource, including core Secrets; overrides per-group flags | `false` |
 
 **Response compression:** Radar gzip-compresses HTTP responses by default (streaming endpoints like SSE are excluded). The level defaults to `1` (best speed), since on large clusters peak response size coincides with peak CPU. Set the `RADAR_COMPRESS_LEVEL` environment variable (via the chart's pod `env`) to `0` to disable, or `2`-`9` to trade CPU for smaller bodies on bandwidth-bound deployments.
 

@@ -27,6 +27,9 @@ kubectl port-forward svc/radar 9280:9280 -n radar
 open http://localhost:9280
 ```
 
+Each install or upgrade prints how to open Radar for the values you set. To see
+it again, run `helm get notes radar -n radar`.
+
 ### With Ingress
 
 ```bash
@@ -442,6 +445,11 @@ The Secret is managed independently of Helm, so credential rotation does not req
 
 The chart creates a ClusterRole with read-only access to common Kubernetes resources.
 
+Grant changes take effect when the Radar pod restarts: Radar decides what it can
+read at startup and keeps serving objects it already cached after a grant is
+removed. `helm upgrade` rolls the pod whenever `rbac` values change. If you change
+Radar's RBAC outside Helm, restart Radar.
+
 ### Default Permissions (Core K8s Resources)
 
 Always granted (required for basic functionality):
@@ -484,13 +492,17 @@ It creates a namespace-scoped Role (not a ClusterRole) with `get` + `patch` on t
 
 ### CRD Access
 
-Radar discovers CRDs in your cluster. All common CRD groups are enabled by default. Granting RBAC for CRDs that don't exist has no effect.
+Radar discovers CRDs in your cluster. Common CRD groups are enabled by default. Granting RBAC for CRDs that don't exist has no effect.
 
-**Wildcard option:** Grant read access to ALL CRDs with one setting:
+**Wildcard option:** Grant the collector service account read access to every API group and resource:
 ```bash
 --set rbac.crdGroups.all=true
 ```
-This overrides individual settings below. Simpler but broader — some orgs may not allow this.
+This grants `get/list/watch` on `*/*`, including **core Secrets** and all
+credential-bearing CRDs. It overrides individual flags and resource exclusions,
+including VictoriaMetrics exclusions. Kubernetes RBAC cannot express wildcard
+reads minus Secrets. These are collector permissions; the Cloud caller roles
+retain their finite grants.
 
 | Option | API Groups |
 |--------|------------|
@@ -534,6 +546,19 @@ This overrides individual settings below. Simpler but broader — some orgs may 
 | `trivy` | `aquasecurity.github.io` |
 | `velero` | `velero.io` |
 | `verticalPodAutoscaler` | `autoscaling.k8s.io` |
+
+**VictoriaMetrics collection:** the chart grants Radar cluster-wide `get/list/watch`
+on VMAgent, VMCluster and VMSingle (`vmagents`, `vmclusters`, `vmsingles` in
+`operator.victoriametrics.com`) whenever it grants cluster-wide Secrets reads:
+`rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or
+cloud mode. These objects can carry inline credentials, so they share the same
+grant decision as Secrets. There is no separate VictoriaMetrics setting.
+
+This rule excludes all other VictoriaMetrics operator kinds, including
+VMUser/VMAuth, alerting and scrape/probe resources, and the Logs, Traces,
+Distributed and Anomaly families. `crdGroups.all=true` or adding
+`operator.victoriametrics.com` to `additionalCrdGroups` grants them anyway;
+permissions are additive, and these exclusions are not deny rules.
 
 **Disable groups:** `--set rbac.crdGroups.calico=false`
 

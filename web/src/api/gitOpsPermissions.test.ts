@@ -40,7 +40,7 @@ describe('GitOps action permission states', () => {
     expect(reasons.suspend).toBe("Your role can't read Argo CD Application demo in argocd.")
   })
   it('disables an unsupported action with its reason, outside the role permissions', () => {
-    const reason = "Sync with source doesn't support HelmRelease apps/web because it uses spec.chartRef."
+    const reason = "no source reference found in Kustomization apps/web."
     const data = { actions: { reconcile: { allowed: true }, 'sync-with-source': { unsupported: true, reason } } }
     expect(gitOpsDisabledReasons('supported', data, false)['sync-with-source']).toBe(reason)
     expect(gitOpsDisabledReasons('supported', data, false).reconcile).toBeUndefined()
@@ -108,4 +108,15 @@ describe('GitOps action permission states', () => {
       expect(new GitOpsActionError({ error: message }, 500).message).toBe(message)
     }
   })
+})
+
+it('names every source in a denied HelmChart chain with its own verbs', () => {
+  const reason = gitOpsDisabledReasons('supported', { actions: { 'sync-with-source': {
+    allowed: false, denied: [
+      { ...gitRepository, verb: 'get' },
+      { ...gitRepository, verb: 'patch' },
+      { group: 'source.toolkit.fluxcd.io', resource: 'helmcharts', kind: 'HelmChart', namespace: 'charts', name: 'shared', source: true, verb: 'patch' },
+    ],
+  } } }, false)['sync-with-source']
+  expect(reason).toBe("Your role can't read or patch source GitRepository sources/repo or patch source HelmChart charts/shared.")
 })

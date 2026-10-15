@@ -37,6 +37,8 @@ Click any row to open a detail page with three top-level tabs.
 
 Graph or table sub-modes. The graph shows the application root and every managed resource, with ownership edges (Service → Deployment → ReplicaSet → Pod chains). Filter by kind, sync, health, role, namespace, or search. Group large pod sets to keep the graph scannable; click a group to expand.
 
+For Flux, the graph also shows where the root's content comes from. Its sources sit to the left of the root, with arrows pointing into it: the GitRepository, OCIRepository, Bucket or ExternalArtifact a Kustomization reads, the Kustomizations it `dependsOn`, and for a HelmRelease the chart chain. An inline `spec.chart` release draws release ← generated HelmChart (`status.helmChart`) ← the chart's source (HelmRepository, GitRepository or Bucket), so a chart that fails to pull shows as its own red node; `spec.chartRef` draws the referenced HelmChart, OCIRepository or ExternalArtifact. Source cards show what each kind has: the URL, the fetched revision, or for a HelmChart the requested chart and version. Sources are dependencies, not managed resources: they are counted separately and listed under the **Dependency** role. A source the root also manages, like a bootstrap Kustomization's own GitRepository, stays with the managed resources.
+
 GitOps CRs that are themselves managed (a child Application from an app-of-apps parent, a Kustomization referenced by another Kustomization, ApplicationSet children) render with a small `Argo` or `Flux` tool badge and a `→` chevron — click to open that CR's own GitOps detail page. The child page's breadcrumb shows the lineage `GitOps / parent-ns/parent / child-ns/child`; the parent segment is clickable to navigate back.
 
 ### Changes tab
@@ -44,7 +46,7 @@ GitOps CRs that are themselves managed (a child Application from an app-of-apps 
 Per managed resource, in one row:
 
 - **Sync status** chip (`Synced`, `OutOfSync`, etc.) with the health chip beside it
-- **Field-level drift** computed inline from each resource's `kubectl.kubernetes.io/last-applied-configuration` annotation vs live cluster state. You see actual `spec.X removed / spec.Y added` entries — no `argocd app diff` round-trip needed. Live objects are pulled via a dedicated direct-GET path so the dynamic informer cache doesn't have to retain the annotation cluster-wide
+- **Field-level drift** computed inline from each resource's `kubectl.kubernetes.io/last-applied-configuration` annotation vs live cluster state. You see actual `spec.X removed / spec.Y added` entries — no `argocd app diff` round-trip needed. Live objects are pulled via a dedicated direct-GET path so the dynamic informer cache doesn't have to retain the annotation cluster-wide. When the [Argo CD API integration](#argo-cd-api-integration-deep-diff) is connected, an expanded row instead shows the field list from Argo's own diff above the YAML diff, which also covers Git changes that haven't synced yet. That list shows at most 50 fields and says so when it was cut. It is left out for a resource missing on one side (not yet created, or pending prune), where the YAML diff shows the whole object
 - **Recent events** (5 most recent, namespace-RBAC-filtered) so `ImagePullBackOff`, `FailedScheduling`, webhook denials, PVC pending, etc. show up next to the resource that caused them
 - **Open** button — drops into the standard resource drawer
 
@@ -56,11 +58,12 @@ Operation history with deploy timestamps, the git revision deployed, who initiat
 
 ## Diagnosis pipeline
 
-The Issues band at the top of the detail page surfaces six classes of problems:
+The Issues band at the top of the detail page surfaces seven classes of problems:
 
 - **Operation failures** (Argo) — the parser recognizes 11 patterns (annotation-too-large, label-too-long, hook failure, admission webhook denial, RBAC, conflict, immutable field, schema migration, connectivity, etc.) and rewrites each into a plain-English cause
 - **Stuck-drift loop** — when sync succeeded but the app is *still* OutOfSync with auto-sync on and a recent reconcile, something is mutating resources after each apply. The Issue calls out likely culprits (mutating webhook, sibling controller, schema migration)
 - **Manual drift without auto-sync** — drift exists but auto-sync is disabled. The Issue tells you "nothing will reconcile until you click Sync" so you stop waiting
+- **Flux source and dependency failures** — when Flux reports that a Kustomization or HelmRelease is waiting on its source, chart or `dependsOn` target, the Issue links the object Flux names, so one click opens the failing GitRepository or HelmChart. A source that fails to fetch while the root is still Ready gets a warning: Flux can keep applying the last artifact it fetched, so new commits don't land while the fetch keeps failing
 - **Argo Application conditions** — `ComparisonError` (verify repo creds), `OrphanedResourceWarning`, `InvalidSpecError`, etc. extracted into typed-severity Issues
 - **Per-resource health** — Degraded / Missing children get a critical Issue each, deduped against any operation failure that already named the same resource (no triplicate rendering). See [Per-resource health](#per-resource-health) for where that health comes from
 - **Pending deletion** (lifecycle) — see [Lifecycle awareness](#lifecycle-awareness) below
@@ -90,7 +93,7 @@ Radar treats Terminating as a distinct lifecycle phase that dominates other stat
 - **Detail header**: orange `[Terminating]` chip replaces Sync/Health badges. Source / Revision / Last reconcile / Sync mode metadata swaps to `Pending deletion · Finalizers`, with the original fields behind a "Show pre-deletion metadata" toggle
 - **Action buttons**: Sync, Reconcile, Suspend / Resume, Rollback, Sync-with-source disable with a tooltip explaining why. Refresh and Terminate stay enabled — they're read-only / cleanup-only verbs
 - **Lifecycle banner**: a dedicated orange banner above the Issues band; pre-deletion failures collapse behind a `Pre-deletion issues (N)` disclosure
-- **Severity ramp**: info <5min, warning 5-30min, alert >30min. Past 30min the Issue's Cause line names the controller responsible for the finalizer and reports its pod state ("helm-controller is not running in flux-system")
+- **Severity ramp**: info <5min, warning 5-30min, alert >30min. Past 30min the Issue's Cause line names the controller responsible for the finalizer and reports its pod state ("helm-controller is not running in flux-system"). No matching pods in Argo CD’s conventional namespace is inconclusive: its controller may run elsewhere or outside the cluster (Amazon EKS Capabilities)
 - **Fleet view**: `—` in Sync/Health columns, orange row stripe, `[TERMINATING]` chip in the leftmost slot, `Pending Nago` instead of "Last Sync"
 - **Topology**: orange left-stripe on the root + children; stale sync/health chips suppressed
 - **Cluster Audit**: `stuckTerminating` check across all typed K8s resources with the same 5-minute/30-minute thresholds, presented as Medium/High posture priority
@@ -115,7 +118,7 @@ Radar treats Terminating as a distinct lifecycle phase that dominates other stat
 | Operation | What it does |
 |---|---|
 | **Reconcile** | Annotates `reconcile.fluxcd.io/requestedAt` to trigger a single reconcile |
-| **Sync with source** (Kustomization / HelmRelease) | Reconciles the source first, then the resource itself |
+| **Sync with source** (Kustomization / HelmRelease) | Requests the reconciles `flux reconcile --with-source` makes, upstream first: the source, then the resource. For a HelmRelease the source is its chart (the generated HelmChart of an inline `spec.chart`, named from the current spec, or the HelmChart / OCIRepository named by `spec.chartRef`), and a HelmChart's own source is reconciled before it, so a new chart version in the repository is picked up. A suspended or Terminating object anywhere in that chain fails the request with 409 before anything is written. Unlike the CLI, Radar does not wait for each step to finish. An ExternalArtifact comes from another controller, so only the resource is reconciled. Objects are patched at the API version the cluster serves |
 | **Suspend / Resume** | Toggles `spec.suspend` |
 
 ## Action permissions
@@ -123,13 +126,14 @@ Radar treats Terminating as a distinct lifecycle phase that dominates other stat
 `GET /api/gitops/capabilities/{kind}/{namespace}/{name}` reviews named API operations as the caller. Every action needs `patch`; actions with lifecycle preflights also need `get`.
 Refresh only needs `patch`, and its capability check does not read the target.
 Flux checks read the target as the caller to resolve any source reference. Flux
-Sync with source also needs `get` and `patch` on its referenced source,
-including its namespace. Each action reports `allowed`; a denied action lists
+Sync with source also needs `get` and `patch` on every source it reconciles,
+including each namespace: a HelmRelease using a HelmChart needs both the chart
+and its upstream repository. ExternalArtifact is not read or patched. Each action reports `allowed`; a denied action lists
 every operation the caller lacks in `denied` (`{verb, group, resource, namespace, name, kind, source}`),
 so the grant guidance is complete, and each distinct operation is reviewed once
 per request. A Flux target the caller can't read denies every action on that
 read and still reports a missing `patch`. Sync with source on an object with no source Radar can reconcile
-(a HelmRelease using `spec.chartRef`, a Kustomization without `sourceRef`)
+(for example, a Kustomization without `sourceRef`)
 reports `unsupported` with a reason, and the action itself answers 400.
 Disabled controls explain the denied permission. Controls stay enabled while the first check loads or fails. Failed refetches
 preserve the last known permissions; only a confirmed denial disables an action. Lifecycle restrictions still
@@ -196,8 +200,10 @@ Behavior and guarantees:
   on the target resource's kind) before Argo is consulted. Users can never
   see manifests through Radar's token that Radar's RBAC would deny.
 - **Secret manifests are structurally redacted** — `data`/`stringData` values
-  are masked with per-key changed/unchanged markers on both sides of the
-  diff. There is no un-redact option.
+  are masked per key. A value that is the same on both sides reads
+  `<redacted:unchanged>`; a value that differs reads `<redacted:desired>` and
+  `<redacted:live>`, so a rotated value still shows as a change. There is no
+  un-redact option.
 - Local CLI/Desktop tokens live in `~/.radar/clusters.json` (written `0600`)
   and are never returned by Settings APIs. Unchanged credentials are preserved;
   explicit removal deletes only this context's saved settings and credentials.
@@ -291,7 +297,7 @@ The GitOps tab isn't the only place Argo/Flux ownership matters. Surfaces across
 - **Topology** — clicking an Argo / Flux CR node opens its GitOps detail page directly, not the generic drawer
 - **Timeline** — lane labels for Argo / Flux CRs route to detail
 - **Helm view** — releases installed by Flux's helm-controller (detected via a HelmRelease CR lookup keyed by `<storageNamespace>/<releaseName>`, since Flux's labels live on the *managed* resources, not the release Secret) carry a `Flux` badge in the list and an amber `Managed by Flux · ns/name` link in the drawer, warning that `helm upgrade` would be reverted at the next reconcile
-- **Flux source CR drawers** — `GitRepository`, `HelmRepository`, `OCIRepository`, `Bucket` drawers carry a `Consumed by` panel listing every Kustomization + HelmRelease whose `spec.sourceRef` points at the source. Answers "if I edit this, what gets affected on the next reconcile?" without guessing
+- **Flux source CR drawers** — Related Resources › **Required by** lists the Kustomizations, HelmReleases and HelmCharts that read the source, within Radar's namespace scope. Answers "if I edit this, what gets affected on the next reconcile?"
 
 ## Revert warnings before a write
 

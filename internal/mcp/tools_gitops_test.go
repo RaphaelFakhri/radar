@@ -96,3 +96,26 @@ func TestManageGitOpsReportsAdmissionDenied(t *testing.T) {
 		})
 	}
 }
+
+func TestManageGitOpsReportsUpstreamSourcePermissionDenied(t *testing.T) {
+	for _, verb := range []string{"get", "patch"} {
+		t.Run(verb, func(t *testing.T) {
+			hr := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{"chartRef": map[string]any{"kind": "HelmChart", "name": "shared", "namespace": "charts"}}}}
+			chart := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmChart", "metadata": map[string]any{"name": "shared", "namespace": "charts"}, "spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}}}}
+			repo := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmRepository", "metadata": map[string]any{"name": "repo", "namespace": "charts"}}}
+			gvr := schema.GroupVersionResource{Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases"}
+			dyn := setupMCPDynamicResource(t, gvr, "HelmReleaseList", k8s.APIResource{Group: gvr.Group, Version: gvr.Version, Kind: "HelmRelease", Name: gvr.Resource, Namespaced: true}, hr, chart, repo)
+			dyn.(*dynamicfake.FakeDynamicClient).PrependReactor(verb, "helmrepositories", func(ktesting.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "source.toolkit.fluxcd.io", Resource: "helmrepositories"}, "repo", errors.New(`User "alice" cannot `+verb+` resource "helmrepositories"`))
+			})
+			result, _, err := handleManageGitOps(context.Background(), nil, manageGitOpsInput{Action: "sync-with-source", Tool: "fluxcd", Kind: "helmrelease", Namespace: "apps", Name: "demo"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded := decodeToolResult(t, result)
+			if !result.IsError || decoded["error_code"] != "rbac_denied" || decoded["verb"] != verb || decoded["group"] != "source.toolkit.fluxcd.io" || decoded["resource"] != "helmrepositories" || decoded["kind"] != "HelmRepository" || decoded["namespace"] != "charts" || decoded["name"] != "repo" {
+				t.Fatalf("result=%+v", decoded)
+			}
+		})
+	}
+}
