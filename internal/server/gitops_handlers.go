@@ -23,8 +23,10 @@ import (
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/argoapi"
+	"github.com/skyhook-io/radar/pkg/finalizers"
 	gitopsinsights "github.com/skyhook-io/radar/pkg/gitops/insights"
 	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
+	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/topology"
 )
@@ -95,13 +97,13 @@ func (s *Server) parseGitOpsRequest(w http.ResponseWriter, r *http.Request) (*gi
 // firing /tree + /insights, or the in-flight 2s polling, all share a single
 // build. Topology is a deterministic projection of the informer cache, so
 // the short TTL has no semantic effect.
-func (s *Server) buildGitOpsTree(ctx context.Context, req *gitopsRequest) (*gitopstree.ResourceTree, *unstructured.Unstructured, error) {
+func (s *Server) buildGitOpsTree(r *http.Request, req *gitopsRequest) (*gitopstree.ResourceTree, *unstructured.Unstructured, error) {
 	opts := topology.DefaultBuildOptions()
 	opts.Namespaces = req.AllowedNamespaces
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
 
-	topo, err := s.topoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := s.topoMemo.GetScoped(req.Cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(k8s.NewTopologyResourceProvider(req.Cache)).
 			WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())).
 			Build(opts)
@@ -112,8 +114,11 @@ func (s *Server) buildGitOpsTree(ctx context.Context, req *gitopsRequest) (*gito
 
 	return gitopstree.NewBuilder(req.Cache, topo).
 		WithAllowedNamespaces(req.AllowedNamespaces).
+		WithReadCheck(func(ref gitopstree.ResourceRef) bool {
+			return s.canAccessGitOpsRef(r, req, ref.Group, ref.Kind, ref.Namespace, ref.Name, false)
+		}).
 		WithUnknownKindMatcher(func(err error) bool { return errors.Is(err, k8s.ErrUnknownDynamicKind) }).
-		Build(ctx, req.Kind, req.Namespace, req.Name, req.Group)
+		Build(r.Context(), req.Kind, req.Namespace, req.Name, req.Group)
 }
 
 // writeGitOpsBuildError maps tree-build errors to HTTP status codes.
@@ -164,7 +169,7 @@ func (s *Server) handleGitOpsTree(w http.ResponseWriter, r *http.Request) {
 // it (and its once-per-request issue-engine composition) instead of building
 // a second one.
 func (s *Server) resolveGitOpsTree(r *http.Request, req *gitopsRequest) (*gitopstree.ResourceTree, *unstructured.Unstructured, *insightsResolver, error) {
-	tree, root, err := s.buildGitOpsTree(r.Context(), req)
+	tree, root, err := s.buildGitOpsTree(r, req)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -191,7 +196,9 @@ func (s *Server) resolveGitOpsTree(r *http.Request, req *gitopsRequest) (*gitops
 // Only meaningful in appTree mode. Cached and throttled by the manager. A
 // nil health with a nil error is "no answer and nothing to tell the user":
 // nothing is configured and the install doesn't serve anonymous reads, so
-// the caller falls through to Radar's own read quietly. With the
+// the caller falls through to Radar's own read quietly. While a connection
+// is being made it returns *argoHealthPending (with no notice when nothing
+// is configured), so the page asks again. With the
 // integration configured, the failure comes back in the user's words — they
 // set the connection up for this, and the page should say it isn't
 // delivering rather than silently show Radar's read.
@@ -209,11 +216,35 @@ func (s *Server) argoAPIHealth(ctx context.Context, appNamespace, appName string
 		}
 		return nil, errors.New("this cluster's saved integration settings need review in Settings")
 	}
+	if errors.Is(err, argocd.ErrConnecting) {
+		pending := &argoHealthPending{}
+		if argocd.IsConfigured() {
+			pending.notice = argoAPIHealthFailure(err, argocd.TokenSet())
+		}
+		return nil, pending
+	}
 	if !argocd.IsConfigured() {
 		return nil, nil
 	}
+	if argocd.Retrying() {
+		// Say why it failed, and have the page ask again so it recovers
+		// when the retry connects.
+		return nil, &argoHealthPending{notice: argoAPIHealthFailure(err, argocd.TokenSet()), retrying: true}
+	}
 	return nil, errors.New(argoAPIHealthFailure(err, argocd.TokenSet()))
 }
+
+// argoHealthPending: Radar is connecting to argocd-server in the background,
+// and the page should ask again. notice is what to tell a user who
+// configured the integration (empty when they didn't, since they set
+// nothing up to wait for). retrying: a connect failed and is being retried;
+// notice is that failure, shown as one.
+type argoHealthPending struct {
+	notice   string
+	retrying bool
+}
+
+func (p *argoHealthPending) Error() string { return p.notice }
 
 // argoAPIHealthFailure is the clause the notice appends to "Radar couldn't
 // read Argo's per-resource health from your Argo CD server".
@@ -224,12 +255,16 @@ func argoAPIHealthFailure(err error, tokenSet bool) string {
 			return "the token isn't accepted for this application"
 		}
 		return "it requires a token"
-	case errors.Is(err, argoapi.ErrNotFound):
-		return "it doesn't know this application"
+	case errors.Is(err, argocd.ErrConnecting):
+		return "the connection is still being set up"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "the request timed out"
 	case errors.Is(err, argocd.ErrUnreachable):
+		// Before ErrNotFound: a URL that 404s on /api/version is not an Argo
+		// CD server, which is not the same as Argo not knowing the app.
 		return "the server couldn't be reached"
+	case errors.Is(err, argoapi.ErrNotFound):
+		return "it doesn't know this application"
 	}
 	// Anything else (a 500, a body that didn't parse) is still a configured
 	// connection that didn't deliver; an empty clause would read as nothing
@@ -256,6 +291,16 @@ func overlayArgoAPIHealth(ctx context.Context, tree *gitopstree.ResourceTree, ro
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	health, err := fetch(ctx, root.GetNamespace(), root.GetName())
+	var pending *argoHealthPending
+	if errors.As(err, &pending) {
+		tree.HealthAPIError = pending.notice
+		if pending.retrying {
+			tree.HealthAPIRetrying = true
+		} else {
+			tree.HealthAPIPending = true
+		}
+		return false
+	}
 	if err != nil {
 		tree.HealthAPIError = err.Error()
 		return false
@@ -379,7 +424,7 @@ func (s *Server) handleGitOpsInsights(w http.ResponseWriter, r *http.Request) {
 	}
 	insight := gitopsinsights.Build(root, tree, resolver)
 	insight.Warnings = appendWarnings(insight.Warnings, tree.Warnings...)
-	insight = s.filterGitOpsInsightForUser(r, req, insight)
+	insight = s.filterGitOpsInsightForUser(r, req, insight, tree)
 	// The resource-diff / revision-metadata affordances pull manifests from the
 	// Argo CD API server. Offer them only for Argo roots where a diff can
 	// actually be served — gate on the app's managed-resources call (the diff's
@@ -407,6 +452,10 @@ func (s *Server) handleGitOpsInsights(w http.ResponseWriter, r *http.Request) {
 				insight.Capabilities.ArgoDiffAvailable = isInClusterDestination(root)
 			}
 		}
+		// Read after the managed-resources call: a failure there may just
+		// have started a re-check the page should wait out.
+		insight.Capabilities.ArgoConnecting = argocd.Connecting()
+		insight.Capabilities.ArgoRetrying = insight.Capabilities.ArgoConfigured && argocd.Retrying()
 		if insight.Capabilities.ArgoConfigured {
 			// Best-effort: surface a broken Git repo connection (a top hidden cause
 			// of stuck syncs) as an Issue. Never fails insights if the Argo call errors.
@@ -670,7 +719,7 @@ func (s *Server) filterGitOpsTreeForUser(r *http.Request, req *gitopsRequest, tr
 	}
 	keep := make(map[string]bool, len(tree.Nodes))
 	for _, node := range tree.Nodes {
-		allowed := node.Role == gitopstree.RoleRoot || s.canAccessGitOpsRef(r, req, node.Ref.Group, node.Ref.Kind, node.Ref.Namespace, node.Ref.Name, false)
+		allowed := node.Role == gitopstree.RoleRoot || node.Remote && node.Role == gitopstree.RoleDeclared || s.canAccessGitOpsRef(r, req, node.Ref.Group, node.Ref.Kind, node.Ref.Namespace, node.Ref.Name, false)
 		keep[node.ID] = allowed
 	}
 	filteredNodes := make([]gitopstree.Node, 0, len(tree.Nodes))
@@ -711,11 +760,22 @@ func (s *Server) filterGitOpsTreeForUser(r *http.Request, req *gitopsRequest, tr
 	return &out
 }
 
-func (s *Server) filterGitOpsInsightForUser(r *http.Request, req *gitopsRequest, insight gitopsinsights.Insight) gitopsinsights.Insight {
+func (s *Server) filterGitOpsInsightForUser(r *http.Request, req *gitopsRequest, insight gitopsinsights.Insight, tree *gitopstree.ResourceTree) gitopsinsights.Insight {
 	if auth.UserFromContext(r.Context()) == nil {
 		return insight
 	}
 	changed := false
+	remoteDeclarations := make(map[gitopsinsights.Ref]bool)
+	if tree != nil {
+		for _, node := range tree.Nodes {
+			if node.Remote && node.Role == gitopstree.RoleDeclared {
+				remoteDeclarations[gitopsinsights.Ref{Group: node.Ref.Group, Kind: node.Ref.Kind, Namespace: node.Ref.Namespace, Name: node.Ref.Name}] = true
+			}
+		}
+	}
+	canAccess := func(ref gitopsinsights.Ref) bool {
+		return remoteDeclarations[ref] || s.canAccessGitOpsRef(r, req, ref.Group, ref.Kind, ref.Namespace, ref.Name, false)
+	}
 
 	// Allocate fresh slices rather than the `[:0]` in-place pattern.
 	// `insight` is value-received, so its slice *headers* are local copies,
@@ -725,7 +785,7 @@ func (s *Server) filterGitOpsInsightForUser(r *http.Request, req *gitopsRequest,
 	// cost is negligible compared to the JSON encode that follows.
 	changes := make([]gitopsinsights.Change, 0, len(insight.Changes))
 	for _, change := range insight.Changes {
-		if s.canAccessGitOpsRef(r, req, change.Ref.Group, change.Ref.Kind, change.Ref.Namespace, change.Ref.Name, false) {
+		if canAccess(change.Ref) {
 			changes = append(changes, change)
 		} else {
 			changed = true
@@ -735,13 +795,13 @@ func (s *Server) filterGitOpsInsightForUser(r *http.Request, req *gitopsRequest,
 
 	plan := make([]gitopsinsights.PlanItem, 0, len(insight.Plan))
 	for _, item := range insight.Plan {
-		if !s.canAccessGitOpsRef(r, req, item.Ref.Group, item.Ref.Kind, item.Ref.Namespace, item.Ref.Name, false) {
+		if !canAccess(item.Ref) {
 			changed = true
 			continue
 		}
 		blockedBy := make([]gitopsinsights.Ref, 0, len(item.BlockedBy))
 		for _, ref := range item.BlockedBy {
-			if s.canAccessGitOpsRef(r, req, ref.Group, ref.Kind, ref.Namespace, ref.Name, false) {
+			if canAccess(ref) {
 				blockedBy = append(blockedBy, ref)
 			} else {
 				changed = true
@@ -760,10 +820,20 @@ func (s *Server) filterGitOpsInsightForUser(r *http.Request, req *gitopsRequest,
 		}
 		refs := make([]gitopsinsights.Ref, 0, len(issue.Refs))
 		for _, ref := range issue.Refs {
-			if s.canAccessGitOpsRef(r, req, ref.Group, ref.Kind, ref.Namespace, ref.Name, false) {
+			if canAccess(ref) {
 				refs = append(refs, ref)
 			} else {
 				changed = true
+			}
+		}
+		if len(refs) < len(issue.Refs) && gitopsinsights.IsFluxBlockerCondition(issue) {
+			// The root's own condition stays; the cause was quoted from the
+			// object the caller can't read.
+			issue.Cause = ""
+			if len(refs) == 0 {
+				issue.Refs = nil
+				issues = append(issues, issue)
+				continue
 			}
 		}
 		if len(refs) == 0 {
@@ -818,7 +888,17 @@ func (s *Server) canAccessGitOpsRef(r *http.Request, req *gitopsRequest, group, 
 		return !noNamespaceAccess(allowed)
 	}
 	if namespace != "" {
-		return namespaceAllowedForGitOps(req.AllowedNamespaces, namespace)
+		if !namespaceAllowedForGitOps(req.AllowedNamespaces, namespace) {
+			return false
+		}
+		if kind == "PodGroup" && group == "" {
+			return s.canRead(r, "", "pods", namespace, "get")
+		}
+		gvrGroup, resource := k8s.LookupResourceGVR(kind, group)
+		// Unknown discovery is not a permission denial. The dynamic getter
+		// returns unknown-kind rather than local metadata for an unserved kind,
+		// and remote inventory declarations must remain available for Hub merge.
+		return resource == "" || s.canRead(r, gvrGroup, resource, namespace, "get")
 	}
 	if clusterScoped, gvrGroup, gvrResource := k8s.ClassifyKindScope(kind, group); clusterScoped {
 		return s.canRead(r, gvrGroup, gvrResource, "", "list")
@@ -1168,7 +1248,7 @@ func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
 // FinalizerOwnerStatus implements gitopsinsights.Resolver.
 //
 // Looks up the controller responsible for a finalizer (via the static
-// catalog in pkg/gitops/insights/finalizers.go) and reports the
+// catalog in pkg/finalizers/catalog.go) and reports the
 // aggregate health of its pods in the install namespace. Returns ""
 // when the finalizer isn't recognized, the install namespace is empty
 // (e.g. operator deployed Flux into a non-default namespace), or the
@@ -1183,14 +1263,17 @@ func (r *insightsResolver) composeIssues() ([]issues.Issue, []issues.Issue) {
 //	"source-controller is degraded (1/2 pods ready)"
 //	"helm-controller is not running in namespace flux-system (controller may not be installed, or runs under a different namespace)"
 func (r *insightsResolver) FinalizerOwnerStatus(finalizer string, root *unstructured.Unstructured) string {
-	owner := gitopsinsights.ResolveFinalizerOwner(finalizer, root)
-	if owner == nil {
+	owner := finalizers.ResolveOwner(finalizer, root)
+	if owner == nil || owner.Namespace == "" {
 		return ""
 	}
 	if r.cache == nil || r.cache.Pods() == nil {
 		return ""
 	}
 	if !r.namespaceAllowed(owner.Namespace) {
+		return ""
+	}
+	if r.canReadEvidence != nil && !r.canReadEvidence(issues.EvidenceRead{Resource: "pods", Namespace: owner.Namespace, Verb: "list"}) {
 		return ""
 	}
 	if r.canAccess != nil && !r.canAccess("", "Pod", owner.Namespace, "") {
@@ -1212,38 +1295,12 @@ func (r *insightsResolver) FinalizerOwnerStatus(finalizer string, root *unstruct
 		// isn't installed (broken finalizer-only state). Either way,
 		// the user needs to know "the controller isn't where I expect"
 		// to start debugging.
+		if owner.OffClusterOfferings != "" {
+			return owner.Controller + " has no pods in namespace " + owner.Namespace + " (it may run outside the cluster under " + owner.OffClusterOfferings + ", not be installed, or run under a different namespace)"
+		}
 		return owner.Controller + " is not running in namespace " + owner.Namespace + " (controller may not be installed, or runs under a different namespace)"
 	}
-	return summarizeControllerHealth(owner.Controller, matched)
-}
-
-// summarizeControllerHealth distills a slice of controller pods into a
-// short, operator-readable status verb. Aggregates over multiple
-// replicas (Argo's controller is typically deployed as a 2-replica
-// StatefulSet for HA): if any pod is in CrashLoopBackOff or Error, that
-// fact dominates the status. If all pods are Ready, "healthy". Anything
-// in between is "degraded" with a count.
-func summarizeControllerHealth(controller string, pods []*corev1.Pod) string {
-	health := summarizeControllerPods(pods)
-	switch {
-	case health.Crashing > 0:
-		return fmt.Sprintf("%s is %s (%d/%d pods)", controller, health.CrashReason, health.Crashing, health.Total)
-	case health.Ready == health.Total && health.Total > 0:
-		// All pods Ready — if the resource is *still* stuck deleting
-		// despite a healthy controller, it's a different problem (RBAC,
-		// network, broken finalizer logic). Surface the healthy state
-		// so the operator knows to dig into the controller's logs
-		// rather than its lifecycle.
-		suffix := "s"
-		if health.Ready == 1 {
-			suffix = ""
-		}
-		return fmt.Sprintf("%s is healthy (%d pod%s ready)", controller, health.Ready, suffix)
-	case health.Pending > 0:
-		return fmt.Sprintf("%s is pending start (%d/%d pods Pending)", controller, health.Pending, health.Total)
-	default:
-		return fmt.Sprintf("%s is degraded (%d/%d pods ready)", controller, health.Ready, health.Total)
-	}
+	return health.SummarizeControllerHealth(owner.Controller, matched)
 }
 
 func (r *insightsResolver) namespaceAllowed(namespace string) bool {

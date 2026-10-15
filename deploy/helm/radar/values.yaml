@@ -66,6 +66,7 @@ serviceAccount:
 
 # RBAC configuration
 rbac:
+  # Radar reads its grants at startup, so changing any rbac value rolls the pod.
   # Create ClusterRole and ClusterRoleBinding
   create: true
   # Additional rules to add to the ClusterRole
@@ -93,6 +94,7 @@ rbac:
   # no-auth installs. The grant is cluster-wide get/list/watch on all Secrets, and
   # setting this to false does not remove it in those modes: read the rendered
   # ClusterRole.
+  # Also grants VictoriaMetrics VMAgent, VMCluster and VMSingle reads (inline credentials).
   secrets: false
 
   # Allow reading RBAC objects (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings)
@@ -157,11 +159,12 @@ rbac:
   # metrics panels. Safe to enable — read-only on the aggregated metrics API.
   metrics: true
 
-  # CRD access - all common groups enabled by default
+  # CRD access - common groups enabled by default
   # Granting RBAC for CRDs that don't exist has no effect.
   crdGroups:
-    # Set to true to grant read access to ALL CRDs (overrides individual settings below)
-    # Simpler but broader permissions - some orgs may not allow this
+    # Grants get/list/watch on */*: every API group and resource, including
+    # core Secrets and credential-bearing CRDs. Overrides individual flags
+    # and resource exclusions below; Kubernetes RBAC cannot subtract Secrets.
     all: false
 
     apiRegistration: true   # apiregistration.k8s.io (APIService health for aggregated APIs)

@@ -2007,8 +2007,9 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 
 type apiResourceResponse struct {
 	k8score.APIResource
-	Featured    bool                                `json:"featured,omitempty"`
-	Observation *k8score.DynamicResourceObservation `json:"observation,omitempty"`
+	DefinitionName string                              `json:"definitionName,omitempty"`
+	Featured       bool                                `json:"featured,omitempty"`
+	Observation    *k8score.DynamicResourceObservation `json:"observation,omitempty"`
 }
 
 func filterDynamicObservationNamespaces(observation k8score.DynamicResourceObservation, allowed []string) k8score.DynamicResourceObservation {
@@ -2053,14 +2054,32 @@ func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]apiResourceResponse, 0, len(resources))
 	dynamicCache := k8s.GetDynamicResourceCache()
+	// IsCRD is a discovery/category heuristic (also true for aggregated APIs).
+	// Definition links require an observed CRD, read under the existing list
+	// permission. Use only watched inventory: discovery never starts per-kind
+	// object reads or a new CRD informer for this optional navigation metadata.
+	definitionNames := make(map[string]string)
+	canReadDefinitions := dynamicCache != nil && s.canRead(r, crdGVR.Group, crdGVR.Resource, "", "list") && s.canRead(r, crdGVR.Group, crdGVR.Resource, "", "get")
+	if canReadDefinitions {
+		if definitions, err := dynamicCache.ListWatchedReadOnly(crdGVR); err == nil {
+			for _, definition := range definitions {
+				group, _, _ := unstructured.NestedString(definition.Object, "spec", "group")
+				kind, _, _ := unstructured.NestedString(definition.Object, "spec", "names", "kind")
+				plural, _, _ := unstructured.NestedString(definition.Object, "spec", "names", "plural")
+				definitionNames[group+"/"+kind+"/"+plural] = definition.GetName()
+			}
+		}
+	}
 	var visibleNamespaces []string
 	visibleNamespacesResolved := false
 	for _, resource := range resources {
 		response := apiResourceResponse{
-			APIResource: resource,
-			Featured:    isFeaturedKubernetesAPI(resource.Group, resource.Kind),
+			APIResource:    resource,
+			Featured:       isFeaturedKubernetesAPI(resource.Group, resource.Kind),
+			DefinitionName: definitionNames[resource.Group+"/"+resource.Kind+"/"+resource.Name],
 		}
-		if resource.IsCRD && dynamicCache != nil {
+		isDefinitionsInventory := resource.Group == crdGVR.Group && resource.Name == crdGVR.Resource
+		if dynamicCache != nil && ((resource.IsCRD && !isDefinitionsInventory) || (isDefinitionsInventory && canReadDefinitions)) {
 			observation := dynamicCache.Observation(schema.GroupVersionResource{
 				Group:    resource.Group,
 				Version:  resource.Version,
@@ -2077,6 +2096,11 @@ func (s *Server) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, response)
 	}
+	if discovery != k8s.GetResourceDiscovery() {
+		s.writeError(w, http.StatusServiceUnavailable, "Resource discovery changed, please retry shortly")
+		return
+	}
+
 	s.writeJSON(w, result)
 }
 
@@ -2401,8 +2425,14 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, err = listPerNs(
-			func() (any, error) { return lister.List(labels.Everything()) },
-			func(ns string) (any, error) { return lister.Secrets(ns).List(labels.Everything()) },
+			func() (any, error) {
+				items, err := lister.List(labels.Everything())
+				return k8s.ServableSecrets(items), err
+			},
+			func(ns string) (any, error) {
+				items, err := lister.Secrets(ns).List(labels.Everything())
+				return k8s.ServableSecrets(items), err
+			},
 		)
 	case "events":
 		if cache.Events() == nil {
@@ -3022,7 +3052,26 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 			notReadyOrForbiddenGet("secrets")
 			return
 		}
-		resource, err = lister.Secrets(namespace).Get(name)
+		var cached *corev1.Secret
+		cached, err = lister.Secrets(namespace).Get(name)
+		if err == nil && k8score.IsHelmReleaseSecret(cached) {
+			// The cache holds digests in place of Helm release Secret values.
+			live, status, liveErr := s.getLiveSecret(r, namespace, name)
+			if liveErr != nil {
+				s.writeError(w, status, liveErr.Error())
+				return
+			}
+			if live.UID != cached.UID {
+				// Not the object the cache answered for: recreated since, or
+				// the cluster context switched mid-request. Retryable.
+				s.writeErrorCode(w, http.StatusServiceUnavailable, "cluster_connecting",
+					fmt.Sprintf("Secret %s/%s changed while it was being read, please retry", namespace, name))
+				return
+			}
+			resource = live
+		} else {
+			resource = cached
+		}
 	case "events", "event":
 		if cache.Events() == nil {
 			notReadyOrForbiddenGet("events")
@@ -3206,6 +3255,30 @@ func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, response)
+}
+
+// getLiveSecret reads one Secret from the API server as the caller. It
+// returns the HTTP status to answer with when the read fails.
+func (s *Server) getLiveSecret(r *http.Request, namespace, name string) (*corev1.Secret, int, error) {
+	client := s.getClientForRequest(r)
+	if client == nil {
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("cluster client not available")
+	}
+	secret, err := client.CoreV1().Secrets(namespace).Get(r.Context(), name, metav1.GetOptions{})
+	switch {
+	case err == nil:
+		// Same shape the cache serves for every other Secret.
+		secret.ManagedFields = nil
+		delete(secret.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		return secret, http.StatusOK, nil
+	case apierrors.IsNotFound(err):
+		return nil, http.StatusNotFound, err
+	case apierrors.IsForbidden(err):
+		return nil, http.StatusForbidden, err
+	default:
+		log.Printf("[resources] Failed to read Secret %s/%s: %v", namespace, name, err)
+		return nil, http.StatusInternalServerError, fmt.Errorf("failed to read Secret %s/%s: %w", namespace, name, err)
+	}
 }
 
 // handlePodMetrics fetches metrics for a specific pod from the metrics.k8s.io API
@@ -3608,8 +3681,8 @@ func (s *Server) handleTopPods(w http.ResponseWriter, r *http.Request) {
 		entry.MemoryLimit = totals.MemoryLimit
 
 		// Per-container breakdown drives the table's per-container display.
-		// Nil for single-running-container pods, where the client falls back
-		// to the pod-level sums above.
+		// Nil for single-running-container pods without a pod-level budget,
+		// where the client falls back to the pod-level sums above.
 		entry.Containers = k8s.BuildPodContainerMetrics(pod, containerUsage[key])
 
 		result = append(result, entry)
@@ -3879,7 +3952,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 	store := timeline.GetStore()
 	if store == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
+		s.writeTimelineStoreUnavailable(w)
 		return
 	}
 
@@ -3950,7 +4023,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 	events, err := store.Query(r.Context(), opts)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeTimelineQueryError(w, err)
 		return
 	}
 	// Cursor progress must be derived from the page BEFORE the RBAC filter
@@ -5094,6 +5167,56 @@ func (s *Server) writeErrorCode(w http.ResponseWriter, status int, code, message
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]string{"error": message, "error_code": code}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
+}
+
+// writeTimelineStoreUnavailable answers a timeline read that found no store.
+func (s *Server) writeTimelineStoreUnavailable(w http.ResponseWriter) {
+	if reason := timeline.TimelineUnavailableReason(); reason != "" {
+		s.writeTimelineDatabaseUnreachable(w, reason)
+		return
+	}
+	s.writeError(w, http.StatusServiceUnavailable, "Timeline store not available")
+}
+
+// writeTimelineQueryError answers a timeline query that failed.
+func (s *Server) writeTimelineQueryError(w http.ResponseWriter, err error) {
+	if timeline.DatabaseUnreachable(err) {
+		s.writeTimelineDatabaseUnreachable(w, err.Error())
+		return
+	}
+	// A timeout alone can't tell a database that stopped answering from a slow
+	// query. A short ping can: only the first fails it too.
+	if errors.Is(err, context.DeadlineExceeded) {
+		ctx, cancel := context.WithTimeout(context.Background(), timelineQueryPingTimeout)
+		pingErr := timeline.Unavailable(ctx)
+		cancel()
+		if pingErr != nil {
+			s.writeTimelineDatabaseUnreachable(w, pingErr.Error())
+			return
+		}
+	}
+	s.writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+// timelineQueryPingTimeout bounds the check a timed-out timeline query makes
+// before answering, so the reply is not held much past the timeout itself.
+const timelineQueryPingTimeout = 2 * time.Second
+
+// writeTimelineDatabaseUnreachable is the one answer for a PostgreSQL database
+// Radar can't connect to, whether it never answered at startup or went away later,
+// so the page says the same thing in both cases. `detail` is the driver's error
+// with the password already redacted, for the operator to act on.
+func (s *Server) writeTimelineDatabaseUnreachable(w http.ResponseWriter, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	payload := map[string]string{
+		"error":      "Timeline history is unavailable because Radar can't connect to its PostgreSQL database. Radar keeps retrying. Its logs have the details: search them for [timeline].",
+		"error_code": "timeline_database_unreachable",
+		"detail":     detail,
+	}
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		log.Printf("Failed to encode error response: %v", err)
 	}
 }

@@ -42,6 +42,8 @@ import type {
   ResourceDiff,
   UpgradeInfo,
   BatchUpgradeInfo,
+  ChartSourceCandidate,
+  ChartSourceStatus,
   ValuesDiff,
   ValuesPreviewResponse,
   HelmRepository,
@@ -297,6 +299,20 @@ export function isKindSyncFailed(error: unknown): boolean {
   );
 }
 
+// timelineDatabaseError returns the driver's error when a timeline read failed
+// because Radar can't connect to its PostgreSQL database, and null for any other
+// failure. The server redacts the password before it sends the error.
+export function timelineDatabaseError(error: unknown): string | null {
+  if (
+    !(error instanceof ApiError) ||
+    error.status !== 503 ||
+    error.data?.error_code !== "timeline_database_unreachable"
+  )
+    return null;
+  const detail = error.data.detail;
+  return typeof detail === "string" ? detail : "";
+}
+
 // SyncKindState / SyncStatusSnapshot mirror k8score's SyncSnapshot — attached
 // to the connection-status payload while the initial informer sync is running.
 export interface SyncKindState {
@@ -525,6 +541,10 @@ export type { AuditFinding, ResourceGroup, CheckMeta, Check };
 
 export interface AuditResponse {
   missingInputs?: string[];
+  // Absent on a Radar that predates the per-resource opt-out.
+  ignoreChecksAnnotation?: string;
+  // checkID → namespace → resources whose findings the annotation hid.
+  annotationIgnoredByNamespace?: Record<string, Record<string, number>>;
   summary: DashboardAudit;
   findings: AuditFinding[];
   groups: ResourceGroup[];
@@ -739,6 +759,10 @@ export interface IssuesResponse {
   // state 'degraded' means core workload reads are denied, so an empty list may
   // mean "can't see" rather than "nothing broken" — the UI must say so.
   visibility?: { state?: string; impact?: string };
+  // Issue sources Radar couldn't check, so their issues may be missing: an
+  // empty list is not an all-clear. Today only "helm"; a newer Radar may send
+  // others. Absent when every source was checked, and from older Radars.
+  unchecked_sources?: { source: string; reason: string }[];
 }
 
 export function useIssues(namespaces: string[] = [], enabled = true) {
@@ -2493,6 +2517,11 @@ export function useApplicationHistory(
   });
 }
 
+// How often a page asks again while Radar is still connecting to argocd-server,
+// and while it retries a connect that failed.
+const ARGO_CONNECTING_POLL_MS = 2000;
+const ARGO_RETRYING_POLL_MS = 10_000;
+
 export function useGitOpsTree(
   kind: string,
   namespace: string,
@@ -2515,6 +2544,14 @@ export function useGitOpsTree(
       ),
     enabled: Boolean(kind && name) && (options?.enabled ?? true),
     staleTime: 5000,
+    // Radar answers at once while it connects to argocd-server; ask again
+    // until Argo's per-resource health is in.
+    refetchInterval: (query) =>
+      query.state.data?.healthApiPending
+        ? ARGO_CONNECTING_POLL_MS
+        : query.state.data?.healthApiRetrying
+          ? ARGO_RETRYING_POLL_MS
+          : false,
   });
 }
 
@@ -2547,8 +2584,15 @@ export function useGitOpsInsights(
     staleTime: 5000,
     refetchInterval: (query) => {
       const phase = query.state.data?.summary?.operationPhase;
-      return phase === "Running" || phase === "Terminating"
-        ? INSIGHTS_RUNNING_POLL_MS
+      if (phase === "Running" || phase === "Terminating") {
+        return INSIGHTS_RUNNING_POLL_MS;
+      }
+      const summary = query.state.data?.summary;
+      if (summary?.resourceHealthApiPending || query.state.data?.capabilities?.argoConnecting) {
+        return ARGO_CONNECTING_POLL_MS;
+      }
+      return summary?.resourceHealthApiRetrying || query.state.data?.capabilities?.argoRetrying
+        ? ARGO_RETRYING_POLL_MS
         : false;
     },
   });
@@ -3724,6 +3768,8 @@ export interface ArgoStatus {
   // client is live. The two differ right after a restart (configured, reconnecting).
   configured: boolean;
   connected: boolean;
+  // Not connected yet, and a connection is being made.
+  connecting?: boolean;
   // Connected without a token: the install serves reads to everyone, so
   // there is nothing to add in Settings.
   anonymous?: boolean;
@@ -3736,8 +3782,12 @@ export function useArgoStatus(enabled = true) {
     queryKey: ["argocd-status"],
     queryFn: () => fetchJSON("/integrations/argocd/status"),
     enabled,
-    staleTime: 30000,
-    refetchInterval: 60000,
+    // Cheap to ask (it never waits on Argo CD): reopening Settings asks
+    // afresh, so "Connecting…" shows only while it's true.
+    staleTime: 0,
+    // While Radar connects, ask again soon so "Connecting…" doesn't linger.
+    refetchInterval: (query) =>
+      query.state.data?.connecting ? ARGO_CONNECTING_POLL_MS : 60000,
   });
 }
 
@@ -4611,6 +4661,7 @@ export interface ApplyResourceResult {
   namespace: string;
   kind: string;
   apiVersion: string;
+  uid?: string;
   created: boolean;
 }
 
@@ -6198,11 +6249,79 @@ export function useHelmOCISources() {
   });
 }
 
+export function useHelmSourceStatus(namespace: string, releaseName: string, enabled = true) {
+  return useQuery<ChartSourceStatus>({
+    queryKey: ["helm-source-status", namespace, releaseName],
+    queryFn: () => fetchJSON(`/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`),
+    enabled: enabled && Boolean(namespace && releaseName),
+  });
+}
+
+async function mutateHelmSource(namespace: string, releaseName: string, source: ChartSourceCandidate): Promise<void> {
+  const response = await apiFetch(apiUrl(`/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(source),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(error.error || `HTTP ${response.status}`);
+  }
+}
+
+export function useSetHelmSource(namespace: string, releaseName: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (source: ChartSourceCandidate) => mutateHelmSource(namespace, releaseName, source),
+    meta: { errorMessage: "Failed to associate chart source", successMessage: "Chart source associated" },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["helm-source-status", namespace, releaseName] });
+      queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+    },
+  });
+}
+
+interface AddHelmRepositoryRequest {
+  name: string
+  url: string
+  namespace?: string
+  releaseName?: string
+}
+
+export function useAddHelmRepository() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (request: AddHelmRepositoryRequest): Promise<{ status: string; name: string }> => {
+      const response = await apiFetch(apiUrl('/helm/repositories'), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+      return response.json();
+    },
+    meta: { errorMessage: "Failed to add Helm repository", successMessage: "Helm repository added" },
+    // Also on error: the repository can be saved before associating it fails.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["helm-repositories"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-source-status"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+    },
+  });
+}
+
 async function mutateOCISource(
   method: "POST" | "DELETE",
   source: string,
 ): Promise<string[]> {
-  const response = await apiFetch(`${getApiBase()}/helm/oci-sources`, {
+  const response = await apiFetch(apiUrl('/helm/oci-sources'), {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source }),
@@ -6214,14 +6333,18 @@ async function mutateOCISource(
   return response.json();
 }
 
-// Invalidate the upgrade-info queries so a newly-registered source is probed
-// immediately and "source not tracked" re-resolves.
-function invalidateHelmAfterSourceChange(
+// Invalidate source inventory/status and upgrade info so an open source dialog
+// and upgrade checks immediately reflect source additions or removals.
+export function invalidateHelmAfterSourceChange(
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
-  queryClient.invalidateQueries({ queryKey: ["helm-oci-sources"] });
-  queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
-  queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["helm-oci-sources"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-source-status"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] }),
+  ])
 }
 
 export function useAddOCISource() {
@@ -6574,13 +6697,16 @@ export const useFluxResume = createGitOpsMutation<FluxResourceVars>({
 export const useFluxSyncWithSource = createGitOpsMutation<FluxResourceVars>({
   getPath: (v) => `/flux/${v.kind}/${v.namespace}/${v.name}/sync-with-source`,
   errorMessage: "Failed to sync with source",
-  successMessage: "Sync with source triggered",
+  // The server names what it reconciled, and says when a source was skipped.
+  getSuccessMessage: (data) => data.message,
   getInvalidateKeys: (v) => [
     ...fluxInvalidateKeys(v),
     // Also invalidate source resources as they were reconciled too
     ["resources", "gitrepositories"],
     ["resources", "ocirepositories"],
     ["resources", "helmrepositories"],
+    ["resources", "helmcharts"],
+    ["resources", "buckets"],
   ],
 });
 
@@ -7426,6 +7552,8 @@ export interface DiagnosticsSnapshot {
   };
   timeline?: {
     storageType: string;
+    degraded?: boolean;
+    degradedReason?: string;
     totalEvents: number;
     oldestEvent?: string;
     newestEvent?: string;
