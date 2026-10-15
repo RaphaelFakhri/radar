@@ -1031,8 +1031,8 @@ export function promoteFailureGuidance(failure: PromoteFailure): {
       return {
         title: 'Rolled back, promotion not confirmed',
         body:
-          'The rollback is live. The promotion was sent, but the Argo Rollouts controller did not confirm it, ' +
-          `so the canary steps you asked to skip may still run. ${pause} Sending it again is safe.`,
+          'The rollback was applied. The promotion was sent, but the Argo Rollouts controller did not confirm it, ' +
+          `so the canary steps you asked to skip may still run. ${pause} Check the rollout's progress before sending it again.`,
         canRetry: true,
       }
     case 'failed':

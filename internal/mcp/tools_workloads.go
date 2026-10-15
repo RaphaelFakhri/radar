@@ -193,16 +193,24 @@ func rolloutResponse(action string, result rollouts.OperationResult) map[string]
 	}
 	switch result.Outcome {
 	case rollouts.OutcomeUnderway:
-		resp["note"] = "The new revision is not live yet. Poll get_resource kind=Rollout until status.stableRS equals status.currentPodHash."
+		resp["note"] = "The promotion is still in progress. " + rolloutPollNote
 	case rollouts.OutcomeUnconfirmed:
-		resp["note"] = "The controller was not seen acting on the promotion. Poll get_resource kind=Rollout until status.stableRS equals status.currentPodHash. " +
-			"If status.promoteFull is gone before then, the controller dropped it: send promote-full again."
+		resp["note"] = "The controller was not seen acting on the promotion. " + rolloutPollNote
 	}
 	if action == "abort" {
 		resp["note"] = "The Rollout stays aborted until manage_rollout action=retry, or a new revision is pushed."
 	}
 	return resp
 }
+
+// rolloutPollNote tells an agent how to follow a promotion that hasn't landed.
+// A cleared status.promoteFull alone doesn't mean the controller dropped the
+// request: a new revision pushed meanwhile clears it too, and promoting again
+// would skip that revision's steps.
+const rolloutPollNote = "Poll get_resource kind=Rollout until status.stableRS equals status.currentPodHash. " +
+	"Stop and report if the Rollout is aborted or Degraded. " +
+	"If status.promoteFull disappears first, send promote-full again only if status.currentPodHash is still the revision you promoted; " +
+	"a different hash means someone pushed a new revision."
 
 func handleManageCronJob(ctx context.Context, req *mcp.CallToolRequest, input manageCronJobInput) (*mcp.CallToolResult, any, error) {
 	dynClient := k8s.DynamicClientFromContext(ctx)

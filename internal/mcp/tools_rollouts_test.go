@@ -85,6 +85,11 @@ func TestRolloutResponseCarriesPromoteFullOutcome(t *testing.T) {
 			if got := strings.Contains(note, "status.stableRS equals status.currentPodHash"); got != wantPoll {
 				t.Errorf("note = %q, want poll instruction: %v", note, wantPoll)
 			}
+			// A cleared promoteFull can mean someone pushed a new revision, so a
+			// resend must be conditioned on the hash, never unconditional.
+			if wantPoll && !strings.Contains(note, "only if status.currentPodHash is still the revision you promoted") {
+				t.Errorf("note = %q, want the resend conditioned on the promoted revision", note)
+			}
 		})
 	}
 
