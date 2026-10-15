@@ -269,6 +269,8 @@ func (s *Server) writeGitOpsError(w http.ResponseWriter, err error, module, acti
 		status = http.StatusConflict
 	case errors.Is(err, gitops.ErrAutoSyncEnabled):
 		status = http.StatusConflict
+	case errors.Is(err, gitops.ErrResourceSuspended):
+		status = http.StatusConflict
 	case errors.Is(err, gitops.ErrNoOperationInProgress):
 		status = http.StatusBadRequest
 	case errors.Is(err, gitops.ErrInvalidResourceSelection):

@@ -800,7 +800,7 @@ export function ResourceRendererDispatch({
       {kind !== 'events' && <EventsSection fullscreen={!!renderSidebar} events={events || []} updates={updates || []} isLoading={eventsLoading ?? false} eventsError={eventsError ?? null} updatesError={updatesError ?? null} hint={eventsHint} />}
       <LabelsSection data={data} />
       <AnnotationsSection data={data} />
-      <MetadataSection data={data} />
+      <MetadataSection data={data} onNavigate={onNavigate} />
     </>
   )
 
@@ -972,8 +972,8 @@ export function ResourceRendererDispatch({
         {kind === 'azuremanagedcontrolplanes' && <AzureManagedControlPlaneRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'azuremanagedmachinepools' && <AzureManagedMachinePoolRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'azuremachines' && <AzureMachineRenderer data={data} onNavigate={onNavigate} />}
-        {kind === 'virtualservices' && <IstioVirtualServiceRenderer data={data} onNavigate={onNavigate} />}
-        {kind === 'destinationrules' && <IstioDestinationRuleRenderer data={data} onNavigate={onNavigate} />}
+        {kind === 'virtualservices' && <IstioVirtualServiceRenderer data={data} onNavigate={onNavigate} serviceDomain={relationships?.istioServiceDomain} />}
+        {kind === 'destinationrules' && <IstioDestinationRuleRenderer data={data} onNavigate={onNavigate} serviceDomain={relationships?.istioServiceDomain} />}
         {kind === 'serviceentries' && <IstioServiceEntryRenderer data={data} />}
         {kind === 'peerauthentications' && <IstioPeerAuthenticationRenderer data={data} />}
         {kind === 'authorizationpolicies' && <IstioAuthorizationPolicyRenderer data={data} />}
