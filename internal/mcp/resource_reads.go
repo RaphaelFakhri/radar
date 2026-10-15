@@ -159,10 +159,22 @@ func (t readTarget) narrowedByCollection(collected, uncovered []string) readTarg
 	if t.namespaces == nil {
 		t.namespaces = collected
 	} else {
-		t.namespaces = slices.DeleteFunc(slices.Clone(t.namespaces), func(ns string) bool { return slices.Contains(uncovered, ns) })
+		t.namespaces = withoutNamespaces(t.namespaces, uncovered)
 	}
-	t.narrowedBy = append(slices.Clone(t.narrowedBy), resourceapi.NarrowedByCollection)
+	if !slices.Contains(t.narrowedBy, resourceapi.NarrowedByCollection) {
+		t.narrowedBy = append(slices.Clone(t.narrowedBy), resourceapi.NarrowedByCollection)
+	}
 	return t
+}
+
+// withoutNamespaces returns namespaces less those in drop, in linear time:
+// both can hold thousands of names.
+func withoutNamespaces(namespaces, drop []string) []string {
+	dropped := make(map[string]bool, len(drop))
+	for _, ns := range drop {
+		dropped[ns] = true
+	}
+	return slices.DeleteFunc(slices.Clone(namespaces), func(ns string) bool { return dropped[ns] })
 }
 
 // resourceReadNamespaces returns the namespaces a read of requested may reach
