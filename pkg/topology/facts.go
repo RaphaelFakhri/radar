@@ -3,6 +3,7 @@ package topology
 import (
 	"slices"
 	"strings"
+	"sync"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -123,6 +124,11 @@ type factsRegistry struct {
 	// owner kind the build's ownerReferences name is namespaced. It is how an
 	// owner the build never observed still resolves to an exact identity.
 	scopes map[resourceid.GroupKind]bool
+
+	// The ownership index is derived on first use, once, and shared by every
+	// projection; it holds nothing per user.
+	ownershipOnce sync.Once
+	ownershipIdx  *ownershipIndex
 }
 
 // object returns the facts recorded for an exact identity.
