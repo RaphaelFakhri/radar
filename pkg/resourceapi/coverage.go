@@ -25,7 +25,7 @@ const (
 // response is read by a model. Above the cap a set carries only its count.
 const (
 	RESTSetLimit = 64
-	MCPSetLimit  = 8
+	MCPSetLimit  = 16
 )
 
 type ScopeType string

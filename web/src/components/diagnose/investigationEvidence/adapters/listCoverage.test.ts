@@ -109,7 +109,7 @@ describe("a list Radar read only in some of the namespaces it collects", () => {
     );
   });
 
-  it("keeps omitted namespace details unknown in citations", () => {
+  it("says what a listing that read unnamed namespaces shows about a citation", () => {
     const namespaces = Array.from(
       { length: 40 },
       (_, index) => `team-${String(index + 1).padStart(2, "0")}`,
@@ -161,11 +161,11 @@ describe("a list Radar read only in some of the namespaces it collects", () => {
       data.namespacesRead,
       data.namespacesReadOmitted,
     );
-    expect(entries[0].coverageUnknown).toBe(true);
-    expect(entries[1].coverageUnknown).toBe(true);
-    expect(entries[2].coverageUnknown).toBe(true);
+    expect(entries[0].readUnnamed).toEqual({ count: 40, namespace: undefined });
+    expect(entries[1].readUnnamed).toEqual({ count: 40, namespace: "team-40" });
+    expect(entries[2].readUnnamed).toEqual({ count: 40, namespace: "unread" });
     expect(entries[2].notRead).toBeUndefined();
-    expect(entries[3].coverageUnknown).toBe(false);
+    expect(entries[3].readUnnamed).toBeUndefined();
     expect(entries[3].notRead).toBeUndefined();
     const html = renderToStaticMarkup(
       createElement(StoryExcerpt, {
@@ -176,14 +176,17 @@ describe("a list Radar read only in some of the namespaces it collects", () => {
         canExpand: false,
       }),
     );
+    expect(html).toContain("api: not in the 40 namespaces read");
     expect(html).toContain(
-      "api: read coverage is unknown here; namespace details were abbreviated",
+      "team-40/api: not in this listing, which read 40 namespaces without naming them all; team-40 may not have been one",
     );
     expect(html).not.toContain("team-04");
     expect(html).not.toContain("Not in this listing: team-40/api");
     expect(html).toContain("Not in this listing: team-39/api");
     expect(html).not.toContain("unread/api: unread was not read");
-    expect(html).toContain("unread/api: read coverage is unknown");
+    expect(html).toContain(
+      "unread/api: not in this listing, which read 40 namespaces without naming them all; unread may not have been one",
+    );
     const empty = project([
       tool("empty", "list_resources", { summary, coverage, items: [] }),
     ]);

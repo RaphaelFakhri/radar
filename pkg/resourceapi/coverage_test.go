@@ -22,7 +22,7 @@ func TestSetsListAllMembersOrNone(t *testing.T) {
 	if got := Names([]string{"beta", "alpha", "alpha"}, RESTSetLimit); got.Count != 2 || !slices.Equal(got.Names, []string{"alpha", "beta"}) {
 		t.Fatalf("set = %+v", got)
 	}
-	if got := Names(names[:8], MCPSetLimit); got.Count != 8 || len(got.Names) != 8 {
+	if got := Names(names[:MCPSetLimit], MCPSetLimit); got.Count != MCPSetLimit || len(got.Names) != MCPSetLimit {
 		t.Fatalf("a set at the limit lists every name: %+v", got)
 	}
 	if got := Names(names[:64], RESTSetLimit).Capped(MCPSetLimit); got.Count != 64 || got.Names != nil {

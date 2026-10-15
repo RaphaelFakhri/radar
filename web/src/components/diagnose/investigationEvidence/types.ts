@@ -453,7 +453,10 @@ export type InvestigationEvidenceData =
        * namespaces: a name missing from the rows is unknown outside them.
        */
       namespacesRead?: string[];
-      /** Names omitted from the read namespace preview, not unread namespaces. */
+      /**
+       * Namespaces read that the listing doesn't name, because there were too
+       * many to list; they were read, so they are not a gap.
+       */
       namespacesReadOmitted?: number;
     }
   | {

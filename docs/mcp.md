@@ -529,7 +529,7 @@ truncation that keeps only the head of a long result:
   the namespaces outside a namespace-limited collector — never "none".
 
 Namespace sets are `{count, names}`. `names` lists every member, sorted, when
-there are at most eight (64 on REST); above that it is absent and only `count`
+there are at most sixteen (64 on REST); above that it is absent and only `count`
 says how many, so a reader knows a namespace's membership from `names` or not
 at all. The same holds for a gap's `kinds` and `objects`. `items` is `[]` when
 the namespaces read hold nothing.
@@ -609,13 +609,21 @@ otherwise the code says why it couldn't look.
 The same table, as the action each code calls for, is
 `pkg/readreason/testdata/actions.json`.
 
+Under Radar Cloud, a denial of a viewer or member also says an owner of their
+organization can raise their role, which may grant the permission: the chart
+binds each Radar Cloud role to Kubernetes permissions by default, and a cluster
+can bind its own. Radar doesn't know which, so a cluster admin stays the first
+remedy.
+
 Collector errors omit the API server's response, which may name Radar's
 identity; the raw cause is logged server-side. Errors, gaps and summaries name
 only namespaces the caller may read or named themselves.
 
 Findings shows a list's summary as its coverage caveat, including for an empty
 partial or narrowed list. A placed story card distinguishes an unread subject namespace
-from a missing object in a namespace that was read. A bare array comes from a
+from a missing object in a namespace that was read; when a listing read more
+namespaces than it names, the card says how many it read and that the subject's
+namespace may not have been one. A bare array comes from a
 Radar older than this contract and is never read as complete.
 
 ## Available Tools

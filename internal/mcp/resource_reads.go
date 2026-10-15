@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/k8s"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -174,7 +175,7 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 			if len(clamped) > 1 {
 				scope = fmt.Sprintf("Namespaces %q don't exist or you can't access them", namespaceForError(clamped))
 			}
-			err := &readError{code: readreason.NamespaceNotVisible, err: fmt.Errorf("%s, so Radar can't say what's in it. If the name is right, a cluster admin can grant access %s", scope, namespaceAccessRule)}
+			err := &readError{code: readreason.NamespaceNotVisible, err: fmt.Errorf("%s, so Radar can't say what's in it. If the name is right, %s %s", scope, withCloudRole(ctx, "a cluster admin can grant access"), namespaceAccessRule)}
 			// list_namespaces needs Radar to list Namespaces, which an identity
 			// limited to some namespaces may not be allowed to.
 			if cache := k8s.GetResourceCache(); cache != nil && cache.Namespaces() != nil {
@@ -182,7 +183,7 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 			}
 			return target, err
 		}
-		return target, readErrorf(readreason.NoNamespaceAccess, "You can't access any namespace in this request's scope, so Radar read nothing. A cluster admin can grant access %s", namespaceAccessRule)
+		return target, readErrorf(readreason.NoNamespaceAccess, "You can't access any namespace in this request's scope, so Radar read nothing. %s %s", withCloudRole(ctx, "A cluster admin can grant access"), namespaceAccessRule)
 	}
 	// Every narrowing that applied to a request that named no namespace, as
 	// REST and search report it: the caller's access when it is restricted,
@@ -260,13 +261,13 @@ func qualifiedResource(group, resource string) string {
 	return resource + "." + group
 }
 
-func resourcePermissionError(checked bool, verb, group, resource, namespace string) error {
-	return resourcePermissionErrorNext(checked, verb, group, resource, namespace, "")
+func resourcePermissionError(ctx context.Context, checked bool, verb, group, resource, namespace string) error {
+	return resourcePermissionErrorNext(ctx, checked, verb, group, resource, namespace, "")
 }
 
 // resourcePermissionErrorNext is resourcePermissionError with what the caller
 // can still ask for after a denial.
-func resourcePermissionErrorNext(checked bool, verb, group, resource, namespace, next string) error {
+func resourcePermissionErrorNext(ctx context.Context, checked bool, verb, group, resource, namespace, next string) error {
 	scope := "across the cluster"
 	if strings.Contains(namespace, ",") {
 		scope = fmt.Sprintf("in namespaces %q", namespace)
@@ -277,7 +278,7 @@ func resourcePermissionErrorNext(checked bool, verb, group, resource, namespace,
 	if !checked {
 		return readErrorf(readreason.PermissionCheckFailed, "Radar couldn't check whether you can %s %s %s, so it read nothing.", verb, name, scope)
 	}
-	return &readError{code: readreason.RBACDenied, err: fmt.Errorf("Your Kubernetes access doesn't allow you to %s %s %s, so Radar can't say what exists there. A cluster admin can grant that permission.", verb, name, scope), next: next}
+	return &readError{code: readreason.RBACDenied, err: fmt.Errorf("Your Kubernetes access doesn't allow you to %s %s %s, so Radar can't say what exists there. %s.", verb, name, scope, withCloudRole(ctx, "A cluster admin can grant that permission")), next: next}
 }
 
 // gapSet collects the namespaces a read could not serve, by code. A code
@@ -556,14 +557,14 @@ func gapReason(ctx context.Context, resource string, code readreason.Code) (why,
 	case readreason.KindWatchFailed:
 		return fmt.Sprintf("Radar's watch of %s there failed to start", resource), ""
 	case readreason.RBACDenied:
-		return fmt.Sprintf("your Kubernetes access doesn't allow listing %s there", resource), "a cluster admin can grant it"
+		return fmt.Sprintf("your Kubernetes access doesn't allow listing %s there", resource), withCloudRole(ctx, "a cluster admin can grant it")
 	case readreason.PermissionCheckFailed:
 		return "Radar couldn't check your access there", ""
 	}
 	why = fmt.Sprintf("Radar couldn't read %s there (%s)", resource, code)
 	switch action, _ := readreason.ActionFor(code); action {
 	case readreason.ActionCallerAccess:
-		return why, "a cluster admin can grant you access"
+		return why, withCloudRole(ctx, "a cluster admin can grant you access")
 	case readreason.ActionCollectorConfig:
 		return why, "whoever runs Radar must change its access or configuration"
 	}
@@ -692,6 +693,22 @@ func notYourAccessClause(ctx context.Context) string {
 		return "; granting you access wouldn't change this"
 	}
 	return ""
+}
+
+// withCloudRole adds the other way a Radar Cloud viewer or member may get
+// access to remedy: the chart binds each Radar Cloud role to Kubernetes
+// permissions, so an organization owner can raise the role. Radar doesn't know
+// the cluster's bindings, so a higher role only may grant it. An owner has no
+// higher role, and outside Radar Cloud there are none.
+func withCloudRole(ctx context.Context, remedy string) string {
+	if !cloud.Mode() {
+		return remedy
+	}
+	switch role := pkgauth.CloudRoleFromContext(ctx); role {
+	case pkgauth.RoleViewer, pkgauth.RoleMember:
+		return fmt.Sprintf("%s, or an owner of your Radar Cloud organization can raise your %s role, which may grant it", remedy, role)
+	}
+	return remedy
 }
 
 func resourceReadCacheIsCurrent(cache *k8s.ResourceCache) bool {
@@ -1146,21 +1163,21 @@ func narrowByExactAccess(ctx context.Context, target []string, resource, verb st
 	if target == nil {
 		granted, checked := canReadInNamespaceDecision(ctx, "", resource, "", verb)
 		if !granted {
-			return nil, gaps, resourcePermissionErrorNext(checked, verb, "", resource, "",
+			return nil, gaps, resourcePermissionErrorNext(ctx, checked, verb, "", resource, "",
 				fmt.Sprintf("If you can %s %s in some namespaces, call list_resources again with namespace set to one of them.", verb, resource))
 		}
 		return nil, gaps, nil
 	}
 	allowed, denied, unchecked := partitionNamespacesByCanRead(ctx, "", resource, verb, target)
 	if len(denied) > 0 {
-		gaps.add(readreason.RBACDenied, resourcePermissionError(true, verb, "", resource, namespaceForError(denied)), denied...)
+		gaps.add(readreason.RBACDenied, resourcePermissionError(ctx, true, verb, "", resource, namespaceForError(denied)), denied...)
 	}
 	if len(unchecked) > 0 {
-		gaps.add(readreason.PermissionCheckFailed, resourcePermissionError(false, verb, "", resource, namespaceForError(unchecked)), unchecked...)
+		gaps.add(readreason.PermissionCheckFailed, resourcePermissionError(ctx, false, verb, "", resource, namespaceForError(unchecked)), unchecked...)
 	}
 	if len(allowed) == 0 {
 		if gaps.empty() {
-			return nil, gaps, resourcePermissionError(true, verb, "", resource, namespaceForError(target))
+			return nil, gaps, resourcePermissionError(ctx, true, verb, "", resource, namespaceForError(target))
 		}
 		return nil, gaps, gaps.failure()
 	}

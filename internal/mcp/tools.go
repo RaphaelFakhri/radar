@@ -863,7 +863,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 	if clusterScoped {
 		granted, checked := canReadClusterScopedKindDecision(ctx, kind, group, "list")
 		if !granted {
-			return nil, nil, resourcePermissionError(checked, "list", gvrGroup, gvrResource, "")
+			return nil, nil, resourcePermissionError(ctx, checked, "list", gvrGroup, gvrResource, "")
 		}
 	}
 	var target readTarget
@@ -1176,7 +1176,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	if clusterScoped {
 		granted, checked := canReadClusterScopedKindDecision(ctx, kind, group, "get")
 		if !granted {
-			return nil, nil, resourcePermissionError(checked, "get", gvrGroup, gvrResource, "")
+			return nil, nil, resourcePermissionError(ctx, checked, "get", gvrGroup, gvrResource, "")
 		}
 	} else {
 		if namespace == "" {
@@ -1206,7 +1206,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		if resource := exactAccessResource(kind, group); resource != "" {
 			granted, checked := canReadInNamespaceDecision(ctx, "", resource, namespace, "get")
 			if !granted {
-				return nil, nil, resourcePermissionError(checked, "get", "", resource, namespace)
+				return nil, nil, resourcePermissionError(ctx, checked, "get", "", resource, namespace)
 			}
 		}
 	}

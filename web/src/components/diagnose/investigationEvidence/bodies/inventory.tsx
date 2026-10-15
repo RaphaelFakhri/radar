@@ -23,7 +23,12 @@ export interface NamedInventoryRow {
   row?: InvestigationResourceSummary;
   /** No row matches, and the subject's namespace is one the listing did not read. */
   notRead?: string;
-  coverageUnknown?: boolean;
+  /**
+   * No row matches, on a listing that read `count` namespaces without naming
+   * them. With a `namespace`, the subject's namespace may not have been one
+   * of them; without, the subject is only known to be absent from those.
+   */
+  readUnnamed?: { count: number; namespace?: string };
   /**
    * No row matches a subject that names no namespace, on a listing that read
    * only these namespaces.
@@ -96,13 +101,17 @@ export function namedInventoryRows(
         unread && !namespace && namespacesReadOmitted === 0
           ? namespacesRead
           : undefined,
-      coverageUnknown: Boolean(
+      readUnnamed:
         unread &&
         namespacesReadOmitted > 0 &&
         (!namespace ||
           (!namespacesRead.includes(namespace) &&
-            !observedNamespaces.has(namespace))),
-      ),
+            !observedNamespaces.has(namespace)))
+          ? {
+              count: namespacesRead.length + namespacesReadOmitted,
+              namespace,
+            }
+          : undefined,
     });
   }
   return out;

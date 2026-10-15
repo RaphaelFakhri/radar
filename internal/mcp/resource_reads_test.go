@@ -1004,7 +1004,7 @@ func setupLoadingServicesFixture(t *testing.T, objects ...string) {
 }
 
 func TestListSummaryBoundsNamespaceProse(t *testing.T) {
-	for _, count := range []int{1, 3, 8, 9, 40, 1000} {
+	for _, count := range []int{1, 3, resourceapi.MCPSetLimit, resourceapi.MCPSetLimit + 1, 40, 1000} {
 		t.Run(fmt.Sprintf("%d", count), func(t *testing.T) {
 			read := make([]string, count)
 			for i := range read {
@@ -1405,7 +1405,7 @@ func TestResourceReadsNamespaceDenialAttribution(t *testing.T) {
 	if next := readErrorNext(t, err); next != "" {
 		t.Fatalf("no dead-end hint without a namespace list, got %q", next)
 	}
-	err = resourcePermissionError(true, "list", "", "secrets", namespaceForError([]string{"alpha", "beta"}))
+	err = resourcePermissionError(ctx, true, "list", "", "secrets", namespaceForError([]string{"alpha", "beta"}))
 	if strings.Contains(err.Error(), "at cluster scope") || !strings.Contains(err.Error(), "beta") {
 		t.Fatal(err)
 	}
@@ -2279,5 +2279,90 @@ func TestFailedListNextComesFromEveryGap(t *testing.T) {
 	err := &readError{code: readreason.RBACDenied, err: errors.New("denied"), coverage: cov}
 	if next := readErrorNext(t, err); next != `Retry in a minute to read namespace "beta".` {
 		t.Fatalf("next = %q", next)
+	}
+}
+
+func TestDenialNamesRadarCloudOwner(t *testing.T) {
+	as := func(groups ...string) context.Context {
+		return pkgauth.ContextWithUser(context.Background(), &pkgauth.User{Username: "someone", Groups: groups})
+	}
+	const owner = "an owner of your Radar Cloud organization can raise your"
+	const may = " role, which may grant it"
+	for _, tc := range []struct {
+		name  string
+		cloud string
+		ctx   context.Context
+		want  string
+	}{
+		{"local", "false", as("radar:viewer"), ""},
+		{"viewer", "true", as("radar:viewer"), owner + " viewer" + may},
+		{"member", "true", as("cloud:member"), owner + " member" + may},
+		{"owner", "true", as("radar:owner"), ""},
+		{"no role", "true", as("radar:ai:reader"), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RADAR_CLOUD_MODE", tc.cloud)
+			msg := resourcePermissionError(tc.ctx, true, "list", "", "secrets", "beta").Error()
+			_, who := gapReason(tc.ctx, "secrets", readreason.RBACDenied)
+			for _, got := range []string{msg, who} {
+				if tc.want == "" {
+					if strings.Contains(got, "Radar Cloud") {
+						t.Fatalf("no Radar Cloud remedy expected, got %q", got)
+					}
+					continue
+				}
+				if !strings.Contains(got, "a cluster admin can grant") && !strings.Contains(got, "A cluster admin can grant") {
+					t.Fatalf("the cluster admin stays a remedy, got %q", got)
+				}
+				if !strings.Contains(got, tc.want) {
+					t.Fatalf("want %q in %q", tc.want, got)
+				}
+			}
+		})
+	}
+}
+
+// Through list_resources: a Radar Cloud viewer reads the owner remedy where
+// their own access denied Secrets, and nowhere a retry or Radar's own
+// collection is the fix.
+func TestListNamesRadarCloudOwnerOnlyForDenials(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	t.Setenv("RADAR_CLOUD_MODE", "true")
+	const remedy = "an owner of your Radar Cloud organization can raise your viewer role, which may grant it"
+	viewer := func(name string, canI map[string]bool) context.Context {
+		groups := []string{"radar:viewer"}
+		perms := &pkgauth.UserPermissions{AllowedNamespaces: []string{"alpha", "beta"}}
+		for ns, ok := range canI {
+			perms.SetCanI("list", "", "secrets", ns, ok)
+		}
+		getPermCache().Set(name, groups, perms)
+		return pkgauth.ContextWithUser(context.Background(), &pkgauth.User{Username: name, Groups: groups})
+	}
+
+	denied := viewer("cloud-viewer", map[string]bool{"alpha": true, "beta": false})
+	result, _, err := handleListResources(denied, nil, listResourcesInput{Kind: "secrets"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := extractText(t, result); !strings.Contains(body, remedy) {
+		t.Fatalf("a partial list denied by the viewer's access names the owner: %s", body)
+	}
+	_, _, err = handleListResources(denied, nil, listResourcesInput{Kind: "secrets", Namespace: "beta"})
+	if err == nil || !strings.Contains(err.Error(), remedy) {
+		t.Fatalf("a denied list names the owner: %v", err)
+	}
+
+	unchecked := viewer("cloud-viewer-unchecked", map[string]bool{"alpha": true})
+	result, _, err = handleListResources(unchecked, nil, listResourcesInput{Kind: "secrets"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := extractText(t, result); strings.Contains(body, "Radar Cloud") || !strings.Contains(body, "permission_check_failed") {
+		t.Fatalf("a failed permission check is retried, not escalated to an owner: %s", body)
+	}
+	for _, code := range []readreason.Code{readreason.CollectorScopeLimited, readreason.CollectorForbidden, readreason.KindSyncPending} {
+		if why, who := gapReason(denied, "secrets", code); strings.Contains(why+who, "Radar Cloud") {
+			t.Fatalf("%s isn't the caller's access to widen: %q / %q", code, why, who)
+		}
 	}
 }

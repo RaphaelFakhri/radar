@@ -20,7 +20,7 @@ import type { MetricsChangeCoverage } from "./investigationMetrics";
 const unread = (entry: NamedInventoryRow) =>
   entry.notRead !== undefined ||
   entry.readOnlyIn !== undefined ||
-  entry.coverageUnknown === true;
+  entry.readUnnamed !== undefined;
 
 /** The inline slice of a placed card, rendered from Radar's record. */
 export function StoryExcerpt({
@@ -82,8 +82,10 @@ export function StoryExcerpt({
                     index > 0 && "border-t border-theme-border/60",
                   )}
                 >
-                  {entry.coverageUnknown
-                    ? `${entry.label}: read coverage is unknown here; namespace details were abbreviated`
+                  {entry.readUnnamed
+                    ? entry.readUnnamed.namespace
+                      ? `${entry.label}: not in this listing, which read ${entry.readUnnamed.count} namespaces without naming them all; ${entry.readUnnamed.namespace} may not have been one`
+                      : `${entry.label}: not in the ${entry.readUnnamed.count} namespaces read`
                     : entry.notRead
                       ? `${entry.label}: ${entry.notRead} was not read`
                       : entry.readOnlyIn
