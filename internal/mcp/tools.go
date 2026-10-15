@@ -879,7 +879,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		var secretGaps gapSet
 		var err error
 		if readable, secretGaps, err = narrowByExactAccess(ctx, readable, resource, "list"); err != nil {
-			return nil, nil, err
+			return nil, nil, withListCoverage(ctx, err, target, clusterScoped)
 		}
 		gaps.merge(secretGaps)
 	}
@@ -888,6 +888,11 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		err = errConnectionChanged()
 	}
 	if err != nil {
+		// A read narrowed to what Radar collects reports that scope even when
+		// none of it could be read.
+		if plan != nil && len(plan.collected) > 0 && !clusterScoped {
+			target = target.narrowedToCollection(plan)
+		}
 		// Secrets withheld from the caller are part of why nothing was read.
 		if !gaps.empty() && gaps.absorb(err) {
 			err = gaps.failure()

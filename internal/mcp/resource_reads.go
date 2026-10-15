@@ -412,7 +412,7 @@ func listCoverageFor(clusterScoped bool, target readTarget, read []string, readA
 }
 
 // withListCoverage attaches a failed list's coverage: its scope and every gap,
-// with no read scope because Radar read nothing.
+// with no read scope because the error returns no rows.
 func withListCoverage(ctx context.Context, err error, target readTarget, clusterScoped bool) error {
 	var re *readError
 	if !errors.As(err, &re) || re.unread == nil {
@@ -721,8 +721,9 @@ type typedRead struct {
 
 // resourceReadCache returns the cache to read kind from and, for a typed kind,
 // what of namespaces (nil: every namespace) it can serve now and why the rest
-// is unread. It fails only when nothing can be read. Dynamic kinds learn their
-// coverage by reading, so they get no plan.
+// is unread. It fails only when nothing can be read; a failure within the
+// namespaces Radar collects still returns its plan, so the error can say that
+// scope. Dynamic kinds learn their coverage by reading, so they get no plan.
 //
 // Namespaces Radar doesn't collect are a gap when the request named them
 // (explicit); otherwise they narrow the read, like the --namespace-scope pin,
@@ -807,7 +808,7 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 		plan.gaps.add(readreason.KindSyncFailed, failed, a.Failed...)
 	}
 	if len(a.Read) == 0 {
-		return nil, nil, plan.gaps.failure()
+		return nil, plan, plan.gaps.failure()
 	}
 	plan.read = a.Read
 	return cache, plan, nil

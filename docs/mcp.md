@@ -577,7 +577,7 @@ as on lists (`namespace_required`: set `namespace`, or `search` for
 namespace, else that `search`). A list that read nothing takes its `next` from
 every gap, so a retry that would recover one namespace is offered even when
 the code names a denial. A list error carries `coverage` when Radar assessed the
-scope; it has no `read`, because nothing was read, and its gaps keep every
+scope; it has no `read`, because the error returns no rows, and its gaps keep every
 cause when namespaces failed for different reasons. `error_code` is then the
 most actionable of them. A get of an object that isn't there is
 `object_not_found`, and only once Radar has confirmed it read that namespace;

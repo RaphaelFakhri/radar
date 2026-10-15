@@ -2023,6 +2023,52 @@ func TestResourceReadErrorDetails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ns-00,ns-01,ns-02 and 12 more") || strings.Contains(err.Error(), "ns-03") {
 		t.Fatalf("Secret namespace denial must be bounded: %v", err)
 	}
+	// Denied everywhere it could look, the list still says where that was.
+	result, ok := readErrorResult(err)
+	if !ok {
+		t.Fatal(err)
+	}
+	cov := result.StructuredContent.(mcpReadError).Coverage
+	if cov == nil || !slices.Equal(cov.NarrowedBy, []resourceapi.Narrowing{resourceapi.NarrowedByCallerAccess}) || cov.Scope.Namespaces == nil || cov.Scope.Namespaces.Count != 15 ||
+		len(cov.Gaps) != 1 || cov.Gaps[0].Code != readreason.RBACDenied || cov.Gaps[0].Namespaces == nil || cov.Gaps[0].Namespaces.Count != 15 {
+		t.Fatalf("an exact-access failure carries its coverage, got %+v", cov)
+	}
+}
+
+// A list that read none of the namespaces Radar collects reports that it was
+// narrowed to them: the scope is those namespaces, and every one of them is a
+// gap.
+func TestFailedListKeepsCollectionScope(t *testing.T) {
+	client := fake.NewClientset()
+	client.PrependReactor("list", "services", func(action ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("does not answer")
+	})
+	if err := k8s.InitTestResourceCacheFromConfig(k8score.CacheConfig{
+		Client:                  client,
+		ResourceTypes:           map[string]bool{"services": true},
+		ResourceScopes:          map[string]k8score.ResourceScope{"services": {Enabled: true, Namespace: "alpha"}},
+		ResourceScopeNamespaces: map[string][]string{"services": {"alpha", "gamma"}},
+		DeferredTypes:           map[string]bool{"services": true},
+		DeferredSyncTimeout:     time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "services", Context: "none"})
+	result, ok := readErrorResult(err)
+	if !ok {
+		t.Fatalf("want a read failure, got %v", err)
+	}
+	body := result.StructuredContent.(mcpReadError)
+	cov := body.Coverage
+	if body.ErrorCode != readreason.KindSyncPending || cov == nil || !slices.Equal(cov.NarrowedBy, []resourceapi.Narrowing{resourceapi.NarrowedByCollection}) ||
+		cov.Scope.Namespaces == nil || !slices.Equal(cov.Scope.Namespaces.Names, []string{"alpha", "gamma"}) ||
+		len(cov.Gaps) != 1 || cov.Gaps[0].Namespaces == nil || !slices.Equal(cov.Gaps[0].Namespaces.Names, []string{"alpha", "gamma"}) {
+		t.Fatalf("coverage = %+v", cov)
+	}
+	if body.Next != `Retry in a few seconds to read namespaces "alpha", "gamma".` {
+		t.Fatalf("next = %q", body.Next)
+	}
 }
 
 func TestResourceReadsNoNamespaceKindResolution(t *testing.T) {

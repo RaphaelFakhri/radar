@@ -171,7 +171,9 @@ type Gap struct {
 // not assert continuous watch health.
 //
 // Read is what Radar read within Scope. Every successful answer has it; on an
-// error it is absent, which means Radar read nothing.
+// error it is absent: the error returns no rows, though Radar may have read
+// some and discarded them (its connection changed mid-read, or the answer was
+// over its size budget).
 type Coverage struct {
 	Status     CoverageStatus `json:"status"`
 	Scope      Scope          `json:"scope"`
