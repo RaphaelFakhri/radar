@@ -212,12 +212,14 @@ What an Application page does meanwhile:
 - **Settled**: once Argo's answer is in, or the failure needs you (a rejected
   token, a certificate Radar can't verify), the page stops asking.
 - **Radar didn't answer** (the page's own request to Radar failed while it was
-  waiting): the page asks again every 30 seconds, and stops after five minutes
-  of failed requests; reload the page to try again.
+  waiting): the page asks again every 30 seconds until Radar answers. It
+  stops if Radar answers that the Application is gone or that you can't read
+  it.
 
-A timed-out per-resource health read is reused for up to 15 seconds, so several
-people viewing a slow Application share one attempt instead of each waiting
-out their own. Settings shows the last failed read until a read succeeds, or
+A timed-out per-resource health read is reused for up to 15 seconds, so
+requests that arrive after it, from the same page or other viewers, don't each
+wait out their own attempt. Requests that arrive at the same moment still read
+separately. Settings shows the last failed read until a read succeeds, or
 for two minutes after the last page stopped asking.
 
 The gitops-demo cluster mints a ready-to-use token into

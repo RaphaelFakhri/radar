@@ -975,6 +975,45 @@ func TestIsTransportFailure(t *testing.T) {
 	}
 }
 
+// A certificate Radar can't verify is a failed read, but asking again won't
+// fix it, so pages don't keep asking.
+func TestReadMayRecover_CertificateFailureNeedsTheUser(t *testing.T) {
+	wrap := func(err error) error {
+		return fmt.Errorf("argoapi: GET /x: %w", &url.Error{Op: "Get", URL: "http://a", Err: err})
+	}
+	if ReadMayRecover(wrap(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}})) {
+		t.Error("certificate failure: want no retry")
+	}
+	if !ReadMayRecover(wrap(context.DeadlineExceeded)) {
+		t.Error("timeout: want retry")
+	}
+	if !ReadMayRecover(fmt.Errorf("%w: /x returned 503", argoapi.ErrGatewayUnavailable)) {
+		t.Error("gateway 503: want retry")
+	}
+	// While the shared connection is being retried, a page asks again even
+	// for an answer that isn't a transport failure, but never for a
+	// certificate failure.
+	previous := defaultManager
+	defaultManager = newTestManager(config.Config{})
+	t.Cleanup(func() { defaultManager.Reset(); defaultManager = previous })
+	m := defaultManager
+	m.SetConfig("http://127.0.0.1:1", "argo-secret", false, true)
+	m.mu.Lock()
+	m.startBackgroundProbeLocked(true)
+	m.mu.Unlock()
+	waitForBackgroundProbe(t, m)
+	_, _ = m.ApplicationHealthCached(context.Background(), billing)
+	if !m.Retrying() {
+		t.Fatal("setup: want the shared connection retrying")
+	}
+	if !ReadMayRecover(errors.New("argoapi: /x returned 500")) {
+		t.Error("retrying: want the page to ask again")
+	}
+	if ReadMayRecover(wrap(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}})) {
+		t.Error("certificate failure while retrying: want no retry")
+	}
+}
+
 // A connect that failed while nobody was asking is still retried once a
 // page does ask, so the page can recover.
 func TestFailedConnect_RetryScheduledWhenAPageAsksLater(t *testing.T) {

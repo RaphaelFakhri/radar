@@ -2517,26 +2517,23 @@ export function useApplicationHistory(
 
 // How often a page asks again while Radar is still connecting to argocd-server,
 // and while it retries after a failure. Radar re-checks a failed connection at
-// most every 30s, so asking more often while retrying can't recover sooner.
+// most every 30s, so asking more often while retrying adds requests without
+// making the server reconnect sooner.
 // A page whose last fetch failed and was waiting on something keeps asking at
-// the slow rate, so a brief Radar or proxy outage doesn't strand it, and stops
-// once fetches have failed for ARGO_GIVE_UP_AFTER_MS (the endpoint is down or
-// the object is gone).
+// the slow rate, so a Radar or proxy outage doesn't strand it. It stops when
+// Radar answered that the object is gone or the caller can't read it, since
+// asking again won't change that answer.
 const ARGO_CONNECTING_POLL_MS = 2000;
 const ARGO_RETRYING_POLL_MS = 30_000;
-const ARGO_GIVE_UP_AFTER_MS = 5 * 60_000;
 
 type PollState<T> = {
-  state: { status: string; data?: T; dataUpdatedAt?: number; errorUpdatedAt?: number };
+  state: { status: string; data?: T; error?: unknown };
 };
 
-function afterFailedFetch(
-  state: PollState<unknown>["state"],
-  wanted: number | false,
-): number | false {
+function afterFailedFetch(error: unknown, wanted: number | false): number | false {
   if (wanted === false) return false;
-  const failingFor = (state.errorUpdatedAt ?? 0) - (state.dataUpdatedAt ?? 0);
-  return failingFor > ARGO_GIVE_UP_AFTER_MS ? false : ARGO_RETRYING_POLL_MS;
+  if (error instanceof ApiError && [401, 403, 404].includes(error.status)) return false;
+  return ARGO_RETRYING_POLL_MS;
 }
 
 export function gitopsTreeRefetchInterval(
@@ -2548,7 +2545,7 @@ export function gitopsTreeRefetchInterval(
     : data?.healthApiRetrying
       ? ARGO_RETRYING_POLL_MS
       : false;
-  return query.state.status === "error" ? afterFailedFetch(query.state, wanted) : wanted;
+  return query.state.status === "error" ? afterFailedFetch(query.state.error, wanted) : wanted;
 }
 
 export function useGitOpsTree(
@@ -2603,7 +2600,7 @@ export function gitopsInsightsRefetchInterval(
   } else if (data?.summary?.resourceHealthApiRetrying || data?.capabilities?.argoRetrying) {
     wanted = ARGO_RETRYING_POLL_MS;
   }
-  return query.state.status === "error" ? afterFailedFetch(query.state, wanted) : wanted;
+  return query.state.status === "error" ? afterFailedFetch(query.state.error, wanted) : wanted;
 }
 
 export function useGitOpsInsights(

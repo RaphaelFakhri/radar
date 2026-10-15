@@ -229,7 +229,7 @@ func (s *Server) argoAPIHealth(ctx context.Context, appNamespace, appName string
 	// A read that got no answer (possibly served from the failure cache) will
 	// be retried even if another read has since cleared the shared failure
 	// flag, so this page asks again too.
-	if argocd.Retrying() || argocd.IsTransportFailure(err) {
+	if argocd.ReadMayRecover(err) {
 		// Say why it failed, and have the page ask again so it recovers
 		// when the retry connects.
 		return nil, &argoHealthPending{notice: argoAPIHealthFailure(err, argocd.TokenSet()), retrying: true}

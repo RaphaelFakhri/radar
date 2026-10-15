@@ -1379,9 +1379,16 @@ func (m *Manager) noteReadLocked(gen uint64, client *argoapi.Client, err error) 
 	}
 }
 
-// IsTransportFailure reports whether err is a read that got no usable HTTP
-// answer, so asking again later may succeed.
-func IsTransportFailure(err error) bool { return isTransportFailure(err) }
+// ReadMayRecover reports whether a page whose read failed with err should ask
+// again later: the read got no usable HTTP answer, or a retry of the shared
+// connection is under way. A certificate Radar can't verify needs the user to
+// fix the configuration, so it never counts, even while a retry runs.
+func ReadMayRecover(err error) bool {
+	if isTLSError(err) {
+		return false
+	}
+	return isTransportFailure(err) || Retrying()
+}
 
 // isTransportFailure reports a read that got no usable HTTP answer: a
 // timeout, a refused connection, a failed DNS lookup, a certificate Radar

@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  ApiError,
   gitopsInsightsRefetchInterval,
   gitopsTreeRefetchInterval,
 } from "./client";
 
 type TreeQuery = Parameters<typeof gitopsTreeRefetchInterval>[0];
 type InsightQuery = Parameters<typeof gitopsInsightsRefetchInterval>[0];
-const tree = (status: string, data: TreeQuery["state"]["data"], failingForMs = 0): TreeQuery => ({
-  state: { status, data, dataUpdatedAt: 1_000, errorUpdatedAt: status === "error" ? 1_000 + failingForMs : 0 },
+const outage = new TypeError("Failed to fetch");
+const tree = (status: string, data: TreeQuery["state"]["data"], error: unknown = outage): TreeQuery => ({
+  state: { status, data, error: status === "error" ? error : null },
 });
-const insight = (status: string, data: InsightQuery["state"]["data"], failingForMs = 0): InsightQuery => ({
-  state: { status, data, dataUpdatedAt: 1_000, errorUpdatedAt: status === "error" ? 1_000 + failingForMs : 0 },
+const insight = (status: string, data: InsightQuery["state"]["data"], error: unknown = outage): InsightQuery => ({
+  state: { status, data, error: status === "error" ? error : null },
 });
-const SIX_MINUTES = 6 * 60_000;
+const gone = new ApiError("Application not found", 404);
 
 describe("gitopsTreeRefetchInterval", () => {
   it("asks every 2s while Radar connects to argocd-server", () => {
@@ -32,8 +34,13 @@ describe("gitopsTreeRefetchInterval", () => {
     expect(gitopsTreeRefetchInterval(tree("error", { healthApiPending: true }))).toBe(30_000);
   });
 
-  it("gives up once fetches have failed for more than five minutes", () => {
-    expect(gitopsTreeRefetchInterval(tree("error", { healthApiRetrying: true }, SIX_MINUTES))).toBe(false);
+  it("keeps asking through a long Radar or proxy outage", () => {
+    expect(gitopsTreeRefetchInterval(tree("error", { healthApiRetrying: true }, new ApiError("Bad Gateway", 502)))).toBe(30_000);
+  });
+
+  it("stops once Radar answers that the Application is gone or can't be read", () => {
+    expect(gitopsTreeRefetchInterval(tree("error", { healthApiRetrying: true }, gone))).toBe(false);
+    expect(gitopsTreeRefetchInterval(tree("error", { healthApiPending: true }, new ApiError("Forbidden", 403)))).toBe(false);
   });
 
   it("does not start polling after a failed fetch of a settled page", () => {
@@ -80,9 +87,9 @@ describe("gitopsInsightsRefetchInterval", () => {
     ).toBe(30_000);
   });
 
-  it("gives up once fetches have failed for more than five minutes", () => {
+  it("stops once Radar answers that the Application is gone", () => {
     expect(
-      gitopsInsightsRefetchInterval(insight("error", { capabilities: { argoRetrying: true } }, SIX_MINUTES)),
+      gitopsInsightsRefetchInterval(insight("error", { capabilities: { argoRetrying: true } }, gone)),
     ).toBe(false);
   });
 
