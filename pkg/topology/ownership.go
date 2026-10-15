@@ -62,11 +62,22 @@ type ownershipIndex struct {
 	// dependents maps an observed object to the observed objects whose
 	// recorded ownerReferences name its identity, in key order.
 	dependents map[objectKey][]objectKey
+	// recorders maps an identity to the local managers whose recorded
+	// members include it, in key order.
+	recorders map[objectKey][]objectKey
+	// applicationsByName maps an Argo CD Application name to the observed
+	// Applications of that name, in key order.
+	applicationsByName map[string][]objectKey
 }
 
 func (r *factsRegistry) ownership() *ownershipIndex {
 	r.ownershipOnce.Do(func() {
-		idx := &ownershipIndex{scopes: map[resourceid.GroupKind]bool{}, dependents: map[objectKey][]objectKey{}}
+		idx := &ownershipIndex{
+			scopes:             map[resourceid.GroupKind]bool{},
+			dependents:         map[objectKey][]objectKey{},
+			recorders:          map[objectKey][]objectKey{},
+			applicationsByName: map[string][]objectKey{},
+		}
 		for key := range r.objects {
 			idx.scopes[resourceid.GroupKind{Group: key.group, Kind: key.kind}] = key.namespace != ""
 		}
@@ -91,6 +102,25 @@ func (r *factsRegistry) ownership() *ownershipIndex {
 		}
 		for _, dependents := range idx.dependents {
 			slices.SortFunc(dependents, compareObjectKeys)
+		}
+		for manager, membership := range r.managers {
+			if membership.state != membershipRecorded {
+				continue
+			}
+			for member := range membership.members {
+				idx.recorders[member] = append(idx.recorders[member], manager)
+			}
+		}
+		for _, recorders := range idx.recorders {
+			slices.SortFunc(recorders, compareObjectKeys)
+		}
+		for key := range r.objects {
+			if key.group == argoApplicationGroup && key.kind == argoApplicationKind {
+				idx.applicationsByName[key.name] = append(idx.applicationsByName[key.name], key)
+			}
+		}
+		for _, apps := range idx.applicationsByName {
+			slices.SortFunc(apps, compareObjectKeys)
 		}
 		r.ownershipIdx = idx
 	})
