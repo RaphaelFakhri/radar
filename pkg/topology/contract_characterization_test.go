@@ -131,6 +131,10 @@ func (d *charDynamic) GetKindForGVR(gvr schema.GroupVersionResource) string {
 
 func (d *charDynamic) IsCRD(kind string) bool { return d.disc.IsCRD(kind) }
 
+func (d *charDynamic) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return d.disc.GetResourceForGroupKind(group, kind)
+}
+
 func (d *charDynamic) IsCRDGVR(gvr schema.GroupVersionResource) bool { return d.disc.IsCRDGVR(gvr) }
 
 // charObject is one fixture object with the exact identity production

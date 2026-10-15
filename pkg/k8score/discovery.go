@@ -570,6 +570,26 @@ func (d *ResourceDiscovery) GetResourceWithGroup(kindOrName, group string) (APIR
 	return APIResource{}, false
 }
 
+// GetResourceForGroupKind returns the resource whose API group and Kind are
+// exactly group and kind. Unlike GetResourceWithGroup it never matches a
+// plural or short name, so a Kind that equals another resource's plural
+// still finds itself.
+func (d *ResourceDiscovery) GetResourceForGroupKind(group, kind string) (APIResource, bool) {
+	if d == nil {
+		return APIResource{}, false
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	for _, res := range d.resources {
+		if res.Group == group && res.Kind == kind {
+			return res, true
+		}
+	}
+	return APIResource{}, false
+}
+
 // IsKnownResource checks if a kind or plural name is a known resource.
 func (d *ResourceDiscovery) IsKnownResource(kindOrName string) bool {
 	_, ok := d.GetResource(kindOrName)

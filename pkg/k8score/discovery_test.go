@@ -411,3 +411,25 @@ func TestNewResourceDiscoveryRejectsAPlainNilClient(t *testing.T) {
 		t.Fatal("expected an error for a nil discovery client")
 	}
 }
+
+// A Kind can equal another resource's plural in the same group. The exact
+// lookup must find the Kind whichever was discovered first.
+func TestGetResourceForGroupKindIgnoresPluralMatches(t *testing.T) {
+	widget := APIResource{Group: "example.io", Version: "v1", Kind: "Widget", Name: "widgets", Namespaced: true, IsCRD: true}
+	widgets := APIResource{Group: "example.io", Version: "v1", Kind: "Widgets", Name: "widgetrecords", Namespaced: false, IsCRD: true}
+	for _, order := range [][]APIResource{{widget, widgets}, {widgets, widget}} {
+		d := &ResourceDiscovery{resourceMap: make(map[string]APIResource), gvrMap: make(map[string]schema.GroupVersionResource)}
+		for _, res := range order {
+			d.AddAPIResource(res)
+		}
+		if got, ok := d.GetResourceForGroupKind("example.io", "Widgets"); !ok || got.Kind != "Widgets" || got.Namespaced {
+			t.Errorf("order %s first: Widgets resolved to %+v, %v", order[0].Kind, got, ok)
+		}
+		if got, ok := d.GetResourceForGroupKind("example.io", "Widget"); !ok || got.Kind != "Widget" || !got.Namespaced {
+			t.Errorf("order %s first: Widget resolved to %+v, %v", order[0].Kind, got, ok)
+		}
+		if _, ok := d.GetResourceForGroupKind("example.io", "widgets"); ok {
+			t.Errorf("order %s first: a plural name matched as a Kind", order[0].Kind)
+		}
+	}
+}

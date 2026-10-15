@@ -111,7 +111,7 @@ func addObservedDependencyEdges(facts *factsCapture, nodes []Node, edges []Edge,
 			if edgeType == EdgeConfigures {
 				id += "-configures"
 			}
-			edges = append(edges, Edge{ID: id, Source: source, Target: target, Type: edgeType, Label: ref.Label})
+			edges = append(edges, Edge{ID: id, Source: source, Target: target, Type: edgeType, Label: ref.Label, evidence: noEvidence})
 			seenEdges[pair] = true
 		}
 	}

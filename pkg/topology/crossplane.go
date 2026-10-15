@@ -306,7 +306,7 @@ func (b *Builder) addCrossplaneNodes(nodes []Node, edges []Edge, opts BuildOptio
 			return
 		}
 		edgeSeen[id] = true
-		edges = append(edges, Edge{ID: id, Source: src, Target: dst, Type: EdgeManages})
+		edges = append(edges, Edge{ID: id, Source: src, Target: dst, Type: EdgeManages, evidence: evidenceAssociation})
 	}
 
 	// resolveRef finds the node ID a reference points at. References usually

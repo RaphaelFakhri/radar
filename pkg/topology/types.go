@@ -169,14 +169,15 @@ type Node struct {
 
 // Edge represents a connection between two nodes
 type Edge struct {
-	ID                string   `json:"id"`
-	Source            string   `json:"source"`
-	Target            string   `json:"target"`
-	Type              EdgeType `json:"type"`
-	Label             string   `json:"label,omitempty"`
-	Partial           bool     `json:"partial,omitempty"`
-	SkipIfKindVisible string   `json:"skipIfKindVisible,omitempty"` // Hide this edge if this kind is visible (for shortcut edges)
-	PolicyEffect      string   `json:"policyEffect,omitempty"`      // "allowed", "blocked", or "unprotected" — set when ShowPolicyEffect is true
+	ID                string       `json:"id"`
+	Source            string       `json:"source"`
+	Target            string       `json:"target"`
+	Type              EdgeType     `json:"type"`
+	Label             string       `json:"label,omitempty"`
+	Partial           bool         `json:"partial,omitempty"`
+	evidence          edgeEvidence // why a manages edge exists; zero for every other type
+	SkipIfKindVisible string       `json:"skipIfKindVisible,omitempty"` // Hide this edge if this kind is visible (for shortcut edges)
+	PolicyEffect      string       `json:"policyEffect,omitempty"`      // "allowed", "blocked", or "unprotected" — set when ShowPolicyEffect is true
 }
 
 // PolicyEffect constants for edge annotation

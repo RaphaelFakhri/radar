@@ -7,8 +7,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -19,9 +21,10 @@ import (
 // build crosses or counts without drawing: a resources build's undrawn
 // ReplicaSets that in-scope Pods name as their controller, and the Pods a
 // summary-mode build counts instead of drawing, so ownership resolves the same
-// whichever way the Pod tier is rendered. Facts are keyed by exact resource
-// identity, frozen when Build returns, and never mutated afterwards, so every
-// projection of a topology can share them.
+// whichever way the Pod tier is rendered. Membership facts are the member
+// lists GitOps managers record in their status. Both are keyed by exact
+// resource identity, frozen when Build returns, and never mutated afterwards,
+// so every projection of a topology can share them.
 //
 // Facts are evidence, not answers. A fact about an object Radar did not render
 // says nothing about whether the caller may see it; queries resolve visible
@@ -89,11 +92,38 @@ const (
 	orphanFinalizer              = "orphan"
 )
 
+// membershipState is what a GitOps manager's status records about the
+// objects it applies.
+type membershipState uint8
+
+const (
+	// membershipAbsent: no member list Radar reads — the manager has not
+	// reconciled yet, or its kind (a HelmRelease) records none Radar reads.
+	membershipAbsent membershipState = iota
+	// membershipRecorded: the status lists the members; the list may be empty.
+	membershipRecorded
+	// membershipRemote: the manager applies to another cluster, so its list
+	// names objects there and matches nothing here.
+	membershipRemote
+)
+
+// membershipFacts is one manager's recorded member list.
+type membershipFacts struct {
+	state   membershipState
+	members map[objectKey]struct{}
+}
+
 // factsRegistry is the frozen, read-only set of facts a Topology carries.
 type factsRegistry struct {
 	objects map[objectKey]objectFacts
 	// members maps a synthetic PodGroup node ID to the Pods it stands for.
 	members map[string][]objectKey
+	// managers maps a GitOps manager's identity to its recorded members.
+	managers map[objectKey]membershipFacts
+	// scopes is discovery's answer, at build time, to whether each custom
+	// owner kind the build's ownerReferences name is namespaced. It is how an
+	// owner the build never observed still resolves to an exact identity.
+	scopes map[resourceid.GroupKind]bool
 }
 
 // object returns the facts recorded for an exact identity.
@@ -113,16 +143,34 @@ func (r *factsRegistry) groupMembers(nodeID string) []objectKey {
 	return r.members[nodeID]
 }
 
+// membership returns a manager's recorded members; a manager this build did
+// not record is absent.
+func (r *factsRegistry) membership(manager objectKey) membershipFacts {
+	if r == nil {
+		return membershipFacts{}
+	}
+	return r.managers[manager]
+}
+
 // factsCapture accumulates observations during one Build. A nil capture
 // records nothing, so helpers that run outside Build (tests calling a single
 // producer) need no special handling.
 type factsCapture struct {
-	objects map[objectKey]objectFacts
-	members map[string][]objectKey
+	objects  map[objectKey]objectFacts
+	members  map[string][]objectKey
+	managers map[objectKey]membershipFacts
+	// ownerKinds are the kinds the observed ownerReferences name.
+	ownerKinds map[resourceid.GroupKind]struct{}
+	scopes     map[resourceid.GroupKind]bool
 }
 
 func newFactsCapture(sizeHint int) *factsCapture {
-	return &factsCapture{objects: make(map[objectKey]objectFacts, sizeHint), members: map[string][]objectKey{}}
+	return &factsCapture{
+		objects:    make(map[objectKey]objectFacts, sizeHint),
+		members:    map[string][]objectKey{},
+		managers:   map[objectKey]membershipFacts{},
+		ownerKinds: map[resourceid.GroupKind]struct{}{},
+	}
 }
 
 // freeze hands the observations to the topology. The capture must not be used
@@ -131,7 +179,7 @@ func (c *factsCapture) freeze() *factsRegistry {
 	if c == nil {
 		return nil
 	}
-	return &factsRegistry{objects: c.objects, members: c.members}
+	return &factsRegistry{objects: c.objects, members: c.members, managers: c.managers, scopes: c.scopes}
 }
 
 // observe records obj, which the build draws as a node or a group member,
@@ -163,6 +211,52 @@ func (c *factsCapture) record(key objectKey, obj metav1.Object, hop bool) {
 	facts := factsFor(obj)
 	facts.hop = hop
 	c.objects[key] = facts
+	for _, owner := range facts.owners {
+		c.ownerKinds[resourceid.GroupKind{Group: owner.group, Kind: owner.kind}] = struct{}{}
+	}
+}
+
+// kindScopeProvider is an optional DynamicProvider capability: discovery's
+// description of an exact group and Kind, including whether it is namespaced.
+type kindScopeProvider interface {
+	GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool)
+}
+
+// recordKindScopes asks discovery, when the provider can say, whether each
+// custom owner kind the observed references name is namespaced. Built-in
+// kinds are answered by the built-in table and are not asked.
+func (c *factsCapture) recordKindScopes(provider DynamicProvider) {
+	discovery, ok := provider.(kindScopeProvider)
+	if c == nil || !ok {
+		return
+	}
+	for gk := range c.ownerKinds {
+		if b, builtin := resourceid.BuiltinForKind(gk.Kind); (builtin && b.Group == gk.Group) || gk.Group == "" {
+			continue
+		}
+		if resource, found := discovery.GetResourceForGroupKind(gk.Group, gk.Kind); found {
+			if c.scopes == nil {
+				c.scopes = map[resourceid.GroupKind]bool{}
+			}
+			c.scopes[gk] = resource.Namespaced
+		}
+	}
+}
+
+// unstructuredKey is a dynamic object's exact identity.
+func unstructuredKey(obj *unstructured.Unstructured) objectKey {
+	return objectKey{group: resourceid.GroupFromAPIVersion(obj.GetAPIVersion()), kind: obj.GetKind(), namespace: obj.GetNamespace(), name: obj.GetName()}
+}
+
+// recordMembership records a manager's member list. The first record for a
+// manager wins.
+func (c *factsCapture) recordMembership(manager objectKey, facts membershipFacts) {
+	if c == nil || manager.name == "" {
+		return
+	}
+	if _, ok := c.managers[manager]; !ok {
+		c.managers[manager] = facts
+	}
 }
 
 // observedNode records the facts of the object a node is built from and

@@ -19,11 +19,11 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 			ids[key] = nodes[i].ID
 		}
 	}
-	seen := map[string]bool{}
-	for _, edge := range edges {
-		seen[edge.ID] = true
+	seen := map[string]int{}
+	for i, edge := range edges {
+		seen[edge.ID] = i
 	}
-	appendResolvedRef := func(source string, ref resourceid.Ref, reverse bool, edgeType EdgeType) {
+	appendResolvedRef := func(source string, ref resourceid.Ref, reverse bool, edgeType EdgeType, evidence edgeEvidence) {
 		if ambiguous[ref.Key()] {
 			return
 		}
@@ -35,10 +35,14 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 			source, target = target, source
 		}
 		id := source + "-to-" + target
-		if !seen[id] {
-			seen[id] = true
-			edges = append(edges, Edge{ID: id, Source: source, Target: target, Type: edgeType})
+		if i, ok := seen[id]; ok {
+			if edgeType == EdgeManages && edges[i].Type == EdgeManages {
+				edges[i].evidence |= evidence
+			}
+			return
 		}
+		seen[id] = len(edges)
+		edges = append(edges, Edge{ID: id, Source: source, Target: target, Type: edgeType, evidence: evidence})
 	}
 	appendRef := func(source string, obj *unstructured.Unstructured, reverse bool, fields ...string) {
 		raw, present, err := unstructured.NestedMap(obj.Object, fields...)
@@ -47,7 +51,7 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 		}
 		ref, valid := configrefs.KnativeReference(raw, obj.GetNamespace())
 		if valid {
-			appendResolvedRef(source, ref, reverse, EdgeExposes)
+			appendResolvedRef(source, ref, reverse, EdgeExposes, noEvidence)
 		}
 	}
 	for _, trigger := range triggers {
@@ -56,7 +60,7 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 		// brokerRef is authoritative over the older same-namespace broker field.
 		if raw, present, _ := unstructured.NestedMap(trigger.Object, "spec", "brokerRef"); present {
 			if ref, valid := configrefs.KnativeTriggerBrokerReference(raw); valid {
-				appendResolvedRef(id, ref, true, EdgeExposes)
+				appendResolvedRef(id, ref, true, EdgeExposes, noEvidence)
 			}
 		}
 	}
@@ -72,7 +76,7 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 		// alone is a declared backing/exposure reference, not a GC guarantee.
 		for _, owner := range channel.GetOwnerReferences() {
 			if owner.APIVersion != "" {
-				appendResolvedRef(id, resourceid.NewRef(resourceid.GroupFromAPIVersion(owner.APIVersion), owner.Kind, channel.GetNamespace(), owner.Name), true, EdgeManages)
+				appendResolvedRef(id, resourceid.NewRef(resourceid.GroupFromAPIVersion(owner.APIVersion), owner.Kind, channel.GetNamespace(), owner.Name), true, EdgeManages, ownerEvidence(owner))
 			}
 		}
 	}

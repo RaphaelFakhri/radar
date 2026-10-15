@@ -261,3 +261,9 @@ func (a *topologyDynamicProvider) IsCRD(kind string) bool {
 func (a *topologyDynamicProvider) IsCRDGVR(gvr schema.GroupVersionResource) bool {
 	return a.discovery.IsCRDGVR(gvr)
 }
+
+// GetResourceForGroupKind lets a topology build record whether the custom
+// owner kinds its ownerReferences name are namespaced.
+func (a *topologyDynamicProvider) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return a.discovery.GetResourceForGroupKind(group, kind)
+}

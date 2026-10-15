@@ -25,11 +25,11 @@ func TestAddGitOpsManagedResourceEdgesPreservesArgoAPIGroup(t *testing.T) {
 	}}
 
 	edges := addGitOpsManagedResourceEdges(
+		nil,
 		nodes,
 		nil,
 		[]*unstructured.Unstructured{app},
 		map[string]string{"argocd/training": "application/argocd/training"},
-		nil,
 		nil,
 		nil,
 	)
@@ -54,11 +54,11 @@ func TestAddGitOpsManagedResourceEdgesTreatsArgoGroupAsExact(t *testing.T) {
 			"status":   map[string]any{"resources": []any{resource}},
 		}}
 		return addGitOpsManagedResourceEdges(
+			nil,
 			nodes,
 			nil,
 			[]*unstructured.Unstructured{app},
 			map[string]string{"argocd/training": "application/argocd/training"},
-			map[string]string{"application/argocd/training": "ml"},
 			nil,
 			nil,
 		)
@@ -86,8 +86,8 @@ func TestAddGitOpsManagedResourceEdgesParsesFluxIdentityFromRight(t *testing.T) 
 	}}
 
 	edges := addGitOpsManagedResourceEdges(
-		nodes,
 		nil,
+		nodes,
 		nil,
 		nil,
 		nil,
@@ -127,11 +127,11 @@ func TestAddGitOpsManagedResourceEdgesIgnoresRemoteDestinations(t *testing.T) {
 	}}
 
 	edges := addGitOpsManagedResourceEdges(
+		nil,
 		nodes,
 		nil,
 		[]*unstructured.Unstructured{app("sealed-prod", "https://prod.example.com"), app("sealed-hub", "https://kubernetes.default.svc")},
 		map[string]string{"argocd/sealed-hub": "application/argocd/sealed-hub", "argocd/sealed-prod": "application/argocd/sealed-prod"},
-		nil,
 		[]*unstructured.Unstructured{remoteKs},
 		map[string]string{"flux-system/fleet-prod": "kustomization/flux-system/fleet-prod"},
 	)

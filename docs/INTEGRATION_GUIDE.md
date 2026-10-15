@@ -158,6 +158,13 @@ owner enriches those findings; it needs no per-kind detector or renderer.
   `syntheticNode(...)`. The recorded facts (UID, ownerReferences, management
   claims) are what ownership is verified against, and
   `TestEveryNodeLiteralDeclaresItsFacts` fails on a bare `Node{...}`.
+- [ ] Give every `EdgeManages` edge the `evidence` it rests on
+  (`pkg/topology/evidence.go`): `ownerEvidence(ref)` when you read an
+  ownerReference, `evidenceAssociation` for a spec, status, label or naming
+  link, `evidenceShortcut` for a path across a kind the graph hides. When your
+  producer meets a pair another producer already linked, OR the evidence into
+  that edge instead of skipping it. `TestEveryManagesEdgeLiteralDeclaresItsEvidence`
+  fails on a manages literal without it.
 - [ ] Reuse lists between node/edge construction and handle cache errors. Check
   the generic CRD pass and `kindsHandledOutsideGenericCRDPass` for duplicates and
   collisions. Keep pseudo-kind `KindForGVK`, node IDs and `buildNodeID` /

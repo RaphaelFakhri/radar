@@ -171,6 +171,7 @@ func (b *Builder) Build(opts BuildOptions) (*Topology, error) {
 		b.addReflectionRelationships(topo, opts)
 	}
 	// Reflection is the last producer; facts are complete only after it.
+	b.facts.recordKindScopes(b.dynamic)
 	topo.facts = b.facts.freeze()
 
 	// Set large cluster flags in response
@@ -618,11 +619,12 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					},
 				}))
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", rolloutID, runID),
-					Source: rolloutID,
-					Target: runID,
-					Type:   EdgeManages,
-					Label:  run.trigger,
+					ID:       fmt.Sprintf("%s-to-%s", rolloutID, runID),
+					Source:   rolloutID,
+					Target:   runID,
+					Type:     EdgeManages,
+					Label:    run.trigger,
+					evidence: evidenceAssociation,
 				})
 			}
 
@@ -647,7 +649,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	}
 	applicationIDs := make(map[string]string)             // ns/name -> applicationID
 	var applicationResources []*unstructured.Unstructured // Store for second pass
-	applicationDestNamespaces := make(map[string]string)  // appID -> destNamespace
 	if hasApplications && dynamicCache != nil {
 		applications, err := dynamicCache.ListNamespaces(applicationGVR, opts.Namespaces)
 		if err != nil {
@@ -731,7 +732,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Store for second pass edge creation
 			applicationResources = append(applicationResources, app)
-			applicationDestNamespaces[appID] = destNamespace
 		}
 	}
 
@@ -897,6 +897,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			helmReleaseIDs[ns+"/"+name] = hrID
 			if !gitops.FluxTargetsLocalCluster(hr) {
 				remoteHelmReleases[ns+"/"+name] = true
+				// A release whose inventory Radar does not read stays absent;
+				// a remote one is recorded so claims naming it can be rejected.
+				b.facts.recordMembership(unstructuredKey(hr), membershipFacts{state: membershipRemote})
 			}
 
 			// Extract status fields
@@ -1058,13 +1061,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				},
 			}))
 
-			if pool, _ := karpenter.ResolveNodePoolForClaim(nc, nodePoolsByName); pool != nil {
+			if pool, source := karpenter.ResolveNodePoolForClaim(nc, nodePoolsByName); pool != nil {
 				if ownerID, ok := nodePoolIDs[pool.GetName()]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, ncID),
-						Source: ownerID,
-						Target: ncID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, ncID),
+						Source:   ownerID,
+						Target:   ncID,
+						Type:     EdgeManages,
+						evidence: nodePoolClaimEvidence(nc, pool.GetName(), source),
 					})
 				}
 			}
@@ -1101,10 +1105,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					},
 				}))
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", ncID, nodeID),
-					Source: ncID,
-					Target: nodeID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", ncID, nodeID),
+					Source:   ncID,
+					Target:   nodeID,
+					Type:     EdgeManages,
+					evidence: evidenceAssociation,
 				})
 			}
 		}
@@ -1426,10 +1431,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", clID, kcpID),
-							Source: clID,
-							Target: kcpID,
-							Type:   EdgeManages,
+							ID:       fmt.Sprintf("%s-to-%s", clID, kcpID),
+							Source:   clID,
+							Target:   kcpID,
+							Type:     EdgeManages,
+							evidence: ownerEvidence(ownerRef),
 						})
 					}
 				}
@@ -1475,10 +1481,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", clID, mdID),
-							Source: clID,
-							Target: mdID,
-							Type:   EdgeManages,
+							ID:       fmt.Sprintf("%s-to-%s", clID, mdID),
+							Source:   clID,
+							Target:   mdID,
+							Type:     EdgeManages,
+							evidence: ownerEvidence(ownerRef),
 						})
 					}
 				}
@@ -1524,10 +1531,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", clID, mpID),
-							Source: clID,
-							Target: mpID,
-							Type:   EdgeManages,
+							ID:       fmt.Sprintf("%s-to-%s", clID, mpID),
+							Source:   clID,
+							Target:   mpID,
+							Type:     EdgeManages,
+							evidence: ownerEvidence(ownerRef),
 						})
 					}
 				}
@@ -1573,10 +1581,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if ownerRef.Kind == "MachineDeployment" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if mdID, ok := machineDeploymentIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", mdID, msID),
-							Source: mdID,
-							Target: msID,
-							Type:   EdgeManages,
+							ID:       fmt.Sprintf("%s-to-%s", mdID, msID),
+							Source:   mdID,
+							Target:   msID,
+							Type:     EdgeManages,
+							evidence: ownerEvidence(ownerRef),
 						})
 					}
 				}
@@ -1629,10 +1638,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 				if ownerID != "" {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, mID),
-						Source: ownerID,
-						Target: mID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, mID),
+						Source:   ownerID,
+						Target:   mID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ownerRef),
 					})
 				}
 			}
@@ -1671,10 +1681,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					}))
 				}
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", machineID, nodeID),
-					Source: machineID,
-					Target: nodeID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", machineID, nodeID),
+					Source:   machineID,
+					Target:   nodeID,
+					Type:     EdgeManages,
+					evidence: evidenceAssociation,
 				})
 			}
 		}
@@ -2890,13 +2901,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				},
 			}))
 			edges = addArgoWorkflowTemplateEdges(edges, wfID, ns, argoWorkflowTemplateRefsFromWorkflowSpec(wf.Object, "spec"), workflowTemplateIDs, clusterWorkflowTemplateIDs)
-			if owner := argoWorkflowCronOwnerName(wf); owner != "" {
+			if owner, evidence := argoWorkflowCronOwner(wf); owner != "" {
 				if cwfID, ok := cronWorkflowIDs[ns+"/"+owner]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", cwfID, wfID),
-						Source: cwfID,
-						Target: wfID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", cwfID, wfID),
+						Source:   cwfID,
+						Target:   wfID,
+						Type:     EdgeManages,
+						evidence: evidence,
 					})
 					workflowToCronWorkflow[ns+"/"+name] = cwfID
 				}
@@ -2978,10 +2990,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				ownerKey := job.Namespace + "/" + ownerRef.Name
 				if ownerID, ok := cronJobIDs[ownerKey]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, jobID),
-						Source: ownerID,
-						Target: jobID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, jobID),
+						Source:   ownerID,
+						Target:   jobID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ownerRef),
 					})
 					// Track for shortcut edges (CronJob -> Pod)
 					jobKey := job.Namespace + "/" + job.Name
@@ -2991,10 +3004,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				ownerKey := job.Namespace + "/" + ownerRef.Name
 				if ownerID, ok := scaledJobIDs[ownerKey]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, jobID),
-						Source: ownerID,
-						Target: jobID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, jobID),
+						Source:   ownerID,
+						Target:   jobID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ownerRef),
 					})
 					jobKey := job.Namespace + "/" + job.Name
 					jobToScaledJob[jobKey] = ownerID
@@ -3187,11 +3201,12 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						label = rolloutTrafficEdgeLabel(rsTrafficRole, rsTrafficInfo)
 					}
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, rsID),
-						Source: ownerID,
-						Target: rsID,
-						Type:   EdgeManages,
-						Label:  label,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, rsID),
+						Source:   ownerID,
+						Target:   rsID,
+						Type:     EdgeManages,
+						Label:    label,
+						evidence: ownerEvidence(ownerRef),
 					})
 				}
 			}
@@ -3317,7 +3332,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					nodes = append(nodes, podNode)
 
 					// Connect to owner (resources view specific)
-					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
+					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow, nil)...)
 				}
 			} else {
 				// Large group - create PodGroup
@@ -3343,6 +3358,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				// (see the stamping loop after ownerIds, below).
 				podRoleByKey := map[string]string{}
 				ownerReps := map[string]*corev1.Pod{}
+				memberEvidence := map[objectKey]edgeEvidence{}
 				for _, p := range group.Pods {
 					if role := podRolloutTrafficRole(p, replicaSetToRollout, rolloutTrafficByID); role != "" {
 						roles[role] = true
@@ -3353,6 +3369,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						if _, ok := ownerReps[ownerKey]; !ok {
 							ownerReps[ownerKey] = p
 						}
+						memberEvidence[objectKey{group: resourceid.GroupFromAPIVersion(ref.APIVersion), kind: ref.Kind, namespace: p.Namespace, name: ref.Name}] |= ownerEvidence(ref)
 					}
 				}
 				if len(roles) == 1 {
@@ -3361,7 +3378,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					}
 				}
 				nodes = append(nodes, podGroupNode)
-				seenEdgeID := map[string]bool{}
+				seenEdgeID := map[string]int{}
 				// ownerKeyToSourceIDs records which edge source(s) each
 				// distinct owner actually resolved to (a ReplicaSet's edge
 				// is skipped entirely when it's not visible, for instance),
@@ -3371,12 +3388,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				// below and pod_grouping.go's "ownerKey" on each pod.
 				ownerKeyToSourceIDs := map[string][]string{}
 				for ownerKey, p := range ownerReps {
-					for _, e := range b.createPodOwnerEdges(p, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow) {
+					for _, e := range b.createPodOwnerEdges(p, podGroupID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow, memberEvidence) {
 						ownerKeyToSourceIDs[ownerKey] = append(ownerKeyToSourceIDs[ownerKey], e.Source)
-						if !seenEdgeID[e.ID] {
-							seenEdgeID[e.ID] = true
-							edges = append(edges, e)
+						if i, ok := seenEdgeID[e.ID]; ok {
+							edges[i].evidence |= e.evidence
+							continue
 						}
+						seenEdgeID[e.ID] = len(edges)
+						edges = append(edges, e)
 					}
 				}
 				if pods, ok := podGroupNode.Data["pods"].([]map[string]any); ok {
@@ -3812,10 +3831,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if className != "" {
 				if gcID, ok := gatewayClassIDs[className]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", gcID, gwID),
-						Source: gcID,
-						Target: gwID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", gcID, gwID),
+						Source:   gcID,
+						Target:   gwID,
+						Type:     EdgeManages,
+						evidence: evidenceBinding,
 					})
 				}
 			}
@@ -4019,7 +4039,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					Data: map[string]any{"namespace": namespace, "targetSecret": targetName, "labels": sealedSecret.GetLabels(), "apiVersion": sealedSecret.GetAPIVersion()},
 				}))
 				if secretID := visibleSecretIDs[key]; secretID != "" {
-					edges = append(edges, Edge{ID: fmt.Sprintf("%s-to-%s", sealedSecretID, secretID), Source: sealedSecretID, Target: secretID, Type: EdgeManages})
+					edges = append(edges, Edge{ID: fmt.Sprintf("%s-to-%s", sealedSecretID, secretID), Source: sealedSecretID, Target: secretID, Type: EdgeManages, evidence: evidenceAssociation})
 					continue
 				}
 				for _, workloadID := range consumers {
@@ -4565,12 +4585,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(dep.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(dep.Labels, hrName, hrNS); evidence != noEvidence {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, depID),
-					Source: hrID,
-					Target: depID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, depID),
+					Source:   hrID,
+					Target:   depID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
@@ -4601,12 +4622,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(svc.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(svc.Labels, hrName, hrNS); evidence != noEvidence {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, svcID),
-					Source: hrID,
-					Target: svcID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, svcID),
+					Source:   hrID,
+					Target:   svcID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
@@ -4637,25 +4659,27 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(sts.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(sts.Labels, hrName, hrNS); evidence != noEvidence {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, stsID),
-					Source: hrID,
-					Target: stsID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, stsID),
+					Source:   hrID,
+					Target:   stsID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
 
 		// Find DaemonSets with matching label
 		for _, ds := range daemonsetsByNS[hrNS] {
-			if matchesHelmRelease(ds.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(ds.Labels, hrName, hrNS); evidence != noEvidence {
 				dsID := fmt.Sprintf("daemonset/%s/%s", ds.Namespace, ds.Name)
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, dsID),
-					Source: hrID,
-					Target: dsID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, dsID),
+					Source:   hrID,
+					Target:   dsID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
@@ -4676,12 +4700,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if job == nil {
 				continue
 			}
-			if matchesHelmRelease(job.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(job.Labels, hrName, hrNS); evidence != noEvidence {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, jobID),
-					Source: hrID,
-					Target: jobID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, jobID),
+					Source:   hrID,
+					Target:   jobID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
@@ -4702,12 +4727,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if cj == nil {
 				continue
 			}
-			if matchesHelmRelease(cj.Labels, hrName, hrNS) {
+			if evidence := helmReleaseLabelEvidence(cj.Labels, hrName, hrNS); evidence != noEvidence {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", hrID, cjID),
-					Source: hrID,
-					Target: cjID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", hrID, cjID),
+					Source:   hrID,
+					Target:   cjID,
+					Type:     EdgeManages,
+					evidence: evidence,
 				})
 			}
 		}
@@ -4723,12 +4749,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if rolloutGetErr != nil || rolloutRes == nil {
 					continue
 				}
-				if matchesHelmRelease(rolloutRes.GetLabels(), hrName, hrNS) {
+				if evidence := helmReleaseLabelEvidence(rolloutRes.GetLabels(), hrName, hrNS); evidence != noEvidence {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", hrID, rolloutID),
-						Source: hrID,
-						Target: rolloutID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", hrID, rolloutID),
+						Source:   hrID,
+						Target:   rolloutID,
+						Type:     EdgeManages,
+						evidence: evidence,
 					})
 				}
 			}
@@ -4896,10 +4923,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if ref.Kind == "Service" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeServiceIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, kcfgID),
-						Source: ownerID,
-						Target: kcfgID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, kcfgID),
+						Source:   ownerID,
+						Target:   kcfgID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ref),
 					})
 				}
 			}
@@ -4917,10 +4945,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if ref.Kind == "Service" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeServiceIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, krouteID),
-						Source: ownerID,
-						Target: krouteID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, krouteID),
+						Source:   ownerID,
+						Target:   krouteID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ref),
 					})
 				}
 			}
@@ -4938,10 +4967,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if ref.Kind == "Configuration" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeConfigIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, krevID),
-						Source: ownerID,
-						Target: krevID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, krevID),
+						Source:   ownerID,
+						Target:   krevID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ref),
 					})
 				}
 			}
@@ -4957,10 +4987,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				deployID := deploymentIDs[deploy.Namespace+"/"+deploy.Name]
 				if krevID, ok := knativeRevisionIDs[deploy.Namespace+"/"+ref.Name]; ok && deployID != "" {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", krevID, deployID),
-						Source: krevID,
-						Target: deployID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", krevID, deployID),
+						Source:   krevID,
+						Target:   deployID,
+						Type:     EdgeManages,
+						evidence: ownerEvidence(ref),
 					})
 				}
 			}
@@ -5164,10 +5195,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			secretID := fmt.Sprintf("secret/%s/%s", ns, secretName)
 			if secretIDs[secretID] {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", certID, secretID),
-					Source: certID,
-					Target: secretID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", certID, secretID),
+					Source:   certID,
+					Target:   secretID,
+					Type:     EdgeManages,
+					evidence: evidenceAssociation,
 				})
 			}
 		}
@@ -5789,11 +5821,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	}
 	edges = addKnativeReferenceEdges(nodes, edges, knativeTriggerResources, knativeSourceResources, knativeChannelResources)
 	edges = addGitOpsManagedResourceEdges(
+		b.facts,
 		nodes,
 		edges,
 		applicationResources,
 		applicationIDs,
-		applicationDestNamespaces,
 		kustomizationResources,
 		kustomizationIDs,
 	)
@@ -5817,11 +5849,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 }
 
 func addGitOpsManagedResourceEdges(
+	facts *factsCapture,
 	nodes []Node,
 	edges []Edge,
 	applications []*unstructured.Unstructured,
 	applicationIDs map[string]string,
-	applicationDestNamespaces map[string]string,
 	kustomizations []*unstructured.Unstructured,
 	kustomizationIDs map[string]string,
 ) []Edge {
@@ -5831,9 +5863,9 @@ func addGitOpsManagedResourceEdges(
 			resourceIDs[key] = nodes[i].ID
 		}
 	}
-	seenEdges := make(map[string]bool, len(edges))
-	for _, edge := range edges {
-		seenEdges[edge.ID] = true
+	seenEdges := make(map[string]int, len(edges))
+	for i, edge := range edges {
+		seenEdges[edge.ID] = i
 	}
 	appendManaged := func(sourceID, group, kind, namespace, name string) {
 		if sourceID == "" || kind == "" || name == "" {
@@ -5846,11 +5878,19 @@ func addGitOpsManagedResourceEdges(
 			return
 		}
 		edgeID := fmt.Sprintf("%s-to-%s", sourceID, targetID)
-		if seenEdges[edgeID] {
+		if i, ok := seenEdges[edgeID]; ok {
+			if edges[i].Type == EdgeManages {
+				edges[i].evidence |= evidenceMembership
+			}
 			return
 		}
-		seenEdges[edgeID] = true
-		edges = append(edges, Edge{ID: edgeID, Source: sourceID, Target: targetID, Type: EdgeManages})
+		seenEdges[edgeID] = len(edges)
+		edges = append(edges, Edge{ID: edgeID, Source: sourceID, Target: targetID, Type: EdgeManages, evidence: evidenceMembership})
+	}
+	// Membership records every member a manager's status lists, whatever its
+	// kind; the display edges cover only the kinds the graph draws.
+	recordMembership := func(manager *unstructured.Unstructured, membership membershipFacts) {
+		facts.recordMembership(unstructuredKey(manager), membership)
 	}
 
 	argoKinds := map[string]bool{
@@ -5863,26 +5903,47 @@ func addGitOpsManagedResourceEdges(
 		// A remote destination's status.resources name objects in that
 		// cluster; a same-named local object isn't the one it manages.
 		if !gitops.IsInClusterDestination(app) {
+			recordMembership(app, membershipFacts{state: membershipRemote})
 			continue
 		}
 		appID := applicationIDs[app.GetNamespace()+"/"+app.GetName()]
-		destNamespace := applicationDestNamespaces[appID]
-		resources, _, _ := unstructured.NestedSlice(app.Object, "status", "resources")
+		destNamespace, _, _ := unstructured.NestedString(app.Object, "spec", "destination", "namespace")
+		resources, recorded, _ := unstructured.NestedSlice(app.Object, "status", "resources")
+		membership := membershipFacts{}
+		if recorded {
+			membership = membershipFacts{state: membershipRecorded, members: make(map[objectKey]struct{}, len(resources))}
+		}
 		for _, resource := range resources {
 			m, ok := resource.(map[string]any)
 			if !ok {
+				membership = membershipFacts{}
 				continue
 			}
-			kind := gitops.StringValue(m["kind"])
-			if !argoKinds[kind] {
-				continue
+			if !argoResourceEntryReadable(m) {
+				// A list with an entry that names no object is not a list of
+				// members Radar can trust to be complete.
+				membership = membershipFacts{}
 			}
-			namespace := gitops.StringValue(m["namespace"])
+			group, kind, name := gitops.StringValue(m["group"]), gitops.StringValue(m["kind"]), gitops.StringValue(m["name"])
+			recordedNamespace := gitops.StringValue(m["namespace"])
+			namespace := recordedNamespace
 			if namespace == "" {
 				namespace = destNamespace
 			}
-			appendManaged(appID, gitops.StringValue(m["group"]), kind, namespace, gitops.StringValue(m["name"]))
+			if membership.members != nil && kind != "" && name != "" {
+				// Without discovery an empty namespace is either a
+				// cluster-scoped member or a namespaced one in the
+				// destination; a kind is only ever one of the two, so
+				// keeping both keys matches exactly one real object.
+				membership.members[objectKey{group: group, kind: kind, namespace: recordedNamespace, name: name}] = struct{}{}
+				membership.members[objectKey{group: group, kind: kind, namespace: namespace, name: name}] = struct{}{}
+			}
+			if !argoKinds[kind] {
+				continue
+			}
+			appendManaged(appID, group, kind, namespace, name)
 		}
+		recordMembership(app, membership)
 	}
 
 	fluxKinds := map[string]bool{
@@ -5893,24 +5954,55 @@ func addGitOpsManagedResourceEdges(
 	}
 	for _, kustomization := range kustomizations {
 		if !gitops.FluxTargetsLocalCluster(kustomization) {
+			recordMembership(kustomization, membershipFacts{state: membershipRemote})
 			continue
 		}
 		ksID := kustomizationIDs[kustomization.GetNamespace()+"/"+kustomization.GetName()]
-		entries, _, _ := unstructured.NestedSlice(kustomization.Object, "status", "inventory", "entries")
+		inventory, _, _ := unstructured.NestedFieldNoCopy(kustomization.Object, "status", "inventory")
+		entries, _, entriesErr := unstructured.NestedSlice(kustomization.Object, "status", "inventory", "entries")
+		membership := membershipFacts{}
+		if _, recorded := inventory.(map[string]any); recorded && entriesErr == nil {
+			membership = membershipFacts{state: membershipRecorded, members: make(map[objectKey]struct{}, len(entries))}
+		}
 		for _, entry := range entries {
 			m, ok := entry.(map[string]any)
 			if !ok {
+				membership = membershipFacts{}
 				continue
 			}
 			group, kind, namespace, name, ok := gitops.ParseFluxInventoryID(gitops.StringValue(m["id"]))
-			if !ok || !fluxKinds[kind] {
+			if !ok {
+				membership = membershipFacts{}
+				continue
+			}
+			if membership.members != nil {
+				membership.members[objectKey{group: group, kind: kind, namespace: namespace, name: name}] = struct{}{}
+			}
+			if !fluxKinds[kind] {
 				continue
 			}
 			appendManaged(ksID, group, kind, namespace, name)
 		}
+		recordMembership(kustomization, membership)
 	}
 
 	return edges
+}
+
+// argoResourceEntryReadable reports a status.resources entry that names one
+// object: a Kind and a name, and a group and namespace that are strings when
+// they are set at all.
+func argoResourceEntryReadable(entry map[string]any) bool {
+	for _, field := range []string{"group", "namespace"} {
+		if value, set := entry[field]; set && value != nil {
+			if _, ok := value.(string); !ok {
+				return false
+			}
+		}
+	}
+	kind, _ := entry["kind"].(string)
+	name, _ := entry["name"].(string)
+	return kind != "" && name != ""
 }
 
 // buildTrafficTopology creates a network-focused view
@@ -7629,16 +7721,21 @@ func (b *Builder) createPodOwnerEdges(
 	jobToScaledJob map[string]string,
 	workflowIDs map[string]string,
 	workflowToCronWorkflow map[string]string,
+	// memberEvidence, for a Pod standing in for a group, is the evidence
+	// every member's reference to an owner gives, so the group's edge does
+	// not depend on which member represents it.
+	memberEvidence map[objectKey]edgeEvidence,
 ) []Edge {
 	var edges []Edge
 	if workflowName := pod.Labels["workflows.argoproj.io/workflow"]; workflowName != "" {
 		workflowKey := pod.Namespace + "/" + workflowName
 		if ownerID, ok := workflowIDs[workflowKey]; ok {
 			edges = append(edges, Edge{
-				ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
-				Source: ownerID,
-				Target: targetID,
-				Type:   EdgeManages,
+				ID:       fmt.Sprintf("%s-to-%s", ownerID, targetID),
+				Source:   ownerID,
+				Target:   targetID,
+				Type:     EdgeManages,
+				evidence: aggregateEvidence(targetID, evidenceAssociation),
 			})
 			if cronWorkflowID, ok := workflowToCronWorkflow[workflowKey]; ok {
 				edges = append(edges, Edge{
@@ -7647,6 +7744,7 @@ func (b *Builder) createPodOwnerEdges(
 					Target:            targetID,
 					Type:              EdgeManages,
 					SkipIfKindVisible: string(KindWorkflow),
+					evidence:          aggregateEvidence(targetID, evidenceShortcut),
 				})
 			}
 			return edges
@@ -7662,6 +7760,7 @@ func (b *Builder) createPodOwnerEdges(
 			continue
 		}
 		ownerKey := pod.Namespace + "/" + ownerRef.Name
+		refEvidence := ownerEvidence(ownerRef) | memberEvidence[objectKey{group: resourceid.GroupFromAPIVersion(ownerRef.APIVersion), kind: ownerRef.Kind, namespace: pod.Namespace, name: ownerRef.Name}]
 		switch ownerRef.Kind {
 		case "ReplicaSet":
 			// Rollout-owned ReplicaSets are visible (see the node-creation
@@ -7684,11 +7783,12 @@ func (b *Builder) createPodOwnerEdges(
 						}
 					}
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
-						Source: ownerID,
-						Target: targetID,
-						Type:   EdgeManages,
-						Label:  label,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, targetID),
+						Source:   ownerID,
+						Target:   targetID,
+						Type:     EdgeManages,
+						Label:    label,
+						evidence: aggregateEvidence(targetID, refEvidence),
 					})
 				}
 				// Rollout->Pod shortcut, same pattern as CronJob/ScaledJob->Pod
@@ -7713,49 +7813,55 @@ func (b *Builder) createPodOwnerEdges(
 						Type:              EdgeManages,
 						Label:             label,
 						SkipIfKindVisible: string(KindReplicaSet),
+						evidence:          aggregateEvidence(targetID, evidenceShortcut),
 					})
 				}
 			} else {
 				// ReplicaSets hidden: use shortcut edge directly to Deployment or Rollout
 				if deployID, ok := replicaSetToDeployment[ownerKey]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", deployID, targetID),
-						Source: deployID,
-						Target: targetID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", deployID, targetID),
+						Source:   deployID,
+						Target:   targetID,
+						Type:     EdgeManages,
+						evidence: aggregateEvidence(targetID, evidenceShortcut),
 					})
 				} else if rolloutID, ok := replicaSetToRollout[ownerKey]; ok {
 					edges = append(edges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", rolloutID, targetID),
-						Source: rolloutID,
-						Target: targetID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", rolloutID, targetID),
+						Source:   rolloutID,
+						Target:   targetID,
+						Type:     EdgeManages,
+						evidence: aggregateEvidence(targetID, evidenceShortcut),
 					})
 				}
 			}
 		case "DaemonSet":
 			ownerID := fmt.Sprintf("daemonset/%s/%s", pod.Namespace, ownerRef.Name)
 			edges = append(edges, Edge{
-				ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
-				Source: ownerID,
-				Target: targetID,
-				Type:   EdgeManages,
+				ID:       fmt.Sprintf("%s-to-%s", ownerID, targetID),
+				Source:   ownerID,
+				Target:   targetID,
+				Type:     EdgeManages,
+				evidence: aggregateEvidence(targetID, refEvidence),
 			})
 		case "StatefulSet":
 			ownerID := fmt.Sprintf("statefulset/%s/%s", pod.Namespace, ownerRef.Name)
 			edges = append(edges, Edge{
-				ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
-				Source: ownerID,
-				Target: targetID,
-				Type:   EdgeManages,
+				ID:       fmt.Sprintf("%s-to-%s", ownerID, targetID),
+				Source:   ownerID,
+				Target:   targetID,
+				Type:     EdgeManages,
+				evidence: aggregateEvidence(targetID, refEvidence),
 			})
 		case "Job":
 			if ownerID, ok := jobIDs[ownerKey]; ok {
 				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-to-%s", ownerID, targetID),
-					Source: ownerID,
-					Target: targetID,
-					Type:   EdgeManages,
+					ID:       fmt.Sprintf("%s-to-%s", ownerID, targetID),
+					Source:   ownerID,
+					Target:   targetID,
+					Type:     EdgeManages,
+					evidence: aggregateEvidence(targetID, refEvidence),
 				})
 				// Add shortcut edge: CronJob -> Pod/PodGroup (for when Job is filtered out)
 				if cronJobID, ok := jobToCronJob[ownerKey]; ok {
@@ -7765,6 +7871,7 @@ func (b *Builder) createPodOwnerEdges(
 						Target:            targetID,
 						Type:              EdgeManages,
 						SkipIfKindVisible: string(KindJob),
+						evidence:          aggregateEvidence(targetID, evidenceShortcut),
 					})
 				}
 				if scaledJobID, ok := jobToScaledJob[ownerKey]; ok {
@@ -7774,6 +7881,7 @@ func (b *Builder) createPodOwnerEdges(
 						Target:            targetID,
 						Type:              EdgeManages,
 						SkipIfKindVisible: string(KindJob),
+						evidence:          aggregateEvidence(targetID, evidenceShortcut),
 					})
 				}
 			}
@@ -7893,13 +8001,13 @@ func cronWorkflowScheduleString(cwf *unstructured.Unstructured) string {
 	return schedule
 }
 
-func argoWorkflowCronOwnerName(wf *unstructured.Unstructured) string {
+func argoWorkflowCronOwner(wf *unstructured.Unstructured) (string, edgeEvidence) {
 	for _, ref := range wf.GetOwnerReferences() {
 		if ref.Kind == "CronWorkflow" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "argoproj.io" && ref.Name != "" && ref.Controller != nil && *ref.Controller {
-			return ref.Name
+			return ref.Name, ownerEvidence(ref)
 		}
 	}
-	return wf.GetLabels()["workflows.argoproj.io/cron-workflow"]
+	return wf.GetLabels()["workflows.argoproj.io/cron-workflow"], evidenceAssociation
 }
 
 type argoWorkflowTemplateRef struct {
@@ -8095,28 +8203,6 @@ func monitorNodeData(monitor *unstructured.Unstructured, endpointField string) m
 		"apiVersion":    monitor.GetAPIVersion(),
 		"endpointCount": len(endpoints),
 	}
-}
-
-// matchesHelmRelease checks if a resource's labels indicate it's managed by a FluxCD HelmRelease
-// Checks both FluxCD-specific labels and standard Helm labels
-func matchesHelmRelease(labels map[string]string, hrName, hrNamespace string) bool {
-	// FluxCD adds these labels to resources deployed by HelmRelease
-	// helm.toolkit.fluxcd.io/name: <helmrelease-name>
-	// helm.toolkit.fluxcd.io/namespace: <helmrelease-namespace>
-	fluxName := labels["helm.toolkit.fluxcd.io/name"]
-	fluxNS := labels["helm.toolkit.fluxcd.io/namespace"]
-	if fluxName == hrName && (fluxNS == "" || fluxNS == hrNamespace) {
-		return true
-	}
-
-	// Fallback to standard Helm label (app.kubernetes.io/instance)
-	// This is set by charts that follow Helm best practices
-	instanceLabel := labels["app.kubernetes.io/instance"]
-	if instanceLabel == hrName {
-		return true
-	}
-
-	return false
 }
 
 type workloadRefs struct {
@@ -8766,10 +8852,10 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 	}
 
 	type ownerPair struct{ source, target string }
-	existingOwnerEdges := make(map[ownerPair]bool)
-	for _, edge := range edges {
+	existingOwnerEdges := make(map[ownerPair]int)
+	for i, edge := range edges {
 		if edge.Type == EdgeManages {
-			existingOwnerEdges[ownerPair{edge.Source, edge.Target}] = true
+			existingOwnerEdges[ownerPair{edge.Source, edge.Target}] = i
 		}
 	}
 
@@ -8788,12 +8874,16 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 	maxPerKind := 50
 
 	// Phase 1: Collect all candidate CRD resources
+	type candidateOwner struct {
+		ref      ResourceRef
+		evidence edgeEvidence
+	}
 	type candidate struct {
 		nodeID string
 		// resource becomes a node, and is observed, only once accepted.
 		resource    *unstructured.Unstructured
 		kind        string
-		ownerRefs   []ResourceRef
+		owners      []candidateOwner
 		resourceKey string
 		typeKey     string
 		existing    bool
@@ -8873,23 +8963,26 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 				}
 			}
 
-			var ownerResources []ResourceRef
+			var owners []candidateOwner
 			for _, ref := range ownerRefs {
 				if ref.APIVersion == "" || ref.Kind == "" || ref.Name == "" {
 					continue
 				}
-				ownerResources = append(ownerResources, ResourceRef{
-					Group: resourceid.GroupFromAPIVersion(ref.APIVersion), Kind: ref.Kind, Namespace: ns, Name: ref.Name,
+				owners = append(owners, candidateOwner{
+					ref: ResourceRef{
+						Group: resourceid.GroupFromAPIVersion(ref.APIVersion), Kind: ref.Kind, Namespace: ns, Name: ref.Name,
+					},
+					evidence: ownerEvidence(ref),
 				})
 			}
-			if len(ownerResources) == 0 {
+			if len(owners) == 0 {
 				continue
 			}
 			candidates = append(candidates, candidate{
 				nodeID:      nodeID,
 				resource:    resource,
 				kind:        kind,
-				ownerRefs:   ownerResources,
+				owners:      owners,
 				resourceKey: resourceKey,
 				typeKey:     typeKey,
 				existing:    existing,
@@ -8907,17 +9000,19 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 			}
 
 			var ownerEdges []Edge
-			for _, owner := range c.ownerRefs {
-				ownerID, ok := existingResourceIDs[resourceid.ResourceKey(owner.Group, owner.Kind, owner.Namespace, owner.Name)]
-				if !ok && owner.Namespace != "" {
-					ownerID, ok = existingResourceIDs[resourceid.ResourceKey(owner.Group, owner.Kind, "", owner.Name)]
+			for _, owner := range c.owners {
+				ref := owner.ref
+				ownerID, ok := existingResourceIDs[resourceid.ResourceKey(ref.Group, ref.Kind, ref.Namespace, ref.Name)]
+				if !ok && ref.Namespace != "" {
+					ownerID, ok = existingResourceIDs[resourceid.ResourceKey(ref.Group, ref.Kind, "", ref.Name)]
 				}
 				if ok {
 					ownerEdges = append(ownerEdges, Edge{
-						ID:     fmt.Sprintf("%s-to-%s", ownerID, c.nodeID),
-						Source: ownerID,
-						Target: c.nodeID,
-						Type:   EdgeManages,
+						ID:       fmt.Sprintf("%s-to-%s", ownerID, c.nodeID),
+						Source:   ownerID,
+						Target:   c.nodeID,
+						Type:     EdgeManages,
+						evidence: owner.evidence,
 					})
 				}
 			}
@@ -8941,10 +9036,12 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 				}
 				for _, edge := range ownerEdges {
 					key := ownerPair{edge.Source, edge.Target}
-					if !existingOwnerEdges[key] {
-						edges = append(edges, edge)
-						existingOwnerEdges[key] = true
+					if i, ok := existingOwnerEdges[key]; ok {
+						edges[i].evidence |= edge.evidence
+						continue
 					}
+					existingOwnerEdges[key] = len(edges)
+					edges = append(edges, edge)
 				}
 				added++
 			} else {
