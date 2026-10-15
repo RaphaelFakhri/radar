@@ -470,15 +470,14 @@ func (s *Reader) hAPDBs(ctx context.Context, cache *k8s.ResourceCache, cluster *
 		out.ReadSource = cnpgHADenied(grant, namespace)
 		return out
 	}
-	lister := cache.PodDisruptionBudgets()
 	assessment := cache.AssessKindRead("poddisruptionbudgets", []string{namespace})
 	if reason := cnpgUncachedReason("Disruption budgets", "PodDisruptionBudgets", namespace, assessment); reason != "" {
 		out.ReadSource = integration.ReadSource{State: cnpgHAStateUnavailable, Reason: reason}
 		return out
 	}
-	list, err := lister.PodDisruptionBudgets(namespace).List(labels.SelectorFromSet(labels.Set{clusterLabel: cluster.GetName()}))
-	if err != nil {
-		out.ReadSource = integration.ReadSource{State: cnpgHAStateError, Reason: err.Error()}
+	list, ok := readableIn[*policyv1.PodDisruptionBudget](cache, "poddisruptionbudgets", namespace, labels.SelectorFromSet(labels.Set{clusterLabel: cluster.GetName()}))
+	if !ok {
+		out.ReadSource = integration.ReadSource{State: cnpgHAStateError, Reason: "could not read PodDisruptionBudgets in " + namespace}
 		return out
 	}
 	out.ReadSource = integration.ReadSource{State: cnpgHAStateOK}

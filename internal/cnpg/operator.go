@@ -9,7 +9,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/skyhook-io/radar/internal/imageutil"
@@ -386,20 +385,17 @@ func (s *Reader) operatorConfigMap(ctx context.Context, cache *k8s.ResourceCache
 		state.Reason = "ConfigMaps failed to load"
 		return ref
 	}
-	lister := cache.ConfigMaps()
-	if lister == nil {
-		state.Reason = "could not read the ConfigMap"
-		return ref
-	}
-	cm, err := lister.ConfigMaps(namespace).Get(name)
+	// The namespace's own store: a deferred kind's typed lister stays nil
+	// until every namespace of the kind has loaded.
+	obj, found, ok := cache.ReadableObject("configmaps", namespace, name)
+	cm, isConfigMap := obj.(*corev1.ConfigMap)
 	switch {
-	case apierrors.IsNotFound(err):
+	case ok && !found:
 		exists := false
 		state.Exists = &exists
 		state.Reason = "not found"
 		return ref
-	case err != nil:
-		log.Printf("[cnpg] Failed to read ConfigMap %s/%s: %v", namespace, name, err)
+	case !ok || !isConfigMap:
 		state.Reason = "could not read the ConfigMap"
 		return ref
 	}

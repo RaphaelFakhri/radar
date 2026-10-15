@@ -277,14 +277,9 @@ func cnpgCachedClaims(cache *k8s.ResourceCache, namespace string, selector label
 	if reason := cnpgUncachedReason("Volumes", "PersistentVolumeClaims", namespace, assessment); reason != "" {
 		return nil, reason
 	}
-	lister := cache.PersistentVolumeClaims()
-	if lister == nil {
+	items, ok := readableIn[*corev1.PersistentVolumeClaim](cache, "persistentvolumeclaims", namespace, selector)
+	if !ok {
 		return nil, "could not read persistentvolumeclaims"
-	}
-	items, err := lister.PersistentVolumeClaims(namespace).List(selector)
-	if err != nil {
-		log.Printf("[cnpg] Failed to list claims in %s: %v", namespace, err)
-		return nil, "listing persistentvolumeclaims failed"
 	}
 	return items, ""
 }
