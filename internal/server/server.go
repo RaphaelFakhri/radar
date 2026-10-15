@@ -589,10 +589,37 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/rbac/whoami", s.handleRBACWhoami)
 			r.Get("/cnpg/workspace", s.handleCNPGWorkspace)
 			r.Get("/cnpg/operator", s.handleCNPGOperator)
+			r.Get("/cnpg/operator/status", s.handleCNPGOperatorStatus)
 			r.Get("/cnpg/imagecatalogs/{namespace}/{name}/clusters", s.handleCNPGCatalogUsers)
 			r.Get("/cnpg/clusterimagecatalogs/{name}/clusters", s.handleCNPGCatalogUsers)
 			r.Get("/cnpg/clusters/{namespace}/{name}/logs", s.handleCNPGClusterLogs)
 			r.Get("/cnpg/clusters/{namespace}/{name}/activity", s.handleCNPGClusterActivity)
+			r.Get("/cnpg/clusters/{namespace}/{name}/runtime", s.handleCNPGClusterRuntime)
+			r.Get("/cnpg/clusters/{namespace}/{name}/storage", s.handleCNPGClusterStorage)
+			r.Get("/cnpg/clusters/{namespace}/{name}/recovery", s.handleCNPGClusterRecovery)
+			r.Post("/cnpg/clusters/{namespace}/{name}/restore-validation", s.handleCNPGRestoreValidation)
+			r.Get("/cnpg/restore/capability", s.handleCNPGRestoreCapability)
+			r.Get("/cnpg/clusters/{namespace}/{name}/report", s.handleCNPGClusterReport)
+			r.Get("/cnpg/clusters/{namespace}/{name}/history", s.handleCNPGClusterHistory)
+			r.Get("/cnpg/disk", s.handleCNPGFleetDisk)
+			r.Get("/cnpg/clusters/{namespace}/{name}/ha", s.handleCNPGClusterHA)
+			r.Get("/cnpg/fleet-metrics", s.handleCNPGFleetMetrics)
+			r.Get("/cnpg/poolers/{namespace}/{name}/runtime", s.handleCNPGPoolerRuntime)
+			r.Get("/cnpg/clusters/{namespace}/{name}/capabilities", s.handleCNPGClusterCapabilities)
+			r.Post("/cnpg/clusters/{namespace}/{name}/actions/{action}", s.handleCNPGClusterAction)
+			r.Post("/cnpg/clusters/{namespace}/{name}/protection/preview", s.handleCNPGArchivingPreview)
+			r.Get("/cnpg/clusters/{namespace}/{name}/schedule-preview", s.handleCNPGDraftSchedulePreview)
+			r.Get("/cnpg/scheduledbackups/{namespace}/{name}/capabilities", s.handleCNPGScheduleCapabilities)
+			r.Post("/cnpg/scheduledbackups/{namespace}/{name}/actions/{action}", s.handleCNPGScheduleAction)
+			r.Get("/cnpg/scheduledbackups/{namespace}/{name}/schedule-preview", s.handleCNPGSchedulePreview)
+			r.Get("/cnpg/scheduledbackups/{namespace}/{name}/method-preview", s.handleCNPGScheduleMethodPreview)
+			r.Get("/cnpg/clusters/{namespace}/{name}/sessions", s.handleCNPGClusterSessions)
+			r.Get("/cnpg/clusters/{namespace}/{name}/restore-checks", s.handleCNPGRestoreChecks)
+			r.Get("/cnpg/clusters/{namespace}/{name}/parameters", s.handleCNPGClusterParameters)
+			r.Get("/cnpg/clusters/{namespace}/{name}/instances/{pod}/destroy-plan", s.handleCNPGDestroyPlan)
+			r.Get("/cnpg/poolers/{namespace}/{name}/capabilities", s.handleCNPGPoolerCapabilities)
+			r.Get("/cnpg/poolers/{namespace}/{name}/pgbouncer-state", s.handleCNPGPgBouncerState)
+			r.Post("/cnpg/poolers/{namespace}/{name}/actions/{action}", s.handleCNPGPoolerAction)
 			r.Get("/velero/backupstoragelocations/{namespace}/{name}/backups", s.handleVeleroStoredBackups)
 			// POST: creates a DownloadRequest, which is the only supported way to
 			// read the messages behind a run's error and warning counts.
@@ -1363,6 +1390,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		PodEnvironment:        true,
 		PolicyResource:        true,
 		WorkloadHistory:       true,
+		CNPGWorkspace:         true,
+		CNPGProtectionSetup:   true,
 		ServiceEndpointSlices: true,
 		TrafficRecords:        true,
 		GitOpsWriteEvidence:   true,

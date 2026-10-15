@@ -662,3 +662,20 @@ func SetTestConnectionStatus(status ConnectionStatus) func() {
 		connectionStatusMu.Unlock()
 	}
 }
+
+// InitTestDynamicResourceCacheWithFallbacks is InitTestDynamicResourceCache
+// for an identity that may not list CRDs cluster-wide: the dynamic cache then
+// probes fallbacks and watches each kind namespace by namespace.
+func InitTestDynamicResourceCacheWithFallbacks(dynClient dynamic.Interface, resources []APIResource, fallbacks []string) error {
+	resourcePermsMu.Lock()
+	prev, prevExpiry := cachedPermResult, resourcePermsExpiry
+	cachedPermResult = &PermissionCheckResult{Perms: &ResourcePermissions{}, ScopeCandidates: fallbacks}
+	resourcePermsExpiry = time.Now().Add(time.Hour)
+	resourcePermsMu.Unlock()
+	defer func() {
+		resourcePermsMu.Lock()
+		cachedPermResult, resourcePermsExpiry = prev, prevExpiry
+		resourcePermsMu.Unlock()
+	}()
+	return InitTestDynamicResourceCache(dynClient, resources)
+}

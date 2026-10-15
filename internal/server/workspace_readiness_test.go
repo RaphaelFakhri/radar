@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/integration"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/capacityapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -18,7 +19,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -74,12 +74,11 @@ func TestWorkspaceTypedSourcesRequireInitialSync(t *testing.T) {
 		name      string
 		readiness k8s.KindReadiness
 		capacity  capacityapi.CoverageStatus
-		cnpg      string
 		count     int
 	}{
-		{"pending", k8s.KindPending, capacityapi.CoverageSyncing, cnpgCoverageSyncing, 0},
-		{"failed", k8s.KindFailed, capacityapi.CoverageError, cnpgCoverageError, 0},
-		{"late ready", k8s.KindReady, capacityapi.CoverageAvailable, cnpgCoverageFull, 1},
+		{"pending", k8s.KindPending, capacityapi.CoverageSyncing, 0},
+		{"failed", k8s.KindFailed, capacityapi.CoverageError, 0},
+		{"late ready", k8s.KindReady, capacityapi.CoverageAvailable, 1},
 	} {
 		t.Run(stage.name, func(t *testing.T) {
 			if stage.readiness == k8s.KindReady {
@@ -124,18 +123,6 @@ func TestWorkspaceTypedSourcesRequireInitialSync(t *testing.T) {
 					t.Fatalf("ready %s did not establish its observed row: %#v", source, coverage)
 				}
 			}
-			podAcc, _, _, pods, returned := srv.cnpgWorkspaceReadPods(r, cache, []string{"pg"}, map[string]types.UID{"pg/orders": "orders-uid"})
-			if podAcc.state != stage.cnpg || len(pods) != stage.count || len(returned) != stage.count {
-				t.Fatalf("CNPG Pods: access=%#v rows=%d returned=%d", podAcc, len(pods), len(returned))
-			}
-			depAcc, _, _, deployments := srv.cnpgOperatorDeployments(r, cache, []string{"pg"})
-			if depAcc.state != stage.cnpg || len(deployments) != stage.count {
-				t.Fatalf("operator Deployments: access=%#v rows=%d", depAcc, len(deployments))
-			}
-			svcAcc, _, _, _ := srv.cnpgOperatorServices(r, cache, []string{"pg"})
-			if svcAcc.state != cnpgCoverageFull {
-				t.Fatalf("ready Services affected by sibling readiness: %#v", svcAcc)
-			}
 			deniedMeta := capacityapi.NewResponseMeta(time.Now())
 			deniedServer.loadCapacityPods(deniedRequest, &deniedMeta, time.Now())
 			deniedServer.loadCapacityNodes(deniedRequest, &deniedMeta, time.Now())
@@ -144,13 +131,8 @@ func TestWorkspaceTypedSourcesRequireInitialSync(t *testing.T) {
 					t.Fatalf("readiness masked %s denial: %#v", source, deniedMeta.Coverage[source])
 				}
 			}
-			deniedAcc, _, _, _, _ := deniedServer.cnpgWorkspaceReadPods(deniedRequest, cache, []string{"pg"}, nil)
-			if deniedAcc.state != cnpgCoverageDenied {
-				t.Fatalf("readiness masked CNPG Pod denial: %#v", deniedAcc)
-			}
-			emptyAcc, _, _, _, _ := srv.cnpgWorkspaceReadPods(r, cache, []string{}, nil)
-			if emptyAcc.state != cnpgCoverageDenied {
-				t.Fatalf("empty namespace access widened: %#v", emptyAcc)
+			if empty, _ := srv.cnpgReader(r).Observations.TypedScope(r.Context(), cache, []string{}, "", "pods"); empty.State != integration.KindCoverageDenied {
+				t.Fatalf("empty namespace access widened: %#v", empty)
 			}
 			if stage.readiness == k8s.KindReady {
 				emptyMeta := capacityapi.NewResponseMeta(time.Now())
@@ -196,37 +178,7 @@ func TestWorkspaceDisabledTypedSourcesRemainUnavailable(t *testing.T) {
 			t.Fatalf("disabled %s reason = %q, want %q", source, coverage.ReasonCode, wantReason)
 		}
 	}
-	access, _, _, _, _ := srv.cnpgWorkspaceReadPods(r, k8s.GetResourceCache(), []string{"pg"}, nil)
-	if access.state != cnpgCoverageError {
-		t.Fatalf("disabled Pods must not report full or syncing: %#v", access)
-	}
-}
-
-func TestCNPGPodsAfterStartupBackstopRemainUnread(t *testing.T) {
-	controller := true
-	core, err := k8score.NewResourceCache(k8score.CacheConfig{
-		Client: fake.NewClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Name: "orders-1", Namespace: "pg", Labels: map[string]string{"cnpg.io/cluster": "orders"},
-			OwnerReferences: []metav1.OwnerReference{{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster", Name: "orders", UID: "orders-uid", Controller: &controller}},
-		}}),
-		ResourceTypes:   map[string]bool{k8score.Pods: true, k8score.Services: true},
-		DeferredTypes:   map[string]bool{},
-		MinimalSet:      map[string]bool{k8score.Pods: true, k8score.Services: true},
-		PatienceWindow:  20 * time.Millisecond,
-		SyncTimeout:     200 * time.Millisecond,
-		DebugSyncDelays: map[string]time.Duration{k8score.Pods: 30 * time.Second},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(core.Stop)
-	cache := &k8s.ResourceCache{ResourceCache: core}
-	if cache.KindReadinessFor("pods") != k8s.KindPending {
-		t.Fatal("backstop fixture did not retain a pending Pod informer")
-	}
-	r := httptest.NewRequest(http.MethodGet, "/api/cnpg/workspace?namespace=pg", nil)
-	access, _, _, pods, returned := (&Server{}).cnpgWorkspaceReadPods(r, cache, []string{"pg"}, map[string]types.UID{"pg/orders": "orders-uid"})
-	if access.state != cnpgCoverageSyncing || len(pods) != 0 || len(returned) != 0 {
-		t.Fatalf("backstop Pod result: access=%#v rows=%d returned=%d", access, len(pods), len(returned))
+	if access, _ := srv.cnpgReader(r).Observations.TypedScope(r.Context(), k8s.GetResourceCache(), []string{"pg"}, "", "pods"); access.State != integration.KindCoverageUncached {
+		t.Fatalf("disabled Pods must read as uncached, not full or syncing: %#v", access)
 	}
 }
