@@ -22,9 +22,11 @@
 {{- $host := regexReplaceAll "^.*@" (regexReplaceAll "^https?://([^/?#]*).*$" $r "${1}") "" -}}
 {{- if and $scheme (regexMatch "^([A-Za-z0-9.-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]+)?$" $host) -}}
 {{- $hostOnly := regexReplaceAll ":[0-9]+$" $host "" -}}
-{{- if has $hostOnly (list "localhost" "127.0.0.1" "[::1]") -}}
+{{- /* Only an http loopback redirect can be reached through a port-forward:
+       Radar's listener doesn't serve TLS. */ -}}
+{{- if and (eq $scheme "http://") (has $hostOnly (list "localhost" "127.0.0.1" "[::1]")) -}}
 {{- $localHost = $hostOnly -}}
-{{- $localPort = trimPrefix ":" (regexFind ":[0-9]+$" $host) | default (ternary "443" "80" (eq $scheme "https://")) -}}
+{{- $localPort = trimPrefix ":" (regexFind ":[0-9]+$" $host) | default "80" -}}
 {{- else -}}
 {{- $oidcURL = printf "%s%s%s/" $scheme $host $basePath -}}
 {{- end -}}
@@ -55,21 +57,21 @@ If the install page times out, check the Radar pod logs:
 {{- else }}
 {{- if .Values.ingress.enabled }}
 {{- $urls := list }}
+{{- $regexURLs := list }}
 {{- $hostless := false }}
 {{- range $h := .Values.ingress.hosts }}
 {{- if not $h.host }}{{ $hostless = true }}{{ end }}
 {{- range $h.paths }}
-{{- /* A regex path (nginx use-regex + rewrite-target) isn't a URL; open its
-       literal prefix. */}}
 {{- $p := .path | default "/" }}
-{{- if and (eq (.pathType | default "") "ImplementationSpecific") (regexMatch "[][(){}*+?|^$\\\\]" $p) }}
-{{- $raw := regexFind "^([^][(){}*+?|^$\\\\]|\\\\.)*" $p }}
-{{- $lit := regexReplaceAll "\\\\(.)" $raw "${1}" }}
-{{- $p = ternary ($lit | default "/") (printf "%s/" (trimSuffix "/" $lit)) (hasPrefix "$" (trimPrefix $raw $p)) }}
-{{- end }}
-{{- $path := ternary (printf "%s/" $basePath) $p (ne $basePath "") }}
+{{- $scheme := ternary "https" "http" (not (empty $.Values.ingress.tls)) }}
+{{- /* A regex path (nginx use-regex + rewrite-target) isn't a URL. */}}
+{{- if and (eq (.pathType | default "") "ImplementationSpecific") (regexMatch "[][(){}*+?|^$\\\\]" $p) (eq $basePath "") }}
 {{- if $h.host }}
-{{- $urls = append $urls (printf "http%s://%s%s" (ternary "s" "" (not (empty $.Values.ingress.tls))) $h.host $path) }}
+{{- $regexURLs = append $regexURLs (printf "%s://%s  (path %s)" $scheme $h.host $p) }}
+{{- end }}
+{{- else if $h.host }}
+{{- $path := ternary (printf "%s/" $basePath) $p (ne $basePath "") }}
+{{- $urls = append $urls (printf "%s://%s%s" $scheme $h.host $path) }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -79,8 +81,16 @@ Open Radar at:
   {{ . }}
 {{- end }}
 {{- end }}
-{{- if $hostless }}
+{{- if $regexURLs }}
 {{- if $urls }}
+{{ end }}
+A regular expression path isn't a URL. Open Radar at a path it matches:
+{{- range uniq $regexURLs }}
+  {{ . }}
+{{- end }}
+{{- end }}
+{{- if $hostless }}
+{{- if or $urls $regexURLs }}
 {{ end }}
 An ingress host left empty matches every hostname. Open Radar at the ingress
 controller's address, shown by:
@@ -129,7 +139,7 @@ Setup: {{ $authDocs }}
 {{ $proxyAuth }}
 
 {{ $proxyWarning }}
-{{- else if and .Values.ingress.enabled $ingressAuth }}
+{{- else if and .Values.ingress.enabled $ingressAuth (not .Values.httpRoute.enabled) (eq .Values.service.type "ClusterIP") }}
 
 Radar's own authentication is off (auth.mode=none). Everyone who passes your
 ingress authentication can use the permissions granted to Radar's

@@ -286,7 +286,7 @@ tests:
       - matchRegexRaw:
           pattern: "Open Radar at:\n  http://radar.example.com/\n\nAn ingress host left empty"
 
-  - it: a regex Ingress path prints its literal prefix
+  - it: a regex Ingress path prints the host and the pattern, not a URL
     set:
       ingress:
         enabled: true
@@ -300,7 +300,9 @@ tests:
                 pathType: ImplementationSpecific
     asserts:
       - matchRegexRaw:
-          pattern: "Open Radar at:\n  http://tools.example.com/radar/\n"
+          pattern: "A regular expression path isn't a URL. Open Radar at a path it matches:\n  http://tools.example.com  \\(path /radar\\(/\\|\\$\\)\\(\\.\\*\\)\\)\n"
+      - notMatchRegexRaw:
+          pattern: "Open Radar at:"
 
   - it: HTTPRoute without hostnames says to open the listener hostname, picking the sectionName listener
     set:
@@ -316,7 +318,7 @@ tests:
       - matchRegexRaw:
           pattern: "Then open \\$APP_HOSTNAME/ in your browser, with https:// if that\nlistener's protocol is HTTPS."
 
-  - it: ingress basic auth gets the softer note instead of the no-auth warning
+  - it: ingress basic auth gets the softer note instead of the no-auth warning (ClusterIP)
     set:
       ingress:
         enabled: true
@@ -328,6 +330,35 @@ tests:
           pattern: "Warning: no auth"
       - matchRegexRaw:
           pattern: "Radar's own authentication is off \\(auth.mode=none\\). Everyone who passes your\ningress authentication"
+
+  - it: ingress basic auth with a LoadBalancer Service keeps the no-auth warning, since the Service skips the ingress
+    set:
+      service:
+        type: LoadBalancer
+      ingress:
+        enabled: true
+        annotations:
+          nginx.ingress.kubernetes.io/auth-type: basic
+          nginx.ingress.kubernetes.io/auth-secret: radar-basic-auth
+    asserts:
+      - matchRegexRaw:
+          pattern: "Warning: no auth"
+      - notMatchRegexRaw:
+          pattern: "Radar's own authentication is off"
+
+  - it: OIDC with an https loopback redirect points at that URL, since a port-forward serves no TLS
+    set:
+      auth:
+        mode: oidc
+        oidc:
+          issuerURL: https://idp.example.com
+          clientID: radar
+          redirectURL: https://localhost:8443/auth/callback
+    asserts:
+      - matchRegexRaw:
+          pattern: "Open Radar at the redirect URL's host \\(auth.oidc.redirectURL\\):\n  https://localhost:8443/\n"
+      - notMatchRegexRaw:
+          pattern: "kubectl port-forward"
 
   - it: OIDC with a 127.0.0.1 redirect URL keeps that host, since localhost has different cookies
     set:
@@ -381,18 +412,20 @@ tests:
       - matchRegexRaw:
           pattern: "Open Radar at:\n  http://radar.example.com/\n"
 
-  - it: a regex Ingress path anchored with $ prints the prefix without a trailing slash
+  - it: a regex Ingress path with alternation is not turned into a prefix URL
     set:
       ingress:
         enabled: true
         hosts:
           - host: tools.example.com
             paths:
-              - path: /radar$
+              - path: /radar/(foo|bar)(/|$)(.*)
                 pathType: ImplementationSpecific
     asserts:
       - matchRegexRaw:
-          pattern: "Open Radar at:\n  http://tools.example.com/radar\n"
+          pattern: "  http://tools.example.com  \\(path /radar/\\(foo\\|bar\\)"
+      - notMatchRegexRaw:
+          pattern: "http://tools.example.com/radar/\n"
 
   - it: a Prefix path with regex characters is printed as written
     set:
@@ -431,18 +464,22 @@ tests:
       - matchRegexRaw:
           pattern: "kubectl port-forward svc/radar 80:9280 -n radar\n\nThen open http://localhost:80 in your browser."
 
-  - it: a regex Ingress path keeps escaped characters in its prefix
+  - it: a regex path next to a plain one lists both, each in its own section
     set:
       ingress:
         enabled: true
         hosts:
+          - host: radar.example.com
+            paths:
+              - path: /
+                pathType: Prefix
           - host: tools.example.com
             paths:
-              - path: /radar\.v1(/|$)(.*)
+              - path: /radar(/|$)(.*)
                 pathType: ImplementationSpecific
     asserts:
       - matchRegexRaw:
-          pattern: "Open Radar at:\n  http://tools.example.com/radar\\.v1/\n"
+          pattern: "Open Radar at:\n  http://radar.example.com/\n\nA regular expression path isn't a URL"
 
   - it: OIDC IPv6 loopback redirect gets the port-forward
     set:

@@ -281,6 +281,8 @@ ingress:
 
 Then open `https://tools.your-domain.com/radar/`. Do not set `basePath` when your ingress already rewrites `/radar` to `/`.
 
+A regular expression path, such as `/radar(/|$)(.*)` with nginx `use-regex` and `rewrite-target`, isn't a URL. Open Radar at a path it matches, here `https://tools.your-domain.com/radar/`.
+
 Path segments accept letters, digits, `-`, `_`, `.` and `~`. Radar serves the app
 **only** under the prefix — requests to unprefixed paths get a 404, so update any
 external health checks or scrapers that hit `/api/health` or `/metrics` directly
