@@ -199,12 +199,14 @@ unknown, partial and denied values first: every piece here exists to keep them.
     Its `Coverage()` returns `internal/integration.KindCoverage`:
     `full|partial|denied|notInstalled|syncing|uncached|error`, with denied and
     uncached namespaces named only when the caller supplied the namespace list.
-  - Typed-kind scope assessment is currently CNPG-local: `cnpg.AssessKindRead`
-    (`internal/cnpg/read_scope.go`), with the caller adapter in
-    `internal/server/cnpg_read_scope.go`. It is not a shared integration helper.
-    Namespace selection utilities live in `internal/readscope`; scope alone
-    does not establish initial readiness. Check `KindReadinessFor` before
-    claiming complete or empty observations.
+  - Assess a typed kind's scope with the cache's `AssessKindRead`
+    (`pkg/k8score/read_scope.go`), which MCP and Capacity use too. It splits
+    the namespaces asked for into read, loading, failed and not collected, so a
+    namespace whose own informer has synced is readable while another still
+    loads; `Complete` means the whole target is readable now. CNPG's caller
+    adapter is `internal/server/cnpg_read_scope.go`. Namespace selection
+    utilities live in `internal/readscope`; scope alone does not establish
+    initial readiness.
   - A per-object read with several sources reports a `ReadSource`
     `{state, grant, reason}` per source (`internal/integration/reads.go`), with the missing
     permission as a `Grant` (`internal/auth/grant.go`), never a sentence.

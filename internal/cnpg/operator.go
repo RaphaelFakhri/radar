@@ -369,20 +369,21 @@ func (s *Reader) operatorConfigMap(ctx context.Context, cache *k8s.ResourceCache
 		state.Reason = "no permission to get ConfigMaps in " + namespace
 		return ref
 	}
-	assessment := AssessKindRead(cache, "configmaps", []string{namespace})
+	assessment := cache.AssessKindRead("configmaps", []string{namespace})
 	if len(assessment.Uncovered) > 0 {
 		state.Reason = "Radar does not watch ConfigMaps in " + namespace
 		return ref
 	}
-	switch assessment.Readiness {
-	case k8s.KindPending:
+	loading, failed := namespaceLoadState(assessment)
+	switch {
+	case assessment.Readiness == k8s.KindUnavailable:
+		state.Reason = "Radar is not collecting ConfigMaps"
+		return ref
+	case loading:
 		state.Reason = "ConfigMaps are still loading"
 		return ref
-	case k8s.KindFailed:
+	case failed:
 		state.Reason = "ConfigMaps failed to load"
-		return ref
-	case k8s.KindUnavailable:
-		state.Reason = "Radar is not collecting ConfigMaps"
 		return ref
 	}
 	lister := cache.ConfigMaps()

@@ -273,7 +273,7 @@ func (s *Reader) clusterClaims(ctx context.Context, cache *k8s.ResourceCache, cl
 // cnpgCachedClaims reads claims from Radar's informer. What the informer does
 // not hold is unread, not empty, so that is a reason rather than no claims.
 func cnpgCachedClaims(cache *k8s.ResourceCache, namespace string, selector labels.Selector) ([]*corev1.PersistentVolumeClaim, string) {
-	assessment := AssessKindRead(cache, "persistentvolumeclaims", []string{namespace})
+	assessment := cache.AssessKindRead("persistentvolumeclaims", []string{namespace})
 	if reason := cnpgUncachedReason("Volumes", "PersistentVolumeClaims", namespace, assessment); reason != "" {
 		return nil, reason
 	}
