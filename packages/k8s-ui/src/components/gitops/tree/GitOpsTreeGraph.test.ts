@@ -134,14 +134,15 @@ describe('nodeCause', () => {
       health: 'Progressing',
       topologyStatus: 'degraded',
     })
-    const [cause] = buildCauseByRef([{
+    // Keyed like the tree's own nodes, so the issue's ref finds this node.
+    const cause = buildCauseByRef([{
       severity: 'warning',
       scope: 'tree',
       reason: 'SourceNotReady',
       message: 'GitRepository flux-system/podinfo can\'t fetch updates.',
       cause: 'authentication required',
       refs: [{ group: 'source.toolkit.fluxcd.io', kind: 'GitRepository', namespace: 'flux-system', name: 'podinfo' }],
-    }]).values()
+    }]).get('source.toolkit.fluxcd.io/GitRepository/flux-system/podinfo')
     expect(nodeCause(source, cause)).toBe('Possible cause: authentication required')
   })
 
