@@ -148,9 +148,10 @@ type CacheConfig struct {
 	// tracking (e.g., timeline.IncrementReceived). May be nil.
 	OnReceived func(kind string)
 
-	// OnTransform is called immediately before managed fields are stripped
-	// from an informer object. Callers may inspect metadata but must not mutate
-	// the object. May be nil.
+	// OnTransform is called immediately before DropManagedFields strips an
+	// informer object (managed fields, heavy annotations, and Helm release
+	// Secret values, which become digests). Callers may inspect the object
+	// but must not mutate it. May be nil.
 	OnTransform func(obj any)
 
 	// OnObservedChange is called for every non-Event resource change after diff
