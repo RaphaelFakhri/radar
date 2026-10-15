@@ -218,35 +218,48 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 	// A container that has not started has no logs yet, but often will soon
 	// (ContainerCreating, an image still pulling). The stream waits for it and
 	// says why it is waiting, instead of ending on an answer that goes stale.
+	// While Radar's pod cache still shows the container waiting, it doesn't ask
+	// the apiserver again, so a waiting viewer costs no cluster requests.
 	var waitingNotice string
 	var stream io.ReadCloser
 	lastWrite := time.Now()
 	for {
-		var err error
-		stream, err = k8score.GetContainerLogs(r.Context(), client, namespace, podName, container, k8score.LogOptions{
-			TailLines:    &tailLines,
-			SinceSeconds: sinceSeconds,
-			Previous:     previous,
-			Timestamps:   true,
-			Follow:       true,
-		})
-		if err == nil {
-			break
+		pod := cachedPod(namespace, podName)
+		if waitingNotice != "" && podlogs.ContainerNotStartedYet(pod, container) {
+			// Still waiting: the cache says why, without asking the apiserver.
+			if notice := podlogs.NotStartedMessage(pod, container, nil) + " Logs will show here once it starts."; notice != waitingNotice {
+				waitingNotice = notice
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": notice, "notice_code": "container_not_started"})
+				lastWrite = time.Now()
+			}
+		} else {
+			var err error
+			stream, err = k8score.GetContainerLogs(r.Context(), client, namespace, podName, container, k8score.LogOptions{
+				TailLines:    &tailLines,
+				SinceSeconds: sinceSeconds,
+				Previous:     previous,
+				Timestamps:   true,
+				Follow:       true,
+			})
+			if err == nil {
+				break
+			}
+			if r.Context().Err() != nil {
+				return
+			}
+			if !podlogs.IsContainerNotStarted(err) {
+				// The connection is already open, so surface the failure as an SSE
+				// error event rather than an HTTP error the client would never see.
+				sendSSEError(w, flusher, fmt.Sprintf("Failed to open log stream: %v", err))
+				return
+			}
+			if notice := podlogs.NotStartedMessage(pod, container, err) + " Logs will show here once it starts."; notice != waitingNotice {
+				waitingNotice = notice
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": notice, "notice_code": "container_not_started"})
+				lastWrite = time.Now()
+			}
 		}
-		if r.Context().Err() != nil {
-			return
-		}
-		if !podlogs.IsContainerNotStarted(err) {
-			// The connection is already open, so surface the failure as an SSE
-			// error event rather than an HTTP error the client would never see.
-			sendSSEError(w, flusher, fmt.Sprintf("Failed to open log stream: %v", err))
-			return
-		}
-		if notice := podlogs.NotStartedMessage(cachedPod(namespace, podName), container, err) + " Logs will show here once it starts."; notice != waitingNotice {
-			waitingNotice = notice
-			sendSSEEvent(w, flusher, "notice", map[string]string{"notice": notice, "notice_code": "container_not_started"})
-			lastWrite = time.Now()
-		} else if time.Since(lastWrite) >= waitingKeepaliveInterval {
+		if time.Since(lastWrite) >= waitingKeepaliveInterval {
 			// An unchanged notice sends nothing, and a proxy in front of Radar
 			// may close a connection that stays idle through a long image pull.
 			// An SSE comment keeps it open without reaching the viewer.
@@ -311,8 +324,8 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// containerStartPollInterval is how often a pod log stream retries a container
-// that has not started yet.
+// containerStartPollInterval is how often a waiting pod log stream checks
+// whether its container has started.
 var containerStartPollInterval = 2 * time.Second
 
 // waitingKeepaliveInterval bounds how long a waiting pod log stream stays

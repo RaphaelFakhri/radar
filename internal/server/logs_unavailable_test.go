@@ -13,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -237,14 +238,17 @@ func TestPodLogs_ContainerNotStartedIsAnAnswer(t *testing.T) {
 // the container, says why once, clears that when the container starts, and
 // then streams its lines.
 func TestPodLogsStream_WaitsForContainerToStart(t *testing.T) {
-	seedCNPGPods(t, waitingPod("pulling"))
+	pod := waitingPod("pulling")
+	seedCNPGPods(t, pod)
 	prevInterval := containerStartPollInterval
-	containerStartPollInterval = 50 * time.Millisecond
+	containerStartPollInterval = 20 * time.Millisecond
 	t.Cleanup(func() { containerStartPollInterval = prevInterval })
 
+	var started atomic.Bool
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if requests.Add(1) <= 3 {
+		requests.Add(1)
+		if !started.Load() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(waitingAnswer))
@@ -259,6 +263,21 @@ func TestPodLogsStream_WaitsForContainerToStart(t *testing.T) {
 	}
 	prev := k8s.SetTestClient(client)
 	t.Cleanup(func() { k8s.SetTestClient(prev) })
+
+	// The container starts after a while: the pod cache sees it running.
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		if n := requests.Load(); n != 1 {
+			t.Errorf("apiserver asked %d times while the cache showed the container waiting, want once", n)
+		}
+		started.Store(true)
+		running := pod.DeepCopy()
+		running.Status.Phase = corev1.PodRunning
+		running.Status.ContainerStatuses[0].State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+		if _, err := testFakeClient.CoreV1().Pods(running.Namespace).UpdateStatus(context.Background(), running, metav1.UpdateOptions{}); err != nil {
+			t.Errorf("update pod status: %v", err)
+		}
+	}()
 
 	stream := readSSEFor(t, "/api/pods/notstarted/pulling/logs/stream?container=postgres", 3*time.Second)
 	if strings.Contains(stream, "event: error") {

@@ -122,3 +122,25 @@ func TestNotStartedMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerNotStartedYet(t *testing.T) {
+	waiting := corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}
+	pod := &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+		{Name: "pulling", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}},
+		{Name: "running", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		{Name: "restarted", State: waiting, RestartCount: 1},
+		{Name: "crashed-once", State: waiting, LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}}},
+	}}}
+	if !ContainerNotStartedYet(pod, "pulling") {
+		t.Error("pulling: want not started")
+	}
+	for _, name := range []string{"running", "restarted", "crashed-once"} {
+		if ContainerNotStartedYet(pod, name) {
+			t.Errorf("%s: has run, so it has logs", name)
+		}
+	}
+	// No status means Radar can't tell, so the caller asks the apiserver.
+	if ContainerNotStartedYet(pod, "unknown") || ContainerNotStartedYet(nil, "pulling") {
+		t.Error("no status: want false")
+	}
+}

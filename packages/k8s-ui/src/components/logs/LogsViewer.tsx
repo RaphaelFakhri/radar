@@ -267,7 +267,7 @@ function PodLogsViewer({
       entries={entries}
       isLoading={isLoading || isConnecting}
       errorMessage={fetchError || (entries.length === 0 && !emptyMessage && !streamAnswer ? streamError : null)}
-      isStreaming={isStreaming}
+      isStreaming={streamBusy}
       onStartStream={createStream ? handleStartStreaming : undefined}
       onStopStream={handleStopStreaming}
       onRefresh={loadLogs}

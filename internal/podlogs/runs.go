@@ -63,6 +63,14 @@ func NotStartedMessage(pod *corev1.Pod, container string, err error) string {
 	return lead + " Kubernetes reports " + strings.TrimSuffix(reason, ".") + "."
 }
 
+// ContainerNotStartedYet reports whether the pod's status shows the container
+// waiting and never having run, so it has no logs. A container waiting to
+// restart after a crash has logs. False when Radar has no status for it.
+func ContainerNotStartedYet(pod *corev1.Pod, container string) bool {
+	status, ok := containerStatus(pod, container)
+	return ok && status.State.Waiting != nil && status.RestartCount == 0 && status.LastTerminationState.Terminated == nil
+}
+
 func containerStatus(pod *corev1.Pod, name string) (corev1.ContainerStatus, bool) {
 	if pod == nil {
 		return corev1.ContainerStatus{}, false

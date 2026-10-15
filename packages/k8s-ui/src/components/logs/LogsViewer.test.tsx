@@ -288,6 +288,18 @@ it('Previous and the range are locked while a manually started stream opens', as
   expect(rangeSelect().disabled).toBe(true)
 })
 
+it('a stream that is still opening can be stopped, which unlocks Previous', async () => {
+  await renderViewer(async () => ({ app: '' }))
+  await act(async () => button('Stream').click())
+  const opening = FakeEventSource.last
+
+  await act(async () => button('Stop').click())
+
+  expect(opening?.closed).toBe(true)
+  expect(previousCheckbox().disabled).toBe(false)
+  expect(button('Stream')).toBeTruthy()
+})
+
 it('a stream failure after lines arrived is shown above them', async () => {
   await renderViewer(async () => ({ app: '' }))
   await act(async () => button('Stream').click())
