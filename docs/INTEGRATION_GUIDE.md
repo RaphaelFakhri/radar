@@ -152,6 +152,12 @@ owner enriches those findings; it needs no per-kind detector or renderer.
 - [ ] Choose semantic edges: `EdgeManages` (ownership), `EdgeExposes` (exposure),
   `EdgeConfigures` (configuration), `EdgeUses` (scaling/usage), `EdgeProtects`
   (protection). These affect Related Resources grouping, not just appearance.
+- [ ] Build each node from the object it represents with
+  `observedNode(b.facts, obj, Node{...})`; a node that stands for no single
+  observed object (a group, a status- or reference-only stub) uses
+  `syntheticNode(...)`. The recorded facts (UID, ownerReferences, management
+  claims) are what ownership is verified against, and
+  `TestEveryNodeLiteralDeclaresItsFacts` fails on a bare `Node{...}`.
 - [ ] Reuse lists between node/edge construction and handle cache errors. Check
   the generic CRD pass and `kindsHandledOutsideGenericCRDPass` for duplicates and
   collisions. Keep pseudo-kind `KindForGVK`, node IDs and `buildNodeID` /

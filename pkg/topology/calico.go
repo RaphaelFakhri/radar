@@ -1096,6 +1096,9 @@ func (b *Builder) addCalicoPolicyNodes(
 				identity := calicoPolicyIdentity(definition.nodeKind, namespace, policy.GetName())
 				if index, built := policyNodeIndex[identity]; built {
 					recordCalicoPolicyGroup(&nodes[index], apiVersion)
+					// The same policy served through a second API group is a
+					// separate observation of that alias.
+					b.facts.observe(objectKey{group: group, kind: KubernetesKindForNode(&nodes[index]), namespace: namespace, name: policy.GetName()}, policy)
 					continue
 				}
 				nodeData["apiVersions"] = []string{apiVersion}
@@ -1105,7 +1108,7 @@ func (b *Builder) addCalicoPolicyNodes(
 				if definition.staged {
 					status = StatusNeutral
 				}
-				nodes = append(nodes, Node{ID: nodeID, Kind: definition.nodeKind, Name: policy.GetName(), Status: status, Data: nodeData})
+				nodes = append(nodes, observedNode(b.facts, policy, Node{ID: nodeID, Kind: definition.nodeKind, Name: policy.GetName(), Status: status, Data: nodeData}))
 
 				if definition.staged && !CalicoStagedActionPreviewsProtection(policy) {
 					continue

@@ -56,7 +56,7 @@ func TestCertificateIssuerEdgesDefaultsScopeAndCachedResolution(t *testing.T) {
 	}
 	opts := DefaultBuildOptions()
 	opts.Namespaces = []string{"team"}
-	nodes, edges, warnings := addCertificateIssuerEdges(nodes, nil, certs, p, opts)
+	nodes, edges, warnings := addCertificateIssuerEdges(nil, nodes, nil, certs, p, opts)
 	if len(warnings) != 0 || len(nodes) != 7 || len(edges) != 3 {
 		t.Fatalf("nodes=%d edges=%+v warnings=%v; want two referenced issuers and three joins", len(nodes), edges, warnings)
 	}
@@ -89,7 +89,7 @@ func TestCertificateIssuerEdgesReportsUnavailableLookup(t *testing.T) {
 		"metadata": map[string]any{"name": "tls", "namespace": "team"},
 		"spec":     map[string]any{"issuerRef": map[string]any{"name": "ca"}},
 	}}
-	nodes, edges, warnings := addCertificateIssuerEdges([]Node{{ID: "certificate/team/tls", Kind: KindCertificate, Name: "tls", Data: map[string]any{"namespace": "team", "apiVersion": "cert-manager.io/v1"}}}, nil, []unstructured.Unstructured{cert}, p, DefaultBuildOptions())
+	nodes, edges, warnings := addCertificateIssuerEdges(nil, []Node{{ID: "certificate/team/tls", Kind: KindCertificate, Name: "tls", Data: map[string]any{"namespace": "team", "apiVersion": "cert-manager.io/v1"}}}, nil, []unstructured.Unstructured{cert}, p, DefaultBuildOptions())
 	if len(nodes) != 1 || len(edges) != 0 || len(warnings) != 1 || p.getCalls != 0 {
 		t.Fatalf("unavailable lookup: nodes=%d edges=%d warnings=%v gets=%d", len(nodes), len(edges), warnings, p.getCalls)
 	}
@@ -105,7 +105,7 @@ func TestReferencedIssuerRetainsGenericOwnerWithoutDuplicateNodesOrEdges(t *test
 		{ID: "certificate/team/tls", Kind: KindCertificate, Name: "tls", Data: map[string]any{"namespace": "team", "apiVersion": "cert-manager.io/v1"}},
 		{ID: "deployment/team/operator", Kind: KindDeployment, Name: "operator", Data: map[string]any{"namespace": "team"}},
 	}
-	nodes, edges, warnings := addCertificateIssuerEdges(nodes, nil, []unstructured.Unstructured{*cert}, p, DefaultBuildOptions())
+	nodes, edges, warnings := addCertificateIssuerEdges(nil, nodes, nil, []unstructured.Unstructured{*cert}, p, DefaultBuildOptions())
 	if len(warnings) != 0 {
 		t.Fatal(warnings)
 	}

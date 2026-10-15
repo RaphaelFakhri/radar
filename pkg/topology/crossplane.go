@@ -286,13 +286,13 @@ func (b *Builder) addCrossplaneNodes(nodes []Node, edges []Edge, opts BuildOptio
 				data[clusterScopedResourceKey] = gvr.Resource
 				data[clusterScopedGroupKey] = gvr.Group
 			}
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, r, Node{
 				ID:     nodeID,
 				Kind:   NodeKind(kind),
 				Name:   name,
 				Status: extractGenericStatus(r),
 				Data:   data,
-			})
+			}))
 		}
 	}
 

@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func addCertificateIssuerEdges(nodes []Node, edges []Edge, certificates []unstructured.Unstructured, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
+func addCertificateIssuerEdges(facts *factsCapture, nodes []Node, edges []Edge, certificates []unstructured.Unstructured, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
 	var refs []declaredDependency
 	for i := range certificates {
 		cert := &certificates[i]
@@ -30,5 +30,5 @@ func addCertificateIssuerEdges(nodes []Node, edges []Edge, certificates []unstru
 			Target: resourceid.NewRef(group, kind, namespace, name), Label: "issuer",
 		})
 	}
-	return addObservedDependencyEdges(nodes, edges, refs, provider, opts)
+	return addObservedDependencyEdges(facts, nodes, edges, refs, provider, opts)
 }

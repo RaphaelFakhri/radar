@@ -17,7 +17,7 @@ type declaredDependency struct {
 	Configuration bool
 }
 
-func addObservedDependencyEdges(nodes []Node, edges []Edge, refs []declaredDependency, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
+func addObservedDependencyEdges(facts *factsCapture, nodes []Node, edges []Edge, refs []declaredDependency, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
 	if provider == nil || len(refs) == 0 {
 		return nodes, edges, nil
 	}
@@ -95,7 +95,7 @@ func addObservedDependencyEdges(nodes []Node, edges []Edge, refs []declaredDepen
 					data[clusterScopedGroupKey] = gvr.Group
 					data[clusterScopedResourceKey] = gvr.Resource
 				}
-				nodes = append(nodes, Node{ID: target, Kind: NodeKind(kind.Kind), Name: obj.GetName(), Status: extractGenericStatus(obj), Data: data})
+				nodes = append(nodes, observedNode(facts, obj, Node{ID: target, Kind: NodeKind(kind.Kind), Name: obj.GetName(), Status: extractGenericStatus(obj), Data: data}))
 				byResource[ref.Target.Key()] = target
 			}
 			edgeType := EdgeUses

@@ -32,7 +32,9 @@ import (
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
-// Builder constructs topology graphs from K8s resources
+// Builder constructs topology graphs from K8s resources. A Builder can be
+// reused for successive builds but not shared by concurrent ones: each Build
+// keeps its in-progress state on the Builder.
 type Builder struct {
 	provider ResourceProvider
 	dynamic  DynamicProvider
@@ -40,6 +42,9 @@ type Builder struct {
 	// the loop's complexity class without timing anything: completed Jobs can
 	// never back a Service, so the count must not grow with them.
 	serviceJobComparisons int
+	// facts accumulates object facts for the Build in progress; Build freezes
+	// it into the returned topology.
+	facts *factsCapture
 }
 
 // NewBuilder creates a new topology builder
@@ -148,6 +153,8 @@ func (b *Builder) Build(opts BuildOptions) (*Topology, error) {
 
 	var topo *Topology
 	var err error
+	b.facts = newFactsCapture(estimatedNodes)
+	defer func() { b.facts = nil }()
 
 	switch opts.ViewMode {
 	case ViewModeTraffic:
@@ -163,6 +170,8 @@ func (b *Builder) Build(opts BuildOptions) (*Topology, error) {
 	if opts.ViewMode != ViewModeTraffic {
 		b.addReflectionRelationships(topo, opts)
 	}
+	// Reflection is the last producer; facts are complete only after it.
+	topo.facts = b.facts.freeze()
 
 	// Set large cluster flags in response
 	if isLargeCluster {
@@ -426,7 +435,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			statusIssue = resourceStatus.Issue
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, deploy, Node{
 			ID:     deployID,
 			Kind:   KindDeployment,
 			Name:   deploy.Name,
@@ -441,7 +450,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"statusSummary": statusSummary,
 				"statusIssue":   statusIssue,
 			},
-		})
+		}))
 
 		// Track ConfigMap/Secret/PVC references
 		refs := extractWorkloadReferences(deploy.Spec.Template.Spec, opts.ForRelationshipCache)
@@ -585,17 +594,17 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			rolloutDataByID[rolloutID] = rolloutData
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, rollout, Node{
 				ID:     rolloutID,
 				Kind:   "Rollout",
 				Name:   name,
 				Status: getDeploymentStatus(int32(ready), int32(total)),
 				Data:   rolloutData,
-			})
+			}))
 
 			for _, run := range activeAnalysisRuns(status) {
 				runID := fmt.Sprintf("analysisrun/%s/%s", ns, run.name)
-				nodes = append(nodes, Node{
+				nodes = append(nodes, syntheticNode(Node{
 					ID:     runID,
 					Kind:   "AnalysisRun",
 					Name:   run.name,
@@ -607,7 +616,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						"message":    run.message,
 						"apiVersion": rollout.GetAPIVersion(),
 					},
-				})
+				}))
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", rolloutID, runID),
 					Source: rolloutID,
@@ -704,7 +713,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, app, Node{
 				ID:     appID,
 				Kind:   KindApplication,
 				Name:   name,
@@ -718,7 +727,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":        app.GetLabels(),
 					"apiVersion":    app.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Store for second pass edge creation
 			applicationResources = append(applicationResources, app)
@@ -778,7 +787,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, ks, Node{
 				ID:     ksID,
 				Kind:   KindKustomization,
 				Name:   name,
@@ -791,7 +800,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":        ks.GetLabels(),
 					"apiVersion":    ks.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Store for second pass edge creation
 			kustomizationResources = append(kustomizationResources, ks)
@@ -845,7 +854,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, repo, Node{
 				ID:     repoID,
 				Kind:   KindGitRepository,
 				Name:   name,
@@ -858,7 +867,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     repo.GetLabels(),
 					"apiVersion": repo.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -921,7 +930,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, hr, Node{
 				ID:     hrID,
 				Kind:   KindHelmRelease,
 				Name:   name,
@@ -935,7 +944,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":       hr.GetLabels(),
 					"apiVersion":   hr.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -961,7 +970,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := cert.GetName()
 
 			certID := fmt.Sprintf("certificate/%s/%s", ns, name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cert, Node{
 				ID:     certID,
 				Kind:   KindCertificate,
 				Name:   name,
@@ -971,7 +980,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     cert.GetLabels(),
 					"apiVersion": cert.GetAPIVersion(),
 				},
-			})
+			}))
 			certificateResources = append(certificateResources, *cert)
 		}
 	}
@@ -1004,7 +1013,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			npID := fmt.Sprintf("nodepool/%s/%s", ns, name)
 			nodePoolIDs[name] = npID
 			nodePoolsByName[name] = np
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, np, Node{
 				ID:     npID,
 				Kind:   KindNodePool,
 				Name:   name,
@@ -1014,7 +1023,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     np.GetLabels(),
 					"apiVersion": np.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -1037,7 +1046,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := nc.GetName()
 
 			ncID := fmt.Sprintf("nodeclaim/%s/%s", ns, name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, nc, Node{
 				ID:     ncID,
 				Kind:   KindNodeClaim,
 				Name:   name,
@@ -1047,7 +1056,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     nc.GetLabels(),
 					"apiVersion": nc.GetAPIVersion(),
 				},
-			})
+			}))
 
 			if pool, _ := karpenter.ResolveNodePoolForClaim(nc, nodePoolsByName); pool != nil {
 				if ownerID, ok := nodePoolIDs[pool.GetName()]; ok {
@@ -1080,7 +1089,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					continue // skip non-Karpenter nodes
 				}
 				nodeID := fmt.Sprintf("node//%s", node.Name)
-				nodes = append(nodes, Node{
+				nodes = append(nodes, observedNode(b.facts, node, Node{
 					ID:     nodeID,
 					Kind:   KindNode,
 					Name:   node.Name,
@@ -1090,7 +1099,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						"labels":       node.Labels,
 						"instanceType": node.Labels["node.kubernetes.io/instance-type"],
 					},
-				})
+				}))
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", ncID, nodeID),
 					Source: ncID,
@@ -1143,7 +1152,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := nc.GetName()
 			ncID := karpenterNodeClassID(ref.Group, ref.Kind, name)
 			nodeClassIDs[karpenterNodeClassKey(ref.Group, ref.Kind, name)] = ncID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, nc, Node{
 				ID:     ncID,
 				Kind:   KindNodeClass,
 				Name:   name,
@@ -1155,7 +1164,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"resource":     ncGVR.Resource,
 					"resourceKind": ref.Kind,
 				},
-			})
+			}))
 		}
 	}
 
@@ -1206,7 +1215,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := so.GetName()
 
 			soID := fmt.Sprintf("scaledobject/%s/%s", ns, name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, so, Node{
 				ID:     soID,
 				Kind:   KindScaledObject,
 				Name:   name,
@@ -1216,7 +1225,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     so.GetLabels(),
 					"apiVersion": so.GetAPIVersion(),
 				},
-			})
+			}))
 
 			for _, ref := range configrefs.KEDAAuthenticationReferences(so) {
 				kedaAuthenticationDependencies = append(kedaAuthenticationDependencies, declaredDependency{Source: resourceid.NewRef("keda.sh", "ScaledObject", ns, name), Target: ref, Label: "authentication", Configuration: true})
@@ -1250,7 +1259,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			sjID := fmt.Sprintf("scaledjob/%s/%s", ns, name)
 			scaledJobIDs[ns+"/"+name] = sjID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, sj, Node{
 				ID:     sjID,
 				Kind:   KindScaledJob,
 				Name:   name,
@@ -1260,7 +1269,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     sj.GetLabels(),
 					"apiVersion": sj.GetAPIVersion(),
 				},
-			})
+			}))
 			for _, ref := range configrefs.KEDAAuthenticationReferences(sj) {
 				kedaAuthenticationDependencies = append(kedaAuthenticationDependencies, declaredDependency{Source: resourceid.NewRef("keda.sh", "ScaledJob", ns, name), Target: ref, Label: "authentication", Configuration: true})
 			}
@@ -1292,7 +1301,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := cl.GetName()
 			clID := fmt.Sprintf("capicluster/%s/%s", ns, name)
 			capiClusterIDs[ns+"/"+name] = clID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cl, Node{
 				ID:     clID,
 				Kind:   KindCAPICluster,
 				Name:   name,
@@ -1302,7 +1311,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     cl.GetLabels(),
 					"apiVersion": cl.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -1327,7 +1336,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := cc.GetName()
 			ccID := fmt.Sprintf("clusterclass/%s/%s", ns, name)
 			clusterClassIDs[ns+"/"+name] = ccID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cc, Node{
 				ID:     ccID,
 				Kind:   KindClusterClass,
 				Name:   name,
@@ -1337,7 +1346,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     cc.GetLabels(),
 					"apiVersion": cc.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 
 		// ClusterClass is namespaced: a Cluster names its class's namespace or
@@ -1400,7 +1409,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := kcp.GetName()
 			kcpID := fmt.Sprintf("kubeadmcontrolplane/%s/%s", ns, name)
 			kcpIDs[ns+"/"+name] = kcpID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, kcp, Node{
 				ID:     kcpID,
 				Kind:   KindKubeadmControlPlane,
 				Name:   name,
@@ -1410,7 +1419,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     kcp.GetLabels(),
 					"apiVersion": kcp.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Cluster → KCP edge via ownerRef
 			for _, ownerRef := range kcp.GetOwnerReferences() {
@@ -1449,7 +1458,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := md.GetName()
 			mdID := fmt.Sprintf("machinedeployment/%s/%s", ns, name)
 			machineDeploymentIDs[ns+"/"+name] = mdID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, md, Node{
 				ID:     mdID,
 				Kind:   KindMachineDeployment,
 				Name:   name,
@@ -1459,7 +1468,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     md.GetLabels(),
 					"apiVersion": md.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Cluster → MachineDeployment edge via ownerRef
 			for _, ownerRef := range md.GetOwnerReferences() {
@@ -1498,7 +1507,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := mp.GetName()
 			mpID := fmt.Sprintf("machinepool/%s/%s", ns, name)
 			machinePoolIDs[ns+"/"+name] = mpID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, mp, Node{
 				ID:     mpID,
 				Kind:   KindMachinePool,
 				Name:   name,
@@ -1508,7 +1517,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     mp.GetLabels(),
 					"apiVersion": mp.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Cluster → MachinePool edge via ownerRef
 			for _, ownerRef := range mp.GetOwnerReferences() {
@@ -1547,7 +1556,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := ms.GetName()
 			msID := fmt.Sprintf("machineset/%s/%s", ns, name)
 			capiMachineSetIDs[ns+"/"+name] = msID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, ms, Node{
 				ID:     msID,
 				Kind:   KindMachineSet,
 				Name:   name,
@@ -1557,7 +1566,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     ms.GetLabels(),
 					"apiVersion": ms.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// MachineDeployment → MachineSet edge via ownerRef
 			for _, ownerRef := range ms.GetOwnerReferences() {
@@ -1595,7 +1604,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			name := m.GetName()
 			mID := fmt.Sprintf("machine/%s/%s", ns, name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, m, Node{
 				ID:     mID,
 				Kind:   KindMachine,
 				Name:   name,
@@ -1605,7 +1614,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     m.GetLabels(),
 					"apiVersion": m.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Owner edges: MachineSet, KCP, or MachinePool → Machine
 			for _, ownerRef := range m.GetOwnerReferences() {
@@ -1649,7 +1658,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeID := fmt.Sprintf("node//%s", node.Name)
 				// Only add node if not already present (Karpenter may have added it via NodeClaim)
 				if _, karpenterManaged := nodeClaimNodeNames[node.Name]; !karpenterManaged {
-					nodes = append(nodes, Node{
+					nodes = append(nodes, observedNode(b.facts, node, Node{
 						ID:     nodeID,
 						Kind:   KindNode,
 						Name:   node.Name,
@@ -1659,7 +1668,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 							"labels":       node.Labels,
 							"instanceType": node.Labels["node.kubernetes.io/instance-type"],
 						},
-					})
+					}))
 				}
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", machineID, nodeID),
@@ -1690,7 +1699,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			name := mhc.GetName()
 			mhcID := fmt.Sprintf("machinehealthcheck/%s/%s", ns, name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, mhc, Node{
 				ID:     mhcID,
 				Kind:   KindMachineHealthCheck,
 				Name:   name,
@@ -1700,7 +1709,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     mhc.GetLabels(),
 					"apiVersion": mhc.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// MHC → Cluster edge via ownerRef
 			for _, ownerRef := range mhc.GetOwnerReferences() {
@@ -1737,7 +1746,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			gcID := fmt.Sprintf("gatewayclass//%s", name)
 			gatewayClassIDs[name] = gcID
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, gc, Node{
 				ID:     gcID,
 				Kind:   KindGatewayClass,
 				Name:   name,
@@ -1746,7 +1755,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     gc.GetLabels(),
 					"apiVersion": gc.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -1799,7 +1808,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeStatus = StatusUnhealthy
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, vs, Node{
 				ID:     vsID,
 				Kind:   KindVirtualService,
 				Name:   name,
@@ -1813,7 +1822,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"apiVersion":         vs.GetAPIVersion(),
 					"istioServiceDomain": istioDomain,
 				},
-			})
+			}))
 
 			virtualServiceResources = append(virtualServiceResources, vs)
 		}
@@ -1853,7 +1862,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeStatus = StatusUnhealthy
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, dr, Node{
 				ID:     drID,
 				Kind:   KindDestinationRule,
 				Name:   name,
@@ -1866,7 +1875,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"apiVersion":         dr.GetAPIVersion(),
 					"istioServiceDomain": istioDomain,
 				},
-			})
+			}))
 
 			destinationRuleResources = append(destinationRuleResources, dr)
 		}
@@ -1904,7 +1913,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeStatus = StatusUnhealthy
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, igw, Node{
 				ID:     igwID,
 				Kind:   KindIstioGateway,
 				Name:   name,
@@ -1916,7 +1925,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":      igw.GetLabels(),
 					"apiVersion":  igw.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -1948,7 +1957,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			ksvcID := fmt.Sprintf("knativeservice/%s/%s", ns, name)
 			knativeServiceIDs[ns+"/"+name] = ksvcID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, ksvc, Node{
 				ID:     ksvcID,
 				Kind:   KindKnativeService,
 				Name:   name,
@@ -1958,7 +1967,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     ksvc.GetLabels(),
 					"apiVersion": ksvc.GetAPIVersion(),
 				},
-			})
+			}))
 
 			knativeServiceResources = append(knativeServiceResources, ksvc)
 		}
@@ -1989,7 +1998,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			knativeConfigIDs[ns+"/"+name] = kcfgID
 			knativeConfigResources = append(knativeConfigResources, kcfg)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, kcfg, Node{
 				ID:     kcfgID,
 				Kind:   KindKnativeConfiguration,
 				Name:   name,
@@ -1999,7 +2008,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     kcfg.GetLabels(),
 					"apiVersion": kcfg.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -2028,7 +2037,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			knativeRevisionIDs[ns+"/"+name] = krevID
 			knativeRevisionResources = append(knativeRevisionResources, krev)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, krev, Node{
 				ID:     krevID,
 				Kind:   KindKnativeRevision,
 				Name:   name,
@@ -2038,7 +2047,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     krev.GetLabels(),
 					"apiVersion": krev.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -2066,7 +2075,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			krouteID := fmt.Sprintf("knativeroute/%s/%s", ns, name)
 			knativeRouteIDs[ns+"/"+name] = krouteID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, kroute, Node{
 				ID:     krouteID,
 				Kind:   KindKnativeRoute,
 				Name:   name,
@@ -2076,7 +2085,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     kroute.GetLabels(),
 					"apiVersion": kroute.GetAPIVersion(),
 				},
-			})
+			}))
 
 			knativeRouteResources = append(knativeRouteResources, kroute)
 		}
@@ -2108,7 +2117,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			brokerID := fmt.Sprintf("broker/%s/%s", ns, name)
 			knativeBrokerIDs[ns+"/"+name] = brokerID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, broker, Node{
 				ID:     brokerID,
 				Kind:   KindBroker,
 				Name:   name,
@@ -2118,7 +2127,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     broker.GetLabels(),
 					"apiVersion": broker.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -2146,7 +2155,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			triggerID := fmt.Sprintf("trigger/%s/%s", ns, name)
 			knativeTriggerIDs[ns+"/"+name] = triggerID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, trigger, Node{
 				ID:     triggerID,
 				Kind:   KindTrigger,
 				Name:   name,
@@ -2156,7 +2165,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     trigger.GetLabels(),
 					"apiVersion": trigger.GetAPIVersion(),
 				},
-			})
+			}))
 
 			knativeTriggerResources = append(knativeTriggerResources, trigger)
 		}
@@ -2199,7 +2208,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			srcID := fmt.Sprintf("%s/%s/%s", srcDef.prefix, ns, name)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, src, Node{
 				ID:     srcID,
 				Kind:   srcDef.nodeKind,
 				Name:   name,
@@ -2209,7 +2218,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     src.GetLabels(),
 					"apiVersion": src.GetAPIVersion(),
 				},
-			})
+			}))
 
 			knativeSourceResources = append(knativeSourceResources, src)
 		}
@@ -2234,9 +2243,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if !opts.MatchesNamespaceFilter(ch.GetNamespace()) {
 				continue
 			}
-			nodes = append(nodes, Node{ID: strings.ToLower(kind) + "/" + ch.GetNamespace() + "/" + ch.GetName(), Kind: NodeKind(kind), Name: ch.GetName(), Status: extractGenericStatus(ch), Data: map[string]any{
+			nodes = append(nodes, observedNode(b.facts, ch, Node{ID: strings.ToLower(kind) + "/" + ch.GetNamespace() + "/" + ch.GetName(), Kind: NodeKind(kind), Name: ch.GetName(), Status: extractGenericStatus(ch), Data: map[string]any{
 				"namespace": ch.GetNamespace(), "labels": ch.GetLabels(), "apiVersion": ch.GetAPIVersion(),
-			}})
+			}}))
 			knativeChannelResources = append(knativeChannelResources, ch)
 		}
 	}
@@ -2304,7 +2313,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeStatus = StatusUnhealthy
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, res, Node{
 				ID:     resID,
 				Kind:   def.nodeKind,
 				Name:   name,
@@ -2316,7 +2325,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":      res.GetLabels(),
 					"apiVersion":  res.GetAPIVersion(),
 				},
-			})
+			}))
 
 			traefikRouteResources = append(traefikRouteResources, res)
 			traefikRouteKinds[res] = def
@@ -2360,7 +2369,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			mwID := fmt.Sprintf("%s/%s/%s", def.prefix, ns, name)
 			middlewareIDs[def.prefix+":"+ns+"/"+name] = mwID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, res, Node{
 				ID:     mwID,
 				Kind:   def.nodeKind,
 				Name:   name,
@@ -2370,7 +2379,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     res.GetLabels(),
 					"apiVersion": res.GetAPIVersion(),
 				},
-			})
+			}))
 
 			if def.kind == "Middleware" {
 				middlewareResources = append(middlewareResources, res)
@@ -2435,7 +2444,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeStatus = StatusUnhealthy
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, ts, Node{
 				ID:     tsID,
 				Kind:   KindTraefikService,
 				Name:   name,
@@ -2447,7 +2456,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":       ts.GetLabels(),
 					"apiVersion":   ts.GetAPIVersion(),
 				},
-			})
+			}))
 
 			traefikServiceResources = append(traefikServiceResources, ts)
 		}
@@ -2493,7 +2502,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			cfgID := fmt.Sprintf("%s/%s/%s", def.prefix, ns, name)
 			traefikConfigIDs[def.prefix+":"+ns+"/"+name] = cfgID
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, res, Node{
 				ID:     cfgID,
 				Kind:   def.nodeKind,
 				Name:   name,
@@ -2503,7 +2512,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     res.GetLabels(),
 					"apiVersion": res.GetAPIVersion(),
 				},
-			})
+			}))
 
 			switch def.prefix {
 			case "serverstransport", "serverstransporttcp":
@@ -2560,7 +2569,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					nodeStatus = StatusDegraded
 				}
 
-				nodes = append(nodes, Node{
+				nodes = append(nodes, observedNode(b.facts, res, Node{
 					ID:     resID,
 					Kind:   KindHTTPProxy,
 					Name:   name,
@@ -2574,7 +2583,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						"labels":       res.GetLabels(),
 						"apiVersion":   res.GetAPIVersion(),
 					},
-				})
+				}))
 
 				httpProxyResources = append(httpProxyResources, res)
 			}
@@ -2609,7 +2618,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			statusIssue = resourceStatus.Issue
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, ds, Node{
 			ID:     dsID,
 			Kind:   KindDaemonSet,
 			Name:   ds.Name,
@@ -2623,7 +2632,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"statusSummary": statusSummary,
 				"statusIssue":   statusIssue,
 			},
-		})
+		}))
 
 		refs := extractWorkloadReferences(ds.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(dsID, ds.Namespace, refs)
@@ -2661,7 +2670,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			statusIssue = resourceStatus.Issue
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, sts, Node{
 			ID:     stsID,
 			Kind:   KindStatefulSet,
 			Name:   sts.Name,
@@ -2675,7 +2684,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"statusSummary": statusSummary,
 				"statusIssue":   statusIssue,
 			},
-		})
+		}))
 
 		refs := extractWorkloadReferences(sts.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(stsID, sts.Namespace, refs)
@@ -2719,7 +2728,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		cjID := fmt.Sprintf("cronjob/%s/%s", cj.Namespace, cj.Name)
 		cronJobIDs[cj.Namespace+"/"+cj.Name] = cjID
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, cj, Node{
 			ID:     cjID,
 			Kind:   KindCronJob,
 			Name:   cj.Name,
@@ -2733,7 +2742,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"lastScheduleTime": cj.Status.LastScheduleTime,
 				"labels":           cj.Labels,
 			},
-		})
+		}))
 
 		// Track ConfigMap/Secret/PVC references
 		refs := extractWorkloadReferences(cj.Spec.JobTemplate.Spec.Template.Spec, opts.ForRelationshipCache)
@@ -2771,7 +2780,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			templates, _, _ := unstructured.NestedSlice(wt.Object, "spec", "templates")
 			wtID := fmt.Sprintf("workflowtemplate/%s/%s", ns, name)
 			workflowTemplateIDs[ns+"/"+name] = wtID
-			workflowTemplateNodes[wtID] = Node{
+			workflowTemplateNodes[wtID] = observedNode(b.facts, wt, Node{
 				ID:     wtID,
 				Kind:   KindWorkflowTemplate,
 				Name:   name,
@@ -2783,7 +2792,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":        wt.GetLabels(),
 					"apiVersion":    wt.GetAPIVersion(),
 				},
-			}
+			})
 		}
 	}
 	if hasClusterWorkflowTemplates && dynamicCache != nil {
@@ -2798,7 +2807,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			templates, _, _ := unstructured.NestedSlice(cwt.Object, "spec", "templates")
 			cwtID := fmt.Sprintf("clusterworkflowtemplate//%s", name)
 			clusterWorkflowTemplateIDs[name] = cwtID
-			workflowTemplateNodes[cwtID] = Node{
+			workflowTemplateNodes[cwtID] = observedNode(b.facts, cwt, Node{
 				ID:     cwtID,
 				Kind:   KindClusterWorkflowTemplate,
 				Name:   name,
@@ -2809,7 +2818,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":        cwt.GetLabels(),
 					"apiVersion":    cwt.GetAPIVersion(),
 				},
-			}
+			})
 		}
 	}
 	if hasCronWorkflows && dynamicCache != nil {
@@ -2828,7 +2837,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			cronWorkflowIDs[ns+"/"+name] = cwfID
 			suspended, _, _ := unstructured.NestedBool(cwf.Object, "spec", "suspend")
 			lastScheduled, _, _ := unstructured.NestedString(cwf.Object, "status", "lastScheduledTime")
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cwf, Node{
 				ID:     cwfID,
 				Kind:   KindCronWorkflow,
 				Name:   name,
@@ -2841,7 +2850,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":            cwf.GetLabels(),
 					"apiVersion":        cwf.GetAPIVersion(),
 				},
-			})
+			}))
 			edges = addArgoWorkflowTemplateEdges(edges, cwfID, ns, argoWorkflowTemplateRefsFromWorkflowSpec(cwf.Object, "spec", "workflowSpec"), workflowTemplateIDs, clusterWorkflowTemplateIDs)
 		}
 	}
@@ -2864,7 +2873,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			startedAt, _, _ := unstructured.NestedString(wf.Object, "status", "startedAt")
 			finishedAt, _, _ := unstructured.NestedString(wf.Object, "status", "finishedAt")
 			template, _, _ := unstructured.NestedString(wf.Object, "spec", "workflowTemplateRef", "name")
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, wf, Node{
 				ID:     wfID,
 				Kind:   KindWorkflow,
 				Name:   name,
@@ -2879,7 +2888,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     wf.GetLabels(),
 					"apiVersion": wf.GetAPIVersion(),
 				},
-			})
+			}))
 			edges = addArgoWorkflowTemplateEdges(edges, wfID, ns, argoWorkflowTemplateRefsFromWorkflowSpec(wf.Object, "spec"), workflowTemplateIDs, clusterWorkflowTemplateIDs)
 			if owner := argoWorkflowCronOwnerName(wf); owner != "" {
 				if cwfID, ok := cronWorkflowIDs[ns+"/"+owner]; ok {
@@ -2936,7 +2945,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			completionTime = job.Status.CompletionTime.Format(time.RFC3339)
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, job, Node{
 			ID:     jobID,
 			Kind:   KindJob,
 			Name:   job.Name,
@@ -2953,7 +2962,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"completionTime": completionTime,
 				"labels":         job.Labels,
 			},
-		})
+		}))
 
 		// Track ConfigMap/Secret/PVC references
 		refs := extractWorkloadReferences(job.Spec.Template.Spec, opts.ForRelationshipCache)
@@ -3087,6 +3096,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
+	// inactiveReplicaSets are scaled to zero and drawn nowhere; a Pod that
+	// outlives the scale-down still names one as its controller.
+	inactiveReplicaSets := make(map[string]*appsv1.ReplicaSet)
 	for _, rs := range replicasets {
 		if !opts.MatchesNamespaceFilter(rs.Namespace) {
 			continue
@@ -3094,6 +3106,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 		// Skip inactive ReplicaSets (old rollouts)
 		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 {
+			inactiveReplicaSets[rs.Namespace+"/"+rs.Name] = rs
 			continue
 		}
 
@@ -3143,13 +3156,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, rs, Node{
 				ID:     rsID,
 				Kind:   KindReplicaSet,
 				Name:   rs.Name,
 				Status: healthLevelToStatus(health.Workload(rs, time.Now()).Level),
 				Data:   rsData,
-			})
+			}))
 
 			if opts.ForRelationshipCache {
 				trackWorkloadRefs(rsID, rs.Namespace, extractWorkloadReferences(rs.Spec.Template.Spec, true))
@@ -3182,6 +3195,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					})
 				}
 			}
+		} else {
+			// A hidden ReplicaSet is the hop its Pods' shortcut edges cross.
+			b.facts.observeHop(replicaSetKey(rs), rs)
 		}
 	}
 
@@ -3236,6 +3252,16 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// onto the workload nodes just before return. Empty (and the stamp a no-op)
 	// in normal mode.
 	podSummaries := make(map[string]*PodSummary)
+	for _, pod := range pods {
+		if !opts.MatchesNamespaceFilter(pod.Namespace) {
+			continue
+		}
+		if ref := metav1.GetControllerOf(pod); ref != nil && ref.Kind == "ReplicaSet" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "apps" {
+			if rs := inactiveReplicaSets[pod.Namespace+"/"+ref.Name]; rs != nil {
+				b.facts.observeHop(replicaSetKey(rs), rs)
+			}
+		}
+	}
 	if len(pods) > 0 && opts.SummaryMode {
 		// Summary mode: collapse the pod tier entirely. Roll each pod's health
 		// onto its owning workload node. Pods with no resolvable workload
@@ -3253,6 +3279,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if !opts.MatchesNamespaceFilter(pod.Namespace) {
 				continue
 			}
+			// Counted, not drawn; ownership still passes through it.
+			b.facts.observeHop(podKey(pod), pod)
 			workloadID := b.resolvePodWorkloadID(pod, existingNodeIDs, replicaSetToDeployment, replicaSetToRollout, jobIDs, workflowIDs)
 			if workloadID == "" {
 				addPodHealth(orphanByNS, pod.Namespace, pod)
@@ -3262,7 +3290,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			addPodHealth(podSummaries, workloadID, pod)
 		}
 		for ns, summary := range orphanByNS {
-			nodes = append(nodes, CreateOrphanPodSummaryNode(ns, *summary, orphanRestarts[ns]))
+			nodes = append(nodes, syntheticNode(CreateOrphanPodSummaryNode(ns, *summary, orphanRestarts[ns])))
 		}
 	} else if len(pods) > 0 {
 		// Group pods using shared grouping logic
@@ -3282,7 +3310,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				// Small group - add as individual nodes
 				for _, pod := range group.Pods {
 					podID := GetPodID(pod)
-					podNode := CreatePodNode(pod, b.provider, true) // includeNodeName=true for resources view
+					podNode := observedNode(b.facts, pod, CreatePodNode(pod, b.provider, true)) // includeNodeName=true for resources view
 					if role := podRolloutTrafficRole(pod, replicaSetToRollout, rolloutTrafficByID); role != "" {
 						podNode.Data["trafficRole"] = role
 					}
@@ -3294,7 +3322,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			} else {
 				// Large group - create PodGroup
 				podGroupID := GetPodGroupID(group)
-				podGroupNode := CreatePodGroupNode(group, b.provider)
+				podGroupNode := syntheticNode(CreatePodGroupNode(group, b.provider))
+				observeGroupMembers(b.facts, podGroupNode.ID, group.Pods)
 
 				// A large group's pods can span more than one owning
 				// ReplicaSet and traffic role at once (a Rollout mid-
@@ -3423,13 +3452,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			"ports":     serviceTopologyPorts(svc.Spec.Ports),
 			"labels":    svc.Labels,
 		}
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, svc, Node{
 			ID:     svcID,
 			Kind:   KindService,
 			Name:   svc.Name,
 			Status: StatusHealthy,
 			Data:   svcData,
-		})
+		}))
 
 		// Connect Service to Deployments via selector (using namespace-indexed lookup)
 		if svc.Spec.Selector != nil {
@@ -3573,7 +3602,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 				monitorID := fmt.Sprintf("servicemonitor/%s/%s", monitor.GetNamespace(), monitor.GetName())
 				nodeData := monitorNodeData(monitor, "endpoints")
-				nodes = append(nodes, Node{ID: monitorID, Kind: KindServiceMonitor, Name: monitor.GetName(), Status: StatusHealthy, Data: nodeData})
+				nodes = append(nodes, observedNode(b.facts, monitor, Node{ID: monitorID, Kind: KindServiceMonitor, Name: monitor.GetName(), Status: StatusHealthy, Data: nodeData}))
 
 				selector, empty, selectorErr := monitorLabelSelector(monitor)
 				if selectorErr != nil {
@@ -3607,7 +3636,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 				monitorID := fmt.Sprintf("podmonitor/%s/%s", monitor.GetNamespace(), monitor.GetName())
 				nodeData := monitorNodeData(monitor, "podMetricsEndpoints")
-				nodes = append(nodes, Node{ID: monitorID, Kind: KindPodMonitor, Name: monitor.GetName(), Status: StatusHealthy, Data: nodeData})
+				nodes = append(nodes, observedNode(b.facts, monitor, Node{ID: monitorID, Kind: KindPodMonitor, Name: monitor.GetName(), Status: StatusHealthy, Data: nodeData}))
 
 				selector, empty, selectorErr := monitorLabelSelector(monitor)
 				if selectorErr != nil {
@@ -3674,7 +3703,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 		hasTLS := len(ing.Spec.TLS) > 0
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, ing, Node{
 			ID:     ingID,
 			Kind:   KindIngress,
 			Name:   ing.Name,
@@ -3686,7 +3715,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"apiVersion": networkingv1.SchemeGroupVersion.String(),
 				"labels":     ing.Labels,
 			},
-		})
+		}))
 
 		refs := workloadRefs{secrets: make(map[string]bool)}
 		for _, ref := range configrefs.IngressTLSSecretReferences(ing) {
@@ -3746,7 +3775,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, gw, Node{
 				ID:     gwID,
 				Kind:   KindGateway,
 				Name:   name,
@@ -3758,7 +3787,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":        gw.GetLabels(),
 					"apiVersion":    gw.GetAPIVersion(),
 				},
-			})
+			}))
 		}
 	}
 
@@ -3823,7 +3852,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			hostnames, _, _ := unstructured.NestedStringSlice(route.Object, "spec", "hostnames")
 			rules, _, _ := unstructured.NestedSlice(route.Object, "spec", "rules")
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, route, Node{
 				ID:     routeID,
 				Kind:   NodeKind(routeKind),
 				Name:   name,
@@ -3835,7 +3864,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     route.GetLabels(),
 					"apiVersion": route.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Store for second-pass edge creation
 			gatewayRouteResources = append(gatewayRouteResources, route)
@@ -3843,7 +3872,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	nodes, edges, kedaAuthenticationWarnings := addObservedDependencyEdges(nodes, edges, kedaAuthenticationDependencies, dynamicCache, opts)
+	nodes, edges, kedaAuthenticationWarnings := addObservedDependencyEdges(b.facts, nodes, edges, kedaAuthenticationDependencies, dynamicCache, opts)
 	warnings = append(warnings, kedaAuthenticationWarnings...)
 
 	// 8. Add ConfigMap nodes (if enabled)
@@ -3873,7 +3902,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 
 			if len(consumers) > 0 || podConfigTargets[workloadRefKey{namespace: cm.Namespace, name: cm.Name}] {
-				nodes = append(nodes, configMapNode(cm))
+				nodes = append(nodes, observedNode(b.facts, cm, configMapNode(cm)))
 			}
 		}
 	}
@@ -3921,7 +3950,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			if len(consumers) > 0 || podSecretTargets[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] {
 				visibleSecretIDs[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] = secretID
-				nodes = append(nodes, secretNode(secret))
+				nodes = append(nodes, observedNode(b.facts, secret, secretNode(secret)))
 			}
 		}
 	}
@@ -3948,10 +3977,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 			serviceAccountID := fmt.Sprintf("serviceaccount/%s/%s", serviceAccount.Namespace, serviceAccount.Name)
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, serviceAccount, Node{
 				ID: serviceAccountID, Kind: KindServiceAccount, Name: serviceAccount.Name, Status: StatusHealthy,
 				Data: map[string]any{"namespace": serviceAccount.Namespace, "labels": serviceAccount.Labels},
-			})
+			}))
 			for _, workloadID := range consumers {
 				edges = append(edges, Edge{
 					ID: fmt.Sprintf("%s-to-%s", serviceAccountID, workloadID), Source: serviceAccountID, Target: workloadID, Type: EdgeConfigures,
@@ -3985,10 +4014,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					continue
 				}
 				sealedSecretID := fmt.Sprintf("sealedsecret/%s/%s", namespace, sealedSecret.GetName())
-				nodes = append(nodes, Node{
+				nodes = append(nodes, observedNode(b.facts, sealedSecret, Node{
 					ID: sealedSecretID, Kind: KindSealedSecret, Name: sealedSecret.GetName(), Status: sealedSecretHealth(sealedSecret),
 					Data: map[string]any{"namespace": namespace, "targetSecret": targetName, "labels": sealedSecret.GetLabels(), "apiVersion": sealedSecret.GetAPIVersion()},
-				})
+				}))
 				if secretID := visibleSecretIDs[key]; secretID != "" {
 					edges = append(edges, Edge{ID: fmt.Sprintf("%s-to-%s", sealedSecretID, secretID), Source: sealedSecretID, Target: secretID, Type: EdgeManages})
 					continue
@@ -4040,7 +4069,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					storageClass = *pvc.Spec.StorageClassName
 				}
 
-				nodes = append(nodes, Node{
+				nodes = append(nodes, observedNode(b.facts, pvc, Node{
 					ID:     pvcID,
 					Kind:   KindPVC,
 					Name:   pvc.Name,
@@ -4053,7 +4082,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						"phase":        string(pvc.Status.Phase),
 						"labels":       pvc.Labels,
 					},
-				})
+				}))
 			}
 		}
 	}
@@ -4071,7 +4100,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 		hpaID := fmt.Sprintf("horizontalpodautoscaler/%s/%s", hpa.Namespace, hpa.Name)
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, hpa, Node{
 			ID:     hpaID,
 			Kind:   KindHPA,
 			Name:   hpa.Name,
@@ -4084,7 +4113,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"current":     hpa.Status.CurrentReplicas,
 				"labels":      hpa.Labels,
 			},
-		})
+		}))
 
 		// Connect to target
 		targetAPIVersion := hpa.Spec.ScaleTargetRef.APIVersion
@@ -4134,7 +4163,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			status = StatusDegraded
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, pdb, Node{
 			ID:     pdbID,
 			Kind:   KindPDB,
 			Name:   pdb.Name,
@@ -4147,7 +4176,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"desiredHealthy":     pdb.Status.DesiredHealthy,
 				"labels":             pdb.Labels,
 			},
-		})
+		}))
 
 		// Connect to target workloads by matching PDB's selector against workload pod template labels
 		if pdb.Spec.Selector != nil {
@@ -4222,13 +4251,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			"labels":      np.Labels,
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, np, Node{
 			ID:     npID,
 			Kind:   KindNetworkPolicy,
 			Name:   np.Name,
 			Status: StatusHealthy,
 			Data:   nodeData,
-		})
+		}))
 
 		// Connect to target workloads by matching policy's podSelector against workload pod template labels.
 		// Empty selector (matches all pods) skips edges to avoid topology clutter from default-deny policies.
@@ -4305,13 +4334,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				"apiVersion": cnp.GetAPIVersion(),
 			}
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cnp, Node{
 				ID:     cnpID,
 				Kind:   KindCiliumNetworkPolicy,
 				Name:   name,
 				Status: StatusHealthy,
 				Data:   nodeData,
-			})
+			}))
 
 			// Connect via endpointSelector (equivalent to podSelector)
 			selectorMap, _, _ := unstructured.NestedMap(cnp.Object, "spec", "endpointSelector", "matchLabels")
@@ -4365,7 +4394,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := ccnp.GetName()
 			ccnpID := fmt.Sprintf("ciliumclusterwidenetworkpolicy/%s", name)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, ccnp, Node{
 				ID:     ccnpID,
 				Kind:   KindCiliumClusterwideNetworkPolicy,
 				Name:   name,
@@ -4374,7 +4403,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     ccnp.GetLabels(),
 					"apiVersion": ccnp.GetAPIVersion(),
 				},
-			})
+			}))
 			// Cluster-wide policies use endpointSelector or nodeSelector across all namespaces.
 			// Edges are complex (cross-namespace matching) — skip for now, node presence is the value.
 		}
@@ -4396,7 +4425,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := cnp.GetName()
 			cnpID := fmt.Sprintf("clusternetworkpolicy/%s", name)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, cnp, Node{
 				ID:     cnpID,
 				Kind:   KindClusterNetworkPolicy,
 				Name:   name,
@@ -4405,7 +4434,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     cnp.GetLabels(),
 					"apiVersion": cnp.GetAPIVersion(),
 				},
-			})
+			}))
 			// ClusterNetworkPolicy uses spec.subject with namespace/pod selectors.
 			// Cross-namespace matching is complex — skip edges for now, node presence is the value.
 		}
@@ -4440,7 +4469,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			name := vpa.GetName()
 			vpaID := fmt.Sprintf("verticalpodautoscaler/%s/%s", ns, name)
 
-			nodes = append(nodes, Node{
+			nodes = append(nodes, observedNode(b.facts, vpa, Node{
 				ID:     vpaID,
 				Kind:   KindVPA,
 				Name:   name,
@@ -4450,7 +4479,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					"labels":     vpa.GetLabels(),
 					"apiVersion": vpa.GetAPIVersion(),
 				},
-			})
+			}))
 
 			// Connect to target workload via spec.targetRef
 			targetKind, _, _ := unstructured.NestedString(vpa.Object, "spec", "targetRef", "kind")
@@ -4493,7 +4522,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Source dependencies are not owners. Join all supported source kinds and
 	// referenced charts through the shared observed-target path.
 	fluxRoots := append(append([]*unstructured.Unstructured(nil), kustomizationResources...), helmReleaseResources...)
-	nodes, edges, fluxSourceWarnings := addFluxSourceEdges(nodes, edges, fluxRoots, dynamicCache, opts)
+	nodes, edges, fluxSourceWarnings := addFluxSourceEdges(b.facts, nodes, edges, fluxRoots, dynamicCache, opts)
 	warnings = append(warnings, fluxSourceWarnings...)
 
 	// 14. Create FluxCD HelmRelease edges to managed resources
@@ -5144,7 +5173,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	nodes, edges, issuerWarnings := addCertificateIssuerEdges(nodes, edges, certificateResources, dynamicCache, opts)
+	nodes, edges, issuerWarnings := addCertificateIssuerEdges(b.facts, nodes, edges, certificateResources, dynamicCache, opts)
 	warnings = append(warnings, issuerWarnings...)
 
 	// Build Certificate lookup by secretName (for IngressRoute → Certificate edges)
@@ -5489,9 +5518,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			existingSecretNodes[id] = true
 			loadObservedSecrets()
 			if secret := observedSecrets[id]; secret != nil {
-				nodes = append(nodes, secretNode(secret))
+				nodes = append(nodes, observedNode(b.facts, secret, secretNode(secret)))
 			} else {
-				nodes = append(nodes, Node{ID: id, Kind: KindSecret, Name: name, Status: StatusUnknown, Data: map[string]any{"namespace": namespace, "labels": map[string]string{}}})
+				nodes = append(nodes, syntheticNode(Node{ID: id, Kind: KindSecret, Name: name, Status: StatusUnknown, Data: map[string]any{"namespace": namespace, "labels": map[string]string{}}}))
 			}
 		}
 		return id
@@ -5509,7 +5538,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			cmNodeID := fmt.Sprintf("configmap/%s/%s", stNs, cmName)
 			if !existingConfigMapNodes[cmNodeID] {
 				existingConfigMapNodes[cmNodeID] = true
-				nodes = append(nodes, Node{
+				nodes = append(nodes, syntheticNode(Node{
 					ID:     cmNodeID,
 					Kind:   KindConfigMap,
 					Name:   cmName,
@@ -5518,7 +5547,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						"namespace": stNs,
 						"labels":    map[string]string{},
 					},
-				})
+				}))
 			}
 			dedupeKey := stID + "|" + cmNodeID
 			if !traefikEdgeSeen[dedupeKey] {
@@ -6370,7 +6399,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			host = ing.Spec.Rules[0].Host
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, ing, Node{
 			ID:     ingID,
 			Kind:   KindIngress,
 			Name:   ing.Name,
@@ -6382,7 +6411,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"apiVersion": networkingv1.SchemeGroupVersion.String(),
 				"labels":     ing.Labels,
 			},
-		})
+		}))
 
 		// Connect to backend Services (only if service is included)
 		for _, svcName := range configrefs.IngressBackendServices(ing) {
@@ -6424,7 +6453,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			}
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, gw, Node{
 			ID:     gwID,
 			Kind:   KindGateway,
 			Name:   name,
@@ -6436,7 +6465,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":        gw.GetLabels(),
 				"apiVersion":    gw.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 
 	trafficGatewayEdgeSeen := make(map[string]bool)
@@ -6453,7 +6482,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		hostnames, _, _ := unstructured.NestedStringSlice(route.Object, "spec", "hostnames")
 		rules, _, _ := unstructured.NestedSlice(route.Object, "spec", "rules")
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, route, Node{
 			ID:     routeID,
 			Kind:   NodeKind(routeKind),
 			Name:   name,
@@ -6465,7 +6494,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":     route.GetLabels(),
 				"apiVersion": route.GetAPIVersion(),
 			},
-		})
+		}))
 
 		// Gateway → Route edges
 		parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
@@ -6548,7 +6577,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			nodeStatus = StatusUnhealthy
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, igw, Node{
 			ID:     igwID,
 			Kind:   KindIstioGateway,
 			Name:   name,
@@ -6560,7 +6589,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":      igw.GetLabels(),
 				"apiVersion":  igw.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 
 	for _, vs := range trafficVirtualServices {
@@ -6589,7 +6618,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			nodeStatus = StatusUnhealthy
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, vs, Node{
 			ID:     vsID,
 			Kind:   KindVirtualService,
 			Name:   vsName,
@@ -6603,7 +6632,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"apiVersion":         vs.GetAPIVersion(),
 				"istioServiceDomain": istioDomain,
 			},
-		})
+		}))
 
 		// IstioGateway → VirtualService edges
 		for _, gwRef := range gateways {
@@ -6706,7 +6735,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			}
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, ksvc, Node{
 			ID:     ksvcID,
 			Kind:   KindKnativeService,
 			Name:   name,
@@ -6719,7 +6748,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":         ksvc.GetLabels(),
 				"apiVersion":     ksvc.GetAPIVersion(),
 			},
-		})
+		}))
 		if internalURL, _, _ := unstructured.NestedString(ksvc.Object, "status", "address", "url"); internalURL != "" {
 			nodes[len(nodes)-1].Data["internalUrl"] = internalURL
 		}
@@ -6797,7 +6826,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			}
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, ts, Node{
 			ID:     tsID,
 			Kind:   KindTraefikService,
 			Name:   name,
@@ -6808,7 +6837,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":         ts.GetLabels(),
 				"apiVersion":     ts.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 
 	// TraefikService edges — Phase 2: all IDs populated, safe to resolve forward references
@@ -6951,7 +6980,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		mwID := fmt.Sprintf("middleware/%s/%s", ns, name)
 		trafficMiddlewareIDMap["middleware:"+ns+"/"+name] = mwID
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, mw, Node{
 			ID:     mwID,
 			Kind:   KindMiddleware,
 			Name:   name,
@@ -6961,7 +6990,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":     mw.GetLabels(),
 				"apiVersion": mw.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 	for _, mw := range trafficMiddlewareTCPs {
 		ns := mw.GetNamespace()
@@ -6972,7 +7001,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		mwID := fmt.Sprintf("middlewaretcp/%s/%s", ns, name)
 		trafficMiddlewareIDMap["middlewaretcp:"+ns+"/"+name] = mwID
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, mw, Node{
 			ID:     mwID,
 			Kind:   KindMiddlewareTCP,
 			Name:   name,
@@ -6982,7 +7011,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":     mw.GetLabels(),
 				"apiVersion": mw.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 
 	// IngressRoute nodes and edges (after TraefikService/Middleware so maps are populated)
@@ -7015,7 +7044,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			nodeStatus = StatusUnhealthy
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, rt, Node{
 			ID:     routeID,
 			Kind:   NodeKind(routeKind),
 			Name:   name,
@@ -7028,7 +7057,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":       rt.GetLabels(),
 				"apiVersion":   rt.GetAPIVersion(),
 			},
-		})
+		}))
 
 		// IngressRoute → Service and IngressRoute → TraefikService edges
 		for _, route := range routes {
@@ -7158,7 +7187,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			trafficHTTPProxyIDs = append(trafficHTTPProxyIDs, hpID)
 		}
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, hp, Node{
 			ID:     hpID,
 			Kind:   KindHTTPProxy,
 			Name:   name,
@@ -7172,7 +7201,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"labels":       hp.GetLabels(),
 				"apiVersion":   hp.GetAPIVersion(),
 			},
-		})
+		}))
 	}
 
 	// Phase 2: Create edges (all IDs populated)
@@ -7286,13 +7315,13 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 
 	// Step 4: Add Internet node if we have ingresses, gateways, Istio gateways, or KNative services with URLs
 	if len(ingressIDs) > 0 || len(trafficGatewayIDs) > 0 || len(trafficIstioGatewayIDs) > 0 || len(publicKnativeServiceIDs) > 0 || len(trafficTraefikRouteIDs) > 0 || len(trafficHTTPProxyIDs) > 0 {
-		nodes = append([]Node{{
+		nodes = append([]Node{syntheticNode(Node{
 			ID:     "internet",
 			Kind:   KindInternet,
 			Name:   "Internet",
 			Status: StatusHealthy,
 			Data:   map[string]any{},
-		}}, nodes...)
+		})}, nodes...)
 
 		for _, ingID := range ingressIDs {
 			edges = append(edges, Edge{
@@ -7349,7 +7378,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		svcID := fmt.Sprintf("service/%s/%s", svc.Namespace, svc.Name)
 		serviceIDs[svcKey] = svcID
 
-		nodes = append(nodes, Node{
+		nodes = append(nodes, observedNode(b.facts, svc, Node{
 			ID:     svcID,
 			Kind:   KindService,
 			Name:   svc.Name,
@@ -7361,7 +7390,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				"ports":     serviceTopologyPorts(svc.Spec.Ports),
 				"labels":    svc.Labels,
 			},
-		})
+		}))
 	}
 
 	// Step 6: Aggregate pods by owner and create PodGroup nodes
@@ -7382,6 +7411,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		podSummaries := make(map[string]*PodSummary)
 		for _, group := range groupingResult.Groups {
 			for i, pod := range group.Pods {
+				b.facts.observeHop(podKey(pod), pod)
 				for _, svcID := range group.PodServiceIDs[i] {
 					addPodHealth(podSummaries, svcID, pod)
 				}
@@ -7401,7 +7431,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 				// Small group - show as individual nodes
 				for i, pod := range group.Pods {
 					podID := GetPodID(pod)
-					nodes = append(nodes, CreatePodNode(pod, b.provider, false)) // includeNodeName=false for traffic view
+					nodes = append(nodes, observedNode(b.facts, pod, CreatePodNode(pod, b.provider, false))) // includeNodeName=false for traffic view
 
 					// Add edges from services to pod (traffic view specific)
 					for _, svcID := range group.PodServiceIDs[i] {
@@ -7416,7 +7446,8 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			} else {
 				// Large group - create PodGroup node
 				podGroupID := GetPodGroupID(group)
-				podGroupNode := CreatePodGroupNode(group, b.provider)
+				podGroupNode := syntheticNode(CreatePodGroupNode(group, b.provider))
+				observeGroupMembers(b.facts, podGroupNode.ID, group.Pods)
 				nodes = append(nodes, podGroupNode)
 
 				// Add edges from services to pod group (traffic view specific).
@@ -8758,8 +8789,10 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 
 	// Phase 1: Collect all candidate CRD resources
 	type candidate struct {
-		nodeID      string
-		node        Node
+		nodeID string
+		// resource becomes a node, and is observed, only once accepted.
+		resource    *unstructured.Unstructured
+		kind        string
 		ownerRefs   []ResourceRef
 		resourceKey string
 		typeKey     string
@@ -8853,18 +8886,9 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 				continue
 			}
 			candidates = append(candidates, candidate{
-				nodeID: nodeID,
-				node: Node{
-					ID:     nodeID,
-					Kind:   NodeKind(kind),
-					Name:   name,
-					Status: extractGenericStatus(resource),
-					Data: map[string]any{
-						"namespace":  ns,
-						"labels":     resource.GetLabels(),
-						"apiVersion": resource.GetAPIVersion(),
-					},
-				},
+				nodeID:      nodeID,
+				resource:    resource,
+				kind:        kind,
 				ownerRefs:   ownerResources,
 				resourceKey: resourceKey,
 				typeKey:     typeKey,
@@ -8900,7 +8924,17 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 
 			if len(ownerEdges) > 0 {
 				if !c.existing {
-					nodes = append(nodes, c.node)
+					nodes = append(nodes, observedNode(b.facts, c.resource, Node{
+						ID:     c.nodeID,
+						Kind:   NodeKind(c.kind),
+						Name:   c.resource.GetName(),
+						Status: extractGenericStatus(c.resource),
+						Data: map[string]any{
+							"namespace":  c.resource.GetNamespace(),
+							"labels":     c.resource.GetLabels(),
+							"apiVersion": c.resource.GetAPIVersion(),
+						},
+					}))
 					existingIDs[c.nodeID] = true
 					existingResourceIDs[c.resourceKey] = c.nodeID
 					crdCounts[c.typeKey]++

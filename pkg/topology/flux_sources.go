@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func addFluxSourceEdges(nodes []Node, edges []Edge, roots []*unstructured.Unstructured, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
+func addFluxSourceEdges(facts *factsCapture, nodes []Node, edges []Edge, roots []*unstructured.Unstructured, provider DynamicProvider, opts BuildOptions) ([]Node, []Edge, []string) {
 	var refs []declaredDependency
 	chartTargets := map[string]bool{}
 	for _, root := range roots {
@@ -19,7 +19,7 @@ func addFluxSourceEdges(nodes []Node, edges []Edge, roots []*unstructured.Unstru
 			}
 		}
 	}
-	nodes, edges, warnings := addObservedDependencyEdges(nodes, edges, refs, provider, opts)
+	nodes, edges, warnings := addObservedDependencyEdges(facts, nodes, edges, refs, provider, opts)
 	observedCharts := map[string]bool{}
 	for i := range nodes {
 		for _, key := range nodeResourceKeys(&nodes[i]) {
@@ -50,6 +50,6 @@ func addFluxSourceEdges(nodes []Node, edges []Edge, roots []*unstructured.Unstru
 			refs = append(refs, declaredDependency{Source: resourceid.NewRef(gvr.Group, "HelmChart", chart.GetNamespace(), chart.GetName()), Target: ref.Ref, Label: ref.Role, Configuration: true})
 		}
 	}
-	nodes, edges, sourceWarnings := addObservedDependencyEdges(nodes, edges, refs, provider, opts)
+	nodes, edges, sourceWarnings := addObservedDependencyEdges(facts, nodes, edges, refs, provider, opts)
 	return nodes, edges, append(warnings, sourceWarnings...)
 }

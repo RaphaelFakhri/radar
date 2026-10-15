@@ -12,7 +12,8 @@ const reflectionEdgeLabel = "Reflects to"
 
 func (b *Builder) addReflectionRelationships(t *Topology, opts BuildOptions) {
 	var objects []configrefs.Object
-	observed := map[configrefs.Ref]Node{}
+	configMaps := map[configrefs.Ref]*corev1.ConfigMap{}
+	secrets := map[configrefs.Ref]*corev1.Secret{}
 	if opts.IncludeConfigMaps {
 		items, err := b.provider.ConfigMaps()
 		if err == nil {
@@ -20,7 +21,7 @@ func (b *Builder) addReflectionRelationships(t *Topology, opts BuildOptions) {
 				if opts.MatchesNamespaceFilter(o.Namespace) {
 					metadata := configrefs.Metadata("ConfigMap", o)
 					objects = append(objects, metadata)
-					observed[metadata.Ref] = configMapNode(o)
+					configMaps[metadata.Ref] = o
 				}
 			}
 		}
@@ -32,10 +33,25 @@ func (b *Builder) addReflectionRelationships(t *Topology, opts BuildOptions) {
 				if opts.MatchesNamespaceFilter(o.Namespace) {
 					metadata := configrefs.Metadata("Secret", o)
 					objects = append(objects, metadata)
-					observed[metadata.Ref] = secretNode(o)
+					secrets[metadata.Ref] = o
 				}
 			}
 		}
+	}
+	// Only linked objects become nodes, so only they are observed.
+	endpoints := map[configrefs.Ref]Node{}
+	endpoint := func(ref configrefs.Ref) Node {
+		if n, ok := endpoints[ref]; ok {
+			return n
+		}
+		var n Node
+		if cm := configMaps[ref]; cm != nil {
+			n = observedNode(b.facts, cm, configMapNode(cm))
+		} else if secret := secrets[ref]; secret != nil {
+			n = observedNode(b.facts, secret, secretNode(secret))
+		}
+		endpoints[ref] = n
+		return n
 	}
 	refs := configrefs.BuildReflections(objects)
 	nodes := map[string]int{}
@@ -53,10 +69,10 @@ func (b *Builder) addReflectionRelationships(t *Topology, opts BuildOptions) {
 		for _, ref := range []configrefs.Ref{link.Source, link.Mirror} {
 			key := id(ref)
 			if index, exists := nodes[key]; exists {
-				t.Nodes[index] = observed[ref]
+				t.Nodes[index] = endpoint(ref)
 			} else {
 				nodes[key] = len(t.Nodes)
-				t.Nodes = append(t.Nodes, observed[ref])
+				t.Nodes = append(t.Nodes, endpoint(ref))
 			}
 		}
 		source, target := id(link.Source), id(link.Mirror)

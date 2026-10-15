@@ -31,7 +31,7 @@ func TestFluxSourceGraphFollowsReferencedChart(t *testing.T) {
 				gvrs["HelmChart"]: {chart, unused}, gvrs["HelmRepository"]: {makeObject("source.toolkit.fluxcd.io", "HelmRepository", "shared", "repo", nil)}, gvrs["Bucket"]: {makeObject("source.toolkit.fluxcd.io", "Bucket", "team", "files", nil)},
 			}}, listCalls: map[string]int{}}
 			nodes := []Node{{ID: "helmrelease/team/app", Kind: KindHelmRelease, Name: "app", Data: map[string]any{"namespace": "team", "apiVersion": hr.GetAPIVersion()}}, {ID: "kustomization/team/config", Kind: KindKustomization, Name: "config", Data: map[string]any{"namespace": "team", "apiVersion": ks.GetAPIVersion()}}}
-			nodes, edges, warnings := addFluxSourceEdges(nodes, nil, []*unstructured.Unstructured{hr, ks}, p, DefaultBuildOptions())
+			nodes, edges, warnings := addFluxSourceEdges(nil, nodes, nil, []*unstructured.Unstructured{hr, ks}, p, DefaultBuildOptions())
 			wantEdges := 3
 			if inline {
 				wantEdges++
@@ -73,7 +73,7 @@ func TestFluxSourceGraphFollowsReferencedChart(t *testing.T) {
 			if inline {
 				missingChart := *p
 				missingChart.resources = map[schema.GroupVersionResource][]*unstructured.Unstructured{gvrs["HelmRepository"]: p.resources[gvrs["HelmRepository"]]}
-				missingNodes, missingEdges, _ := addFluxSourceEdges(nodes[:2], nil, []*unstructured.Unstructured{hr}, &missingChart, DefaultBuildOptions())
+				missingNodes, missingEdges, _ := addFluxSourceEdges(nil, nodes[:2], nil, []*unstructured.Unstructured{hr}, &missingChart, DefaultBuildOptions())
 				if len(missingNodes) != 3 || len(missingEdges) != 1 {
 					t.Fatalf("uncached chart lost declared source: nodes=%+v edges=%+v", missingNodes, missingEdges)
 				}
@@ -81,7 +81,7 @@ func TestFluxSourceGraphFollowsReferencedChart(t *testing.T) {
 
 			opts := DefaultBuildOptions()
 			opts.Namespaces = []string{"team"}
-			nodes, edges, _ = addFluxSourceEdges(nodes[:2], nil, []*unstructured.Unstructured{hr, ks}, p, opts)
+			nodes, edges, _ = addFluxSourceEdges(nil, nodes[:2], nil, []*unstructured.Unstructured{hr, ks}, p, opts)
 			if len(nodes) != 3 || len(edges) != 1 {
 				t.Fatalf("cross-namespace source leaked through namespace filter: nodes=%+v edges=%+v", nodes, edges)
 			}

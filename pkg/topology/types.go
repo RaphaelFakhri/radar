@@ -188,7 +188,10 @@ const (
 
 // Topology represents the complete graph
 type Topology struct {
-	podConsumers            map[string][]ResourceRef
+	podConsumers map[string][]ResourceRef
+	// facts are the object observations this graph was built from: frozen,
+	// shared by every copy and projection, never serialized.
+	facts                   *factsRegistry
 	Nodes                   []Node   `json:"nodes"`
 	Edges                   []Edge   `json:"edges"`
 	Warnings                []string `json:"warnings,omitempty"`                // Warnings about resources that failed to load
