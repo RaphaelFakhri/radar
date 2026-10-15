@@ -32,7 +32,10 @@ vi.mock('../../api/client', async importOriginal => {
     useFluxReconcile: idle, useFluxSyncWithSource: idle, useFluxSuspend: idle, useFluxResume: idle,
   }
 })
-vi.mock('../../api/apiResources', () => ({ useAPIResources: () => ({ data: [], isLoading: false }) }))
+vi.mock('../../api/apiResources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/apiResources')>()),
+  useAPIResources: () => ({ data: [], isLoading: false }),
+}))
 vi.mock('../../context/ConnectionContext', () => ({ useConnection: () => ({ connection: { state: 'connected' } }) }))
 vi.mock('../../context/RadarUpgradeHost', () => ({ useRadarUpgradeHost: () => ({}) }))
 vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
