@@ -3184,7 +3184,7 @@ func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filter
 		helmNamespaces = resolveHelmListNamespaces(ctx, "")
 	}
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
-	unchecked, incomplete = helm.ReportIssueRead(ctx, err, username, groups)
+	unchecked, incomplete = helm.ReportIssueRead(ctx, err, username, groups, helmNamespaces)
 	return issues.NativeHelmReleaseIssues(releases, time.Now()), unchecked, incomplete
 }
 

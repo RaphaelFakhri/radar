@@ -135,15 +135,18 @@ var (
 // ReportIssueRead classifies the outcome of ListIssueReleasesAcrossNamespaces
 // for the issue stream and logs a failure once per identity and failure class
 // rather than once per poll: open tabs and the alerts worker poll this
-// constantly. A successful read clears only that identity's failure log, so
-// one user's success can't make another user's ongoing failure log again,
-// while a failure that comes back after recovering is logged again. A denial
-// is logged once per identity.
-func ReportIssueRead(ctx context.Context, err error, username string, groups []string) (issuesapi.UncheckedSource, bool) {
-	identity := pkgauth.IdentityCacheKey(username, groups) + "\x00"
+// constantly. A successful read clears only the failure log for that identity
+// and namespace scope, so a success elsewhere (another user, or the same user
+// viewing other namespaces) can't make an ongoing failure log again, while a
+// failure that comes back after recovering is logged again. A denial is
+// logged once per identity.
+func ReportIssueRead(ctx context.Context, err error, username string, groups []string, namespaces []string) (issuesapi.UncheckedSource, bool) {
+	scope := slices.Clone(namespaces)
+	slices.Sort(scope)
+	readKey := pkgauth.IdentityCacheKey(username, groups) + "\x00" + strings.Join(scope, ",") + "\x00"
 	if err == nil {
 		issueReadFailureLogged.Range(func(k, _ any) bool {
-			if key, _ := k.(string); strings.HasPrefix(key, identity) {
+			if key, _ := k.(string); strings.HasPrefix(key, readKey) {
 				issueReadFailureLogged.Delete(k)
 			}
 			return true
@@ -161,7 +164,7 @@ func ReportIssueRead(ctx context.Context, err error, username string, groups []s
 			log.Printf("[issues] Helm release issues omitted for %q: Kubernetes denied listing release Secrets", username)
 		}
 	default:
-		if _, seen := issueReadFailureLogged.LoadOrStore(identity+issueReadFailureClass(err), struct{}{}); !seen {
+		if _, seen := issueReadFailureLogged.LoadOrStore(readKey+issueReadFailureClass(err), struct{}{}); !seen {
 			log.Printf("[issues] Helm releases couldn't be checked for issues (logged once until a read succeeds): %v", err)
 		}
 	}

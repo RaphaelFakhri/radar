@@ -196,7 +196,9 @@ func (p *CacheProvider) dynamicSyncGap(gvr schema.GroupVersionResource, namespac
 	}
 	synced := true
 	if namespaces == nil {
-		synced = p.dynamic.IsSynced(gvr)
+		// IsSynced covers only the informers that exist; a fallback walk
+		// that stopped early leaves namespaces with none.
+		synced = p.dynamic.IsSynced(gvr) && !p.dynamic.AllNamespacesFanoutIncomplete(gvr)
 	} else {
 		for _, ns := range namespaces {
 			if !p.dynamic.IsNamespaceSynced(gvr, ns) {

@@ -178,6 +178,15 @@ func TestComposeReportsKarpenterInventoryGaps(t *testing.T) {
 		t.Fatalf("unchecked = %+v, want %+v", stats.Unchecked, want)
 	}
 
+	// A request for another kind doesn't hear about Karpenter; a request for
+	// NodeClaims does, since nothing is read without the NodePools.
+	if _, stats = ComposeWithStats(p, Filters{Limit: NoLimit, Kinds: []string{"Pod"}}); stats.Unchecked != nil {
+		t.Fatalf("Pod request: unchecked = %+v, want none", stats.Unchecked)
+	}
+	if _, stats = ComposeWithStats(p, Filters{Limit: NoLimit, Kinds: []string{"nodeclaim"}}); !reflect.DeepEqual(stats.Unchecked, want) {
+		t.Fatalf("NodeClaim request: unchecked = %+v, want %+v", stats.Unchecked, want)
+	}
+
 	// Not installed, or excluded from Radar's own access, is not a gap.
 	p.karpenterInv[karpenter.NodePoolKind] = karpenterResourceInventory{Coverage: karpenterCoverageUnknown}
 	if _, stats = ComposeWithStats(p, Filters{Limit: NoLimit}); stats.Unchecked != nil {

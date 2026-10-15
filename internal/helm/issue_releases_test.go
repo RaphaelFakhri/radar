@@ -441,14 +441,14 @@ func TestReportIssueReadLogsAFailureOncePerClass(t *testing.T) {
 	ctx := context.Background()
 	failure := apierrors.NewInternalError(fmt.Errorf("etcdserver: request timed out"))
 	for range 3 {
-		ReportIssueRead(ctx, failure, "", nil)
+		ReportIssueRead(ctx, failure, "", nil, nil)
 	}
-	ReportIssueRead(ctx, apierrors.NewUnauthorized("Unauthorized"), "", nil)
+	ReportIssueRead(ctx, apierrors.NewUnauthorized("Unauthorized"), "", nil, nil)
 	if got := strings.Count(buf.String(), "couldn't be checked"); got != 2 {
 		t.Fatalf("logged %d failures, want one per class (2):\n%s", got, buf.String())
 	}
-	ReportIssueRead(ctx, nil, "", nil)
-	ReportIssueRead(ctx, failure, "", nil)
+	ReportIssueRead(ctx, nil, "", nil, nil)
+	ReportIssueRead(ctx, failure, "", nil, nil)
 	if got := strings.Count(buf.String(), "couldn't be checked"); got != 3 {
 		t.Fatalf("logged %d failures, want the failure logged again after a successful read (3):\n%s", got, buf.String())
 	}
@@ -472,16 +472,41 @@ func TestReportIssueReadSuccessOnlyClearsThatIdentity(t *testing.T) {
 	ctx := context.Background()
 	failure := apierrors.NewInternalError(fmt.Errorf("etcdserver: request timed out"))
 	for range 3 {
-		ReportIssueRead(ctx, failure, "payments", []string{"team-payments"})
-		ReportIssueRead(ctx, nil, "shop", []string{"team-shop"})
+		ReportIssueRead(ctx, failure, "payments", []string{"team-payments"}, nil)
+		ReportIssueRead(ctx, nil, "shop", []string{"team-shop"}, nil)
 	}
 	if got := strings.Count(buf.String(), "couldn't be checked"); got != 1 {
 		t.Fatalf("logged %d failures, want 1:\n%s", got, buf.String())
 	}
-	ReportIssueRead(ctx, nil, "payments", []string{"team-payments"})
-	ReportIssueRead(ctx, failure, "payments", []string{"team-payments"})
+	ReportIssueRead(ctx, nil, "payments", []string{"team-payments"}, nil)
+	ReportIssueRead(ctx, failure, "payments", []string{"team-payments"}, nil)
 	if got := strings.Count(buf.String(), "couldn't be checked"); got != 2 {
 		t.Fatalf("logged %d failures, want it logged again after payments recovered (2):\n%s", got, buf.String())
+	}
+}
+
+// The same user reading a healthy namespace in one tab and a failing one in
+// another logs the failure once: the healthy reads don't reset it.
+func TestReportIssueReadSuccessOnlyClearsThatScope(t *testing.T) {
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+		issueReadFailureLogged.Clear()
+	})
+	issueReadFailureLogged.Clear()
+
+	ctx := context.Background()
+	failure := apierrors.NewInternalError(fmt.Errorf("etcdserver: request timed out"))
+	for range 3 {
+		ReportIssueRead(ctx, failure, "alice", nil, []string{"payments"})
+		ReportIssueRead(ctx, nil, "alice", nil, []string{"shop"})
+	}
+	if got := strings.Count(buf.String(), "couldn't be checked"); got != 1 {
+		t.Fatalf("logged %d failures, want 1:\n%s", got, buf.String())
 	}
 }
 

@@ -228,7 +228,7 @@ func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string
 		}
 	}
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
-	unchecked, incomplete = helm.ReportIssueRead(ctx, err, username, groups)
+	unchecked, incomplete = helm.ReportIssueRead(ctx, err, username, groups, helmNamespaces)
 	return issues.NativeHelmReleaseIssues(releases, time.Now()), unchecked, incomplete
 }
 
