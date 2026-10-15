@@ -17,12 +17,7 @@ import 'monaco-editor/languages/definitions/shell/register'
 import 'monaco-editor/languages/definitions/markdown/register'
 import 'monaco-editor/languages/definitions/ini/register'
 import 'monaco-editor/languages/definitions/dockerfile/register'
-import 'monaco-editor/editor/contrib/find/browser/findController.js'
-import 'monaco-editor/editor/contrib/folding/browser/folding.js'
-import 'monaco-editor/editor/contrib/format/browser/formatActions.js'
-import 'monaco-editor/editor/contrib/gotoError/browser/gotoError.js'
-import 'monaco-editor/editor/contrib/hover/browser/hoverContribution.js'
-import 'monaco-editor/editor/contrib/suggest/browser/suggestController.js'
+import './monacoEditorFeatures'
 
 type MonacoGlobal = typeof globalThis & {
   MonacoEnvironment?: {

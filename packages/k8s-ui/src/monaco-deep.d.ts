@@ -1,5 +1,5 @@
-// @monaco-editor/react 4.7 and @monaco-editor/loader still type monaco through this
-// pre-0.57 path, which monaco-editor 0.57's exports map no longer serves.
+// @monaco-editor/react and @monaco-editor/loader type monaco through this path,
+// which monaco-editor's exports map does not serve.
 declare module 'monaco-editor/esm/vs/editor/editor.api' {
   export * from 'monaco-editor/editor/editor.api'
 }
@@ -15,9 +15,8 @@ declare module 'monaco-editor/languages/definitions/shell/register'
 declare module 'monaco-editor/languages/definitions/markdown/register'
 declare module 'monaco-editor/languages/definitions/ini/register'
 declare module 'monaco-editor/languages/definitions/dockerfile/register'
-declare module 'monaco-editor/editor/contrib/find/browser/findController.js'
-declare module 'monaco-editor/editor/contrib/folding/browser/folding.js'
-declare module 'monaco-editor/editor/contrib/format/browser/formatActions.js'
-declare module 'monaco-editor/editor/contrib/gotoError/browser/gotoError.js'
-declare module 'monaco-editor/editor/contrib/hover/browser/hoverContribution.js'
-declare module 'monaco-editor/editor/contrib/suggest/browser/suggestController.js'
+declare module 'monaco-editor/editor/contrib/*'
+declare module 'monaco-editor/editor/standalone/*'
+declare module 'monaco-editor/editor/browser/*'
+declare module 'monaco-editor/editor/common/*'
+declare module 'monaco-editor/features/*'
