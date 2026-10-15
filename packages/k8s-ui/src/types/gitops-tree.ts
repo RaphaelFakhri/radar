@@ -43,6 +43,9 @@ export interface GitOpsTreeNode {
   // Lives on the destination cluster of a remote tree. This cluster's API
   // would answer for a different, same-named object.
   remote?: boolean
+  // Reached only through a Flux source, chart or dependsOn declaration: the
+  // root consumes it but does not manage it. Not counted as a managed resource.
+  dependency?: boolean
 }
 
 // 'controllerApi' is the controller's own verdict read from its API server
@@ -69,6 +72,7 @@ export interface GitOpsTreeSummary {
   grouped: number
   degraded: number
   outOfSync: number
+  dependencies?: number
 }
 
 export interface GitOpsResourceTree {
@@ -83,6 +87,12 @@ export interface GitOpsResourceTree {
   healthFromApi?: boolean
   // The controller's API server was asked and didn't answer usefully.
   healthApiError?: string
+  // The host is still connecting to the controller's API server; ask again
+  // shortly.
+  healthApiPending?: boolean
+  // The host couldn't reach the controller's API server and is retrying;
+  // ask again now and then.
+  healthApiRetrying?: boolean
   // The Application (or Flux object with spec.kubeConfig) deploys to another
   // cluster; Radar derives nothing about its resources from here.
   remoteDestination?: boolean
