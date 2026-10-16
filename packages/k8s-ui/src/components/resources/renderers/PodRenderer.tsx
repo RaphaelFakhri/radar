@@ -4,7 +4,7 @@ import { clsx } from 'clsx'
 import { PolicySection } from './PolicySection'
 import type { PolicyResourceResponse } from '../../../types/policy'
 import { Section, PropertyList, Property, ConditionsSection, CopyHandler, AlertBanner, ResourceLink, useOperationalIssuesShown } from '../../ui/drawer-components'
-import { formatResources, formatDuration, getPodProblems, getPodPhaseDisplay, healthColors, SEVERITY_DOT_COLOR, getDefaultContainerName } from '../resource-utils'
+import { formatResources, formatDuration, getPodProblems, getPodPhaseDisplay, healthColors, SEVERITY_DOT_COLOR, getDefaultContainerName, getExecContainerNames } from '../resource-utils'
 import { getResourceStatusColor, SEVERITY_BORDER } from '../../../utils/badge-colors'
 import {
   rbacVerbBadgeClass,
@@ -91,7 +91,7 @@ interface PodRendererProps {
   hideMetricsServer?: boolean
   // Filesystem browser render props
   renderImageBrowser?: (props: { image: string; namespace: string; podName: string; pullSecrets: string[]; onClose: () => void; onSwitchToPodFiles?: () => void }) => ReactNode
-  renderPodBrowser?: (props: { namespace: string; podName: string; containers: string[]; initialContainer: string; onClose: () => void; onSwitchToImageFiles: () => void }) => ReactNode
+  renderPodBrowser?: (props: { namespace: string; podName: string; containers: string[]; initialContainer: string; onClose: () => void; onSwitchToImageFiles: (containerName?: string) => void }) => ReactNode
   /**
    * Resolved content for envFrom references.
    * When provided, expands ConfigMap/Secret keys inline instead of showing "(all keys)".
@@ -347,7 +347,7 @@ export function PodRenderer({
         namespace,
         podName,
         containerName: container,
-        containers: containers.map((c: { name: string }) => c.name),
+        containers: getExecContainerNames(data),
       })
     }
   }
@@ -512,6 +512,7 @@ export function PodRenderer({
               const isFailed = stateKey === 'terminated' && exitCode != null && exitCode !== 0
               const isWaiting = stateKey === 'waiting'
               const isInitRunning = stateKey === 'running'
+              const isSidecar = container.restartPolicy === 'Always'
 
               // Status label and color
               let statusLabel: string
@@ -553,6 +554,26 @@ export function PodRenderer({
                       <span className="text-sm font-medium text-theme-text-primary">{container.name}</span>
                     </div>
                     <div className="flex items-center gap-2">
+                      {isSidecar && isInitRunning && canExec && onOpenTerminal && (
+                        <Tooltip content="Terminal" delay={150}>
+                          <button
+                            onClick={() => handleOpenTerminal(container.name)}
+                            className="p-1 text-slate-400 hover:text-blue-400 hover:bg-slate-600/50 rounded transition-colors"
+                          >
+                            <TerminalIcon className="w-4 h-4" />
+                          </button>
+                        </Tooltip>
+                      )}
+                      {isSidecar && isInitRunning && canExec && renderPodBrowser && (
+                        <Tooltip content="Browse files" delay={150}>
+                          <button
+                            onClick={() => setPodFilesContainer(container.name)}
+                            className="p-1 text-slate-400 hover:text-blue-400 hover:bg-slate-600/50 rounded transition-colors"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                          </button>
+                        </Tooltip>
+                      )}
                       {canViewLogs && (
                         <Tooltip content="Logs" delay={150}>
                           <button
@@ -975,7 +996,8 @@ export function PodRenderer({
         onClose: () => setSelectedImage(null),
         onSwitchToPodFiles: isRunning && canExec && renderPodBrowser ? () => {
           // Find which container uses this image and open pod files for it
-          const match = containers.find((c: any) => c.image === selectedImage)
+          const sidecars = initContainers.filter((c: any) => c.restartPolicy === 'Always')
+          const match = [...containers, ...sidecars].find((c: any) => c.image === selectedImage)
           setPodFilesContainer(match?.name || containers[0]?.name)
         } : undefined,
       })}
@@ -984,12 +1006,12 @@ export function PodRenderer({
       {podFilesContainer && renderPodBrowser && renderPodBrowser({
         namespace: namespace || '',
         podName: podName || '',
-        containers: containers.map((c: { name: string }) => c.name),
+        containers: getExecContainerNames(data),
         initialContainer: podFilesContainer,
         onClose: () => setPodFilesContainer(null),
-        onSwitchToImageFiles: () => {
-          // Find which image this container uses and open image filesystem
-          const match = containers.find((c: any) => c.name === podFilesContainer)
+        onSwitchToImageFiles: (containerName?: string) => {
+          const selected = containerName || podFilesContainer
+          const match = [...containers, ...initContainers].find((c: any) => c.name === selected)
           if (match?.image) setSelectedImage(match.image)
         },
       })}
