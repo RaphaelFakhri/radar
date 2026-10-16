@@ -559,3 +559,46 @@ func TestNamespaceObservationReadsOnlyTheServingInformer(t *testing.T) {
 		t.Fatalf("a cluster-wide informer serves every namespace: %+v, want %+v", got, want)
 	}
 }
+
+func TestReadServerChangesWhenAClusterWideInformerReplacesNamespaceOnes(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+	release := make(chan struct{})
+	defer close(release)
+	dyn.PrependReactor("list", "widgets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetNamespace() == "" {
+			<-release
+		}
+		return false, nil, nil
+	})
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	if err := d.startWatching(gvr, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !d.IsNamespaceSynced(gvr, "alpha") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	before, synced := d.ReadServer(gvr, "alpha")
+	if !synced {
+		t.Fatal("alpha's informer did not sync")
+	}
+	if again, _ := d.ReadServer(gvr, "alpha"); !again.Same(before) {
+		t.Fatal("the same informer must compare equal")
+	}
+	if _, synced := d.ReadServer(gvr, ""); synced {
+		t.Fatal("namespace informers must not answer a cluster-wide read")
+	}
+	// The cluster-wide informer replaces alpha's; its initial list is held.
+	if err := d.startWatching(gvr, ""); err != nil {
+		t.Fatal(err)
+	}
+	after, synced := d.ReadServer(gvr, "alpha")
+	if after.Same(before) || synced {
+		t.Fatalf("after the replacement: same=%v synced=%v; want a different, unsynced server", after.Same(before), synced)
+	}
+}

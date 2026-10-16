@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2078,6 +2079,41 @@ func (d *DynamicResourceCache) IsNamespaceSynced(gvr schema.GroupVersionResource
 	// reading the bookkeeping flag, which the watch goroutine sets a moment later
 	// and which therefore reports a synced informer as unsynced.
 	return entriesSynced(d.readEntries(gvr, namespace))
+}
+
+// DynamicReadServer identifies the informers serving reads of one GVR and
+// namespace at a moment. Starting a cluster-wide informer replaces a GVR's
+// namespace informers inside the same cache, so two readiness checks that
+// both pass can describe different informers; a read bracketed by two equal,
+// synced servers was answered by stores that were complete throughout.
+type DynamicReadServer struct {
+	entries []*informerEntry
+}
+
+// Same reports whether s and other are the same informers.
+func (s DynamicReadServer) Same(other DynamicReadServer) bool {
+	return slices.Equal(s.entries, other.entries)
+}
+
+// ReadServer returns the informers serving reads of gvr in namespace now and
+// whether they answer authoritatively, by IsNamespaceSynced's rules. Both come
+// from the same informers, so a replacement between them cannot mix them.
+func (d *DynamicResourceCache) ReadServer(gvr schema.GroupVersionResource, namespace string) (DynamicReadServer, bool) {
+	if d == nil {
+		return DynamicReadServer{}, false
+	}
+	d.mu.RLock()
+	clusterWide, ok := d.informers[informerKey{gvr: gvr}]
+	d.mu.RUnlock()
+	if ok {
+		return DynamicReadServer{entries: []*informerEntry{clusterWide}}, clusterWide.informer.HasSynced()
+	}
+	entries := d.readEntries(gvr, namespace)
+	if namespace == "" {
+		// Only the cluster-wide informer answers a cluster-wide read.
+		return DynamicReadServer{entries: entries}, false
+	}
+	return DynamicReadServer{entries: entries}, entriesSynced(entries)
 }
 
 // ---------------------------------------------------------------------------

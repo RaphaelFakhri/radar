@@ -1103,10 +1103,14 @@ func dynamicReadGVR(kind, group string) (schema.GroupVersionResource, bool) {
 }
 
 // readDynamicScope performs one dynamic-cache read and checks its scope. A
-// read that may have started before the scope's informer finished its initial
-// sync can have served a partial store, so it is repeated once sync is proven.
-// A scope already synced before and after the read was answered by that read;
-// repeating it would only deep-copy the store a second time.
+// read stands only when the same synced informers served the scope before and
+// after it. Starting a cluster-wide informer replaces a kind's namespace
+// informers inside the same cache, so a read can land on a replacement's
+// still-empty store while readiness checks on either side of it both pass. A
+// read that doesn't stand is repeated once its scope is ready; if the
+// informers change again during the repeat, the kind is reported as loading.
+// A read that stands is not repeated: that would only deep-copy the store
+// again.
 func readDynamicScope[T any](ctx context.Context, kind, group, namespace, verb string, read func() (T, error)) (T, error) {
 	dynamicCache := k8s.GetDynamicResourceCache()
 	discovery := k8s.GetResourceDiscovery()
@@ -1115,18 +1119,31 @@ func readDynamicScope[T any](ctx context.Context, kind, group, namespace, verb s
 	current := func() bool {
 		return dynamicCache == k8s.GetDynamicResourceCache() && discovery == k8s.GetResourceDiscovery() && cache == k8s.GetResourceCache()
 	}
-	synced := func() bool { return ok && dynamicCache != nil && dynamicCache.IsNamespaceSynced(gvr, namespace) }
-	syncedBefore := synced()
-	out, err := read()
+	// bracketed reads once and reports whether the same synced informers
+	// served the scope throughout.
+	bracketed := func() (T, bool, error) {
+		if !ok || dynamicCache == nil {
+			out, err := read()
+			return out, false, err
+		}
+		before, syncedBefore := dynamicCache.ReadServer(gvr, namespace)
+		out, err := read()
+		after, syncedAfter := dynamicCache.ReadServer(gvr, namespace)
+		return out, syncedBefore && syncedAfter && before.Same(after), err
+	}
+	out, settled, err := bracketed()
 	if !current() {
 		return out, errConnectionChanged()
 	}
-	settled := syncedBefore && synced()
 	ready, err := checkDynamicResourceReadFrom(ctx, kind, group, namespace, verb, err, dynamicCache, gvr, ok)
 	if ready && !settled && (err == nil || isObjectNotFound(err)) {
-		out, err = read()
+		out, settled, err = bracketed()
 		if err != nil {
 			_, err = checkDynamicResourceReadFrom(ctx, kind, group, namespace, verb, err, dynamicCache, gvr, ok)
+		}
+		if !settled && (err == nil || isObjectNotFound(err)) {
+			var none T
+			return none, errKindLoading(kind)
 		}
 	}
 	if !current() {
