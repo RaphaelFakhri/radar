@@ -114,6 +114,10 @@ func (m *monitorDynamicProvider) GetWatchedResources() []schema.GroupVersionReso
 func (m *monitorDynamicProvider) GetDiscoveryStatus() k8score.CRDDiscoveryStatus {
 	return k8score.CRDDiscoveryComplete
 }
+
+func (m *monitorDynamicProvider) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
 func (m *monitorDynamicProvider) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
 	gvr, ok := m.gvrs[kindOrName]
 	return gvr, ok
@@ -158,6 +162,10 @@ func (m *rolloutDynamicProvider) GetWatchedResources() []schema.GroupVersionReso
 
 func (m *rolloutDynamicProvider) GetDiscoveryStatus() k8score.CRDDiscoveryStatus {
 	return k8score.CRDDiscoveryComplete
+}
+
+func (m *rolloutDynamicProvider) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
 }
 
 func (m *rolloutDynamicProvider) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {

@@ -581,13 +581,6 @@ func TestCustomOwnerKindScopeIsRecorded(t *testing.T) {
 		if got, known := topo.facts.scopes[resourceid.GroupKind{Group: "example.io", Kind: "Widget"}]; !known || got != namespaced {
 			t.Errorf("Widget scope = %v (known %v), want namespaced=%v", got, known, namespaced)
 		}
-		withoutDiscovery, err := NewBuilder(&mockProvider{deployments: []*appsv1.Deployment{deploy}}).WithDynamic(withoutScopes{d}).Build(DefaultBuildOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(withoutDiscovery.facts.scopes) != 0 {
-			t.Errorf("a provider without discovery recorded scopes %v", withoutDiscovery.facts.scopes)
-		}
 	}
 }
 
@@ -611,9 +604,6 @@ func TestCustomOwnerKindScopeSurvivesPluralCollisions(t *testing.T) {
 		}
 	}
 }
-
-// withoutScopes hides the optional discovery capability.
-type withoutScopes struct{ DynamicProvider }
 
 // Membership is read from the manager itself, not from how the graph draws
 // it: an Application with no node still records its destination-defaulted

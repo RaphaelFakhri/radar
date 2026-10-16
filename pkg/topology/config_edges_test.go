@@ -35,6 +35,10 @@ func (p *sealedSecretDynamicProvider) GetWatchedResources() []schema.GroupVersio
 func (p *sealedSecretDynamicProvider) GetDiscoveryStatus() k8score.CRDDiscoveryStatus {
 	return k8score.CRDDiscoveryComplete
 }
+
+func (p *sealedSecretDynamicProvider) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
 func (p *sealedSecretDynamicProvider) GetGVR(string) (schema.GroupVersionResource, bool) {
 	return schema.GroupVersionResource{}, false
 }

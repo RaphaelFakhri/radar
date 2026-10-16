@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -216,18 +215,11 @@ func (c *factsCapture) record(key objectKey, obj metav1.Object, hop bool) {
 	}
 }
 
-// kindScopeProvider is an optional DynamicProvider capability: discovery's
-// description of an exact group and Kind, including whether it is namespaced.
-type kindScopeProvider interface {
-	GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool)
-}
-
-// recordKindScopes asks discovery, when the provider can say, whether each
-// custom owner kind the observed references name is namespaced. Built-in
-// kinds are answered by the built-in table and are not asked.
-func (c *factsCapture) recordKindScopes(provider DynamicProvider) {
-	discovery, ok := provider.(kindScopeProvider)
-	if c == nil || !ok {
+// recordKindScopes asks discovery whether each custom owner kind the observed
+// references name is namespaced. Built-in kinds are answered by the built-in
+// table and are not asked.
+func (c *factsCapture) recordKindScopes(discovery DynamicProvider) {
+	if c == nil || discovery == nil {
 		return
 	}
 	for gk := range c.ownerKinds {

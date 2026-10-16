@@ -50,6 +50,10 @@ func (d *calicoTestDynamic) GetWatchedResources() []schema.GroupVersionResource 
 func (d *calicoTestDynamic) GetDiscoveryStatus() k8score.CRDDiscoveryStatus {
 	return k8score.CRDDiscoveryComplete
 }
+
+func (d *calicoTestDynamic) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
 func (d *calicoTestDynamic) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
 	for key, gvr := range d.gvrs {
 		if key == "projectcalico.org\x00"+kindOrName || key == "crd.projectcalico.org\x00"+kindOrName {

@@ -620,4 +620,8 @@ type DynamicProvider interface {
 	GetGVRWithGroup(kindOrName, group string) (schema.GroupVersionResource, bool)
 	GetKindForGVR(gvr schema.GroupVersionResource) string
 	IsCRD(kind string) bool
+	// GetResourceForGroupKind describes exactly group and kind, never a
+	// resource whose plural happens to match. Builds record from it whether
+	// the custom owner kinds references name are namespaced.
+	GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool)
 }

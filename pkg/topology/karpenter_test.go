@@ -51,6 +51,10 @@ func (p *karpenterDynamicProvider) GetDiscoveryStatus() k8score.CRDDiscoveryStat
 	return k8score.CRDDiscoveryComplete
 }
 
+func (p *karpenterDynamicProvider) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
+
 func (p *karpenterDynamicProvider) GetGVR(string) (schema.GroupVersionResource, bool) {
 	return schema.GroupVersionResource{}, false
 }

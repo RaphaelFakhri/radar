@@ -50,6 +50,10 @@ func (d *genericIdentityDynamic) GetDiscoveryStatus() k8score.CRDDiscoveryStatus
 	return k8score.CRDDiscoveryComplete
 }
 
+func (d *genericIdentityDynamic) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
+
 func (d *genericIdentityDynamic) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
 	for _, gvr := range d.watched {
 		if strings.EqualFold(d.kinds[gvr], kindOrName) || strings.EqualFold(gvr.Resource, kindOrName) {

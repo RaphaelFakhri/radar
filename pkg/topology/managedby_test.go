@@ -35,6 +35,10 @@ func (s *stubDP) Get(_ schema.GroupVersionResource, namespace, name string) (*un
 }
 func (s *stubDP) GetWatchedResources() []schema.GroupVersionResource { return nil }
 func (s *stubDP) GetDiscoveryStatus() k8score.CRDDiscoveryStatus     { return k8score.CRDDiscoveryIdle }
+
+func (s *stubDP) GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool) {
+	return k8score.APIResource{}, false
+}
 func (s *stubDP) GetGVR(kindOrName string) (schema.GroupVersionResource, bool) {
 	g, ok := s.gvr[kindOrName]
 	return g, ok

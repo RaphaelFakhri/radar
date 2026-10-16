@@ -171,10 +171,3 @@ func TestTopologyAdapter_NetworkPolicies_DeferredPending(t *testing.T) {
 		t.Errorf("expected nil slice during deferred-pending, got %d items", len(nps))
 	}
 }
-
-// pkg/topology detects this optional capability by method set (its
-// kindScopeProvider); without it, owner references to custom kinds no build
-// observed cannot resolve to an exact identity.
-var _ interface {
-	GetResourceForGroupKind(group, kind string) (k8score.APIResource, bool)
-} = (*topologyDynamicProvider)(nil)
