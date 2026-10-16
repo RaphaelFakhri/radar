@@ -1394,6 +1394,12 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 			return nil, nil, fmt.Errorf("failed to read resource metadata: %w", err)
 		}
 		attachResourceExtras(ctx, cache, result, includes, canonicalKind, canonicalGroup, namespace, name, objectMeta.GetUID(), types.UID(objectMeta.GetAnnotations()[corev1.MirrorPodAnnotationKey]))
+		// The drain plan, metrics and revisions resolve the cluster client when
+		// they run, so a switch during them would pair this cluster's resource
+		// with the next cluster's extras.
+		if !resourceReadCacheIsCurrent(cache) {
+			return nil, nil, errConnectionChanged()
+		}
 	}
 	return toJSONResult(result)
 }

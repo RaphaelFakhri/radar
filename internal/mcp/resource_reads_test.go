@@ -15,6 +15,7 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -2139,6 +2140,37 @@ func TestListDynamicResourcesRejectsRetiredCacheHandle(t *testing.T) {
 	_, _, err := listDynamicResources(context.Background(), retired, "widgets", "example.test", target, target.namespaces, gapSet{}, false, "none")
 	if err == nil || !strings.HasPrefix(err.Error(), "connection_changed:") {
 		t.Fatalf("retired cache served a multi-namespace read: %v", err)
+	}
+}
+
+func TestGetResourceRejectsExtrasFetchedAfterASwitch(t *testing.T) {
+	k8s.ResetTestState()
+	t.Cleanup(k8s.ResetTestState)
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web", UID: "web-uid"}}
+	if err := k8s.InitTestResourceCache(fake.NewClientset(dep)); err != nil {
+		t.Fatal(err)
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{{Group: "apps", Version: "v1", Resource: "replicasets"}: "ReplicaSetList"},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]any{"namespace": "alpha", "name": "web", "uid": "web-uid"},
+		}})
+	dyn.PrependReactor("list", "replicasets", func(ktesting.Action) (bool, runtime.Object, error) {
+		k8s.ResetResourceCache()
+		return false, nil, nil
+	})
+	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{
+		{Group: "apps", Version: "v1", Kind: "Deployment", Name: "deployments", Namespaced: true, Verbs: []string{"get", "list", "watch"}},
+		{Group: "apps", Version: "v1", Kind: "ReplicaSet", Name: "replicasets", Namespaced: true, Verbs: []string{"get", "list", "watch"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+
+	_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: "deployments", Namespace: "alpha", Name: "web", Include: "revisions", Context: "none"})
+	if err == nil || !strings.HasPrefix(err.Error(), "connection_changed:") {
+		t.Fatalf("revisions read after a cluster switch were returned with the previous cluster's resource: %v", err)
 	}
 }
 
