@@ -171,14 +171,18 @@ func TestGCEstimateRules(t *testing.T) {
 		{name: "owners that keep each other alive",
 			objects: []testObject{obj("Root", "r"), obj("A", "a", ref("Root", "r", true), ref("B", "b", false)), obj("B", "b", ref("Root", "r", true), ref("A", "a", false))},
 			want:    want{}},
-		{name: "an orphaning root removes nothing",
+		{name: "the request's background policy replaces a live root's orphan finalizer",
 			objects: []testObject{obj("Root", "r"), obj("Mid", "m", ref("Root", "r", true))},
 			mutate: func(objects map[objectKey]objectFacts) {
-				f := objects[root]
-				f.orphan = true
-				objects[root] = f
+				setFacts(objects, root, func(f *objectFacts) { f.orphan = true })
 			},
-			want: want{}},
+			want: want{expected: []string{"m"}}},
+		{name: "a root already orphaning may have released its dependents",
+			objects: []testObject{obj("Root", "r"), obj("Mid", "m", ref("Root", "r", true)), obj("Leaf", "l", ref("Mid", "m", true))},
+			mutate: func(objects map[objectKey]objectFacts) {
+				setFacts(objects, root, func(f *objectFacts) { f.deleting, f.orphan = true, true })
+			},
+			want: want{uncertain: map[string]gcReason{"m": gcOrphaned, "l": gcPotential}}},
 		{name: "an orphaning member is removed but its dependents are not reached through it",
 			objects: []testObject{
 				obj("Root", "r"), obj("Mid", "m", ref("Root", "r", true)),
@@ -281,7 +285,7 @@ func TestGCEstimateRules(t *testing.T) {
 				setFacts(objects, key("M", "m"), func(f *objectFacts) { f.orphan = true })
 			},
 			want: want{expected: []string{"f", "m"}, uncertain: map[string]gcReason{"c": gcOrphaned}}},
-		{name: "a root deleted in the foreground removes an orphaning member's dependents",
+		{name: "the request's background policy replaces a live root's foreground finalizer",
 			objects: []testObject{
 				obj("Root", "r"), obj("M", "m", blocking(ref("Root", "r", true))), obj("C", "c", blocking(ref("M", "m", true))),
 			},
@@ -289,7 +293,18 @@ func TestGCEstimateRules(t *testing.T) {
 				setFacts(objects, root, func(f *objectFacts) { f.foreground = true })
 				setFacts(objects, key("M", "m"), func(f *objectFacts) { f.orphan = true })
 			},
-			want: want{expected: []string{"c", "m"}}},
+			want: want{expected: []string{"m"}}},
+		{name: "a root already deleting in the foreground may decide an orphaning member",
+			objects: []testObject{
+				obj("Root", "r"), obj("M", "m", blocking(ref("Root", "r", true))), obj("C", "c", blocking(ref("M", "m", true))),
+			},
+			mutate: func(objects map[objectKey]objectFacts) {
+				setFacts(objects, root, func(f *objectFacts) { f.deleting, f.foreground = true, true })
+				setFacts(objects, key("M", "m"), func(f *objectFacts) { f.orphan = true })
+			},
+			// The collector may already have deleted M in the foreground for
+			// the waiting root, or the request ends that wait first.
+			want: want{expected: []string{"m"}, uncertain: map[string]gcReason{"c": gcOrphaned}}},
 		{name: "a member already deleting with orphaning keeps its dependents",
 			objects: []testObject{
 				obj("Root", "r"), obj("F", "f", blocking(ref("Root", "r", true))),
@@ -395,18 +410,19 @@ func TestGCEstimateRules(t *testing.T) {
 			// it, fail its foreground delete on the changed object, and orphan
 			// D once F, no longer blocked, is gone.
 			want: want{expected: []string{"f", "m"}, uncertain: map[string]gcReason{"c": gcOrphaned, "d": gcOrphaned}}},
-		{name: "a root deleted in the foreground can trigger the cycle breaker",
+		{name: "a root already deleting in the foreground can trigger the cycle breaker",
 			objects: []testObject{
-				obj("Root", "r", ref("M", "m", false)),
-				obj("M", "m", blocking(ref("Root", "r", true))), obj("D", "d", blocking(ref("M", "m", true))),
+				obj("Root", "r", ref("M", "m", false)), obj("F", "f", blocking(ref("Root", "r", true))),
+				obj("M", "m", blocking(ref("F", "f", true))), obj("D", "d", blocking(ref("M", "m", true))),
 			},
 			mutate: func(objects map[objectKey]objectFacts) {
-				setFacts(objects, root, func(f *objectFacts) { f.foreground = true })
+				setFacts(objects, root, func(f *objectFacts) { f.deleting, f.foreground = true, true })
+				setFacts(objects, key("F", "f"), func(f *objectFacts) { f.foreground = true })
 				setFacts(objects, key("M", "m"), func(f *objectFacts) { f.orphan = true })
 			},
-			// The request makes the root a foreground-deleting dependent of M
-			// before M's worker runs.
-			want: want{expected: []string{"m"}, uncertain: map[string]gcReason{"d": gcOrphaned}}},
+			// The root is a foreground-deleting dependent of M when M's
+			// worker runs.
+			want: want{expected: []string{"f", "m"}, uncertain: map[string]gcReason{"d": gcOrphaned}}},
 		{name: "a root deleted in the background does not",
 			objects: []testObject{
 				obj("Root", "r", ref("M", "m", false)), obj("F", "f", blocking(ref("Root", "r", true))),
@@ -445,16 +461,6 @@ func TestGCEstimateRules(t *testing.T) {
 				setFacts(objects, key("C", "c"), func(f *objectFacts) { f.foreground = true })
 			},
 			want: want{expected: []string{"f", "m"}, uncertain: map[string]gcReason{"d": gcOrphaned}}},
-		{name: "so does a root deleted in the foreground that names M's UID under other coordinates",
-			objects: []testObject{
-				obj("Root", "r", ownerRef("example.io/v1", "X", "x", "m", false)), obj("X", "x"),
-				obj("M", "m", blocking(ref("Root", "r", true))), obj("D", "d", blocking(ref("M", "m", true))),
-			},
-			mutate: func(objects map[objectKey]objectFacts) {
-				setFacts(objects, root, func(f *objectFacts) { f.foreground = true })
-				setFacts(objects, key("M", "m"), func(f *objectFacts) { f.orphan = true })
-			},
-			want: want{expected: []string{"m"}, uncertain: map[string]gcReason{"d": gcOrphaned}}},
 		{name: "only a dependent already deleting in the foreground unblocks",
 			objects: []testObject{
 				obj("Root", "r"), obj("F", "f", blocking(ref("Root", "r", true))),
@@ -548,9 +554,6 @@ func TestGCEstimateRules(t *testing.T) {
 				if uncertain[name] != reason {
 					t.Errorf("uncertain %v, want %v", uncertain, tc.want.uncertain)
 				}
-			}
-			if got.orphanRoot != (tc.name == "an orphaning root removes nothing") {
-				t.Errorf("orphanRoot = %v", got.orphanRoot)
 			}
 		})
 	}
@@ -646,10 +649,7 @@ func TestGCEstimateMatchesRepeatedRoundsOnRandomGraphs(t *testing.T) {
 		v, root, keys := randomGCGraph(rng)
 		got, _ := v.gcEstimate(root)
 
-		rootMember := gcRootMember(root, v.facts.objects[root])
-		if rootMember.orphan && (!got.orphanRoot || len(got.expected) != 0) {
-			t.Fatalf("trial %d: an orphaning root is expected to remove %+v", trial, got.expected)
-		}
+		rootMember := gcRootMember(v.facts.objects[root])
 		members := map[objectKey]gcMember{root: rootMember}
 		for round := 0; ; round++ {
 			next := map[objectKey]gcMember{root: rootMember}
@@ -777,16 +777,14 @@ func setFacts(objects map[objectKey]objectFacts, key objectKey, set func(*object
 	objects[key] = f
 }
 
-// Radar deletes with empty options, so the API server picks the policy: the
-// root's own finalizer, else its kind's default, which orphans a batch/v1
-// Job's Pods.
+// Radar's delete sends background propagation, so a live root's dependents go
+// whatever its kind or finalizers, a batch/v1 Job's Pods included. A root
+// already deleting under the orphan or foreground finalizer may still be
+// acting on it.
 func TestGCEstimateRootPolicy(t *testing.T) {
 	_, view := charView(t, charSSEOptions())
-	if got, _ := view.gcEstimate(nightlyJob); !got.orphanRoot || len(got.expected)+len(got.uncertain) != 0 {
-		t.Errorf("deleting a Job: %+v; want its Pods orphaned", got)
-	}
-	if got, _ := view.gcEstimate(webDeploy); got.orphanRoot || len(got.expected) == 0 {
-		t.Errorf("deleting a Deployment: %+v; want its ReplicaSet and Pods", got)
+	if got, _ := view.gcEstimate(nightlyJob); !slices.Equal(gcKeys(got.expected), []objectKey{nightlyPod}) || len(got.uncertain) != 0 {
+		t.Errorf("deleting a Job: %+v; want its Pod", got)
 	}
 
 	rc := objectKey{kind: "ReplicationController", namespace: "x", name: "rc"}
@@ -795,58 +793,37 @@ func TestGCEstimateRootPolicy(t *testing.T) {
 		{key: rc, uid: "rc"},
 		{key: pod, uid: "p", owners: []metav1.OwnerReference{ownerRef("v1", "ReplicationController", "rc", "rc", true)}},
 	}, rc, pod)
-	if got, _ := v.gcEstimate(rc); !got.orphanRoot || len(got.expected) != 0 {
-		t.Errorf("deleting a ReplicationController: %+v; want its Pods orphaned", got)
+	if got, _ := v.gcEstimate(rc); !slices.Equal(gcKeys(got.expected), []objectKey{pod}) {
+		t.Errorf("deleting a ReplicationController: %+v; want its Pod", got)
 	}
 
 	root := objectKey{group: "example.io", kind: "Root", namespace: "x", name: "r"}
 	m := objectKey{group: "example.io", kind: "M", namespace: "x", name: "m"}
 	c := objectKey{group: "example.io", kind: "C", namespace: "x", name: "c"}
-	chain := []testObject{
-		{key: root, uid: "r"},
-		{key: m, uid: "m", owners: []metav1.OwnerReference{blocking(ownerRef("example.io/v1", "Root", "r", "r", true))}},
-		{key: c, uid: "c", owners: []metav1.OwnerReference{blocking(ownerRef("example.io/v1", "M", "m", "m", true))}},
-	}
-	v = testView(chain, root, m, c)
-	setFacts(v.facts.objects, m, func(f *objectFacts) { f.orphan = true })
-	if got, _ := v.gcEstimate(root); got.orphanRoot || !slices.Equal(gcKeys(got.expected), []objectKey{m}) {
-		t.Errorf("a plain root: %+v; want M only, its orphan finalizer keeping C", got)
-	}
-	setFacts(v.facts.objects, root, func(f *objectFacts) { f.foreground = true })
-	if got, _ := v.gcEstimate(root); !slices.Equal(gcKeys(got.expected), []objectKey{c, m}) {
-		t.Errorf("a root with the foreground finalizer: %+v; want M deleted in the foreground through its blocking reference, and C", got)
-	}
-	setFacts(v.facts.objects, root, func(f *objectFacts) { f.foreground, f.orphan = false, true })
-	if got, _ := v.gcEstimate(root); !got.orphanRoot || len(got.expected)+len(got.uncertain) != 0 {
-		t.Errorf("a root with the orphan finalizer: %+v; want M orphaned", got)
-	}
-}
-
-// An orphaning root releases its dependents rather than reaching them; one
-// left holding only a reference to a deleted incarnation may still be
-// collected, and so may what it owns.
-func TestGCEstimateOrphaningRootReleasesDependents(t *testing.T) {
-	root := objectKey{group: "example.io", kind: "Root", namespace: "x", name: "r"}
-	a := objectKey{group: "example.io", kind: "A", namespace: "x", name: "a"}
-	m := objectKey{group: "example.io", kind: "M", namespace: "x", name: "m"}
-	c := objectKey{group: "example.io", kind: "C", namespace: "x", name: "c"}
-	sole := objectKey{group: "example.io", kind: "S", namespace: "x", name: "s"}
-	v := testView([]testObject{
-		{key: root, uid: "r"}, {key: a, uid: "a"},
-		{key: m, uid: "m", owners: []metav1.OwnerReference{ownerRef("example.io/v1", "Root", "r", "r", true), ownerRef("example.io/v1", "A", "a", "previous", false)}},
-		{key: c, uid: "c", owners: []metav1.OwnerReference{ownerRef("example.io/v1", "M", "m", "m", true)}},
-		{key: sole, uid: "s", owners: []metav1.OwnerReference{ownerRef("example.io/v1", "Root", "r", "r", true)}},
-	}, root, a, m, c, sole)
-	setFacts(v.facts.objects, root, func(f *objectFacts) { f.orphan = true })
-	got, _ := v.gcEstimate(root)
-	if !got.orphanRoot || len(got.expected) != 0 {
-		t.Fatalf("orphaning root: %+v; want nothing expected", got)
-	}
-	reasons := map[objectKey]gcReason{}
-	for _, e := range got.uncertain {
-		reasons[e.key] = e.reason
-	}
-	if len(reasons) != 2 || reasons[m] != gcOrphaned || reasons[c] != gcPotential {
-		t.Fatalf("uncertain %+v; want M (orphaned) and C (potential), and the sole dependent kept", got.uncertain)
+	for _, tc := range []struct {
+		name                         string
+		deleting, foreground, orphan bool
+		expected, uncertain          []objectKey
+	}{
+		{name: "plain", expected: []objectKey{m}},
+		{name: "live with the foreground finalizer", foreground: true, expected: []objectKey{m}},
+		{name: "live with the orphan finalizer", orphan: true, expected: []objectKey{m}},
+		{name: "deleting with ordinary finalizers", deleting: true, expected: []objectKey{m}},
+		{name: "deleting in the foreground", deleting: true, foreground: true, expected: []objectKey{m}, uncertain: []objectKey{c}},
+		{name: "deleting with the orphan finalizer", deleting: true, orphan: true, uncertain: []objectKey{m}},
+	} {
+		v := testView([]testObject{
+			{key: root, uid: "r"},
+			{key: m, uid: "m", owners: []metav1.OwnerReference{blocking(ownerRef("example.io/v1", "Root", "r", "r", true))}},
+			{key: c, uid: "c", owners: []metav1.OwnerReference{blocking(ownerRef("example.io/v1", "M", "m", "m", true))}},
+		}, root, m, c)
+		setFacts(v.facts.objects, m, func(f *objectFacts) { f.orphan = true })
+		setFacts(v.facts.objects, root, func(f *objectFacts) {
+			f.deleting, f.foreground, f.orphan = tc.deleting, tc.foreground, tc.orphan
+		})
+		got, _ := v.gcEstimate(root)
+		if !slices.Equal(gcKeys(got.expected), tc.expected) || !slices.Equal(gcKeys(got.uncertain), tc.uncertain) {
+			t.Errorf("a root %s: %+v; want expected %v, uncertain %v, M's orphan finalizer otherwise keeping C", tc.name, got, tc.expected, tc.uncertain)
+		}
 	}
 }

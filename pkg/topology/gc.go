@@ -8,18 +8,23 @@ import (
 
 // The garbage-collection estimate answers what Radar's delete would remove,
 // with Kubernetes' garbage collector acting on the recorded ownerReferences
-// the build observed. It models the ordinary delete, not the force delete,
-// which strips root's finalizers first. It is an estimate over what Radar
-// observes, not a completion promise: an object the build never observed is
-// never listed, and zero listed means zero observed. Only ownerReferences
-// count; GitOps membership, spec links and display shortcuts never do.
+// the build observed. Radar's delete, ordinary or force, sends background
+// propagation, as kubectl does. The force delete also strips root's
+// finalizers first, which can end a policy already under way sooner; the
+// collector work that policy started races either request alike, so both
+// share one estimate. It is an estimate over what Radar observes, not a
+// completion promise: an object the build never observed is never listed,
+// and zero listed means zero observed. Only ownerReferences count; GitOps
+// membership, spec links and display shortcuts never do.
 //
-// It rests on two assumptions it cannot check. Every recorded reference's API
-// version is still served: the collector cannot map a reference to a removed
-// version and stalls on its dependent. And the collector has already observed
-// what the build observed: until it sees a just-created dependent, it can
-// choose that dependent's owner's propagation without it, or orphan the
-// owner's other dependents and leave that one a dangling reference.
+// It rests on two assumptions it does not check. Every recorded reference's
+// API version is still served: the collector looks an owner up by that
+// version, so a removed one stalls the reference's holder, or, while the
+// collector's mapping is stale, makes a live owner look gone. And the
+// collector has already observed what the build observed: where a member
+// deletes in the foreground or orphans, the collector acts on the dependents
+// it has seen, so one created just before the delete can be orphaned or
+// removed against the estimate.
 
 // gcReason is why a dependent's fate is uncertain. A larger value is more
 // specific and wins.
@@ -52,12 +57,9 @@ type gcEntry struct {
 // gcEstimate lists, in key order, the objects deleting root would remove and
 // those it might.
 type gcEstimate struct {
-	root objectKey
-	// orphanRoot: the deletion orphans root's dependents instead of removing
-	// them, by root's orphan finalizer or its kind's default.
-	orphanRoot bool
-	expected   []gcEntry
-	uncertain  []gcEntry
+	root      objectKey
+	expected  []gcEntry
+	uncertain []gcEntry
 }
 
 // gcLevel orders how far the deletion reaches an object.
@@ -81,13 +83,21 @@ const (
 	gcForegroundDeletion
 )
 
+// gcOrphaning is whether deleting a member orphans its dependents instead of
+// removing them, unless it is deleted in the foreground.
+type gcOrphaning uint8
+
+const (
+	gcNoOrphan gcOrphaning = iota
+	gcMaybeOrphan
+	gcOrphan
+)
+
 type gcMember struct {
 	level      gcLevel
 	reason     gcReason
 	foreground gcForeground
-	// orphan: deleting this member orphans its dependents, unless it is
-	// deleted in the foreground.
-	orphan bool
+	orphan     gcOrphaning
 }
 
 // gcRun is one estimate in progress: the object the request deletes, and
@@ -102,20 +112,19 @@ type gcRun struct {
 	awaited map[types.UID]bool
 }
 
-// gcRootMember is root's place in its own deletion. Radar's delete sends no
-// propagation policy, so the API server applies root's orphan or foreground
-// finalizer, otherwise its kind's default, which orphans the dependents of
-// batch/v1 Jobs and v1 ReplicationControllers and removes everything else's
-// in the background.
-func gcRootMember(root objectKey, facts objectFacts) gcMember {
+// gcRootMember is root's place in its own deletion. The request's background
+// policy replaces root's orphan or foreground finalizer, whatever its kind,
+// so a live root's dependents go in the background. A root already being
+// deleted under one of those finalizers keeps it while a Pod's graceful
+// deletion is pending, and the collector may already be acting on it, so it
+// may still orphan its dependents or delete them in the foreground.
+func gcRootMember(facts objectFacts) gcMember {
 	member := gcMember{level: gcExpected}
-	switch {
-	case facts.orphan:
-		member.orphan = true
-	case facts.foreground:
-		member.foreground = gcForegroundDeletion
-	case root.group == "batch" && root.kind == "Job", root.group == "" && root.kind == "ReplicationController":
-		member.orphan = true
+	if facts.deleting && facts.orphan {
+		member.orphan = gcMaybeOrphan
+	}
+	if facts.deleting && facts.foreground {
+		member.foreground = gcMaybeForeground
 	}
 	return member
 }
@@ -141,9 +150,8 @@ func (v *ownershipView) gcEstimate(root objectKey) (gcEstimate, bool) {
 	if !observed || rootFacts.conflicted {
 		return gcEstimate{}, false
 	}
-	rootMember := gcRootMember(root, rootFacts)
-	estimate := gcEstimate{root: root, orphanRoot: rootMember.orphan}
-	run := gcRun{v: v, root: root, members: map[objectKey]gcMember{root: rootMember}}
+	estimate := gcEstimate{root: root}
+	run := gcRun{v: v, root: root, members: map[objectKey]gcMember{root: gcRootMember(rootFacts)}}
 	queued := map[objectKey]bool{}
 	var queue []objectKey
 	enqueueDependents := func(of objectKey) {
@@ -192,12 +200,11 @@ func (v *ownershipView) gcEstimate(root objectKey) (gcEstimate, bool) {
 // chooses its own policy, which makes the collector's cycle breaker unblock
 // that object's owner references. The collector files an object under every
 // UID its ownerReferences carry, whatever coordinates they record. Such an
-// object may already be deleting in the foreground, or be this request's root
-// deleted in the foreground. Or its reference may carry uid without naming the
-// object that has it: the collector treats that reference as dangling, so it
-// can delete the object at any time. An object whose reference names uid's
-// object correctly is deleted only after that object is gone or already being
-// deleted in the foreground.
+// object may already be deleting in the foreground, root included. Or its
+// reference may carry uid without naming the object that has it: the
+// collector treats that reference as dangling, so it can delete the object at
+// any time. An object whose reference names uid's object correctly is deleted
+// only after that object is gone or already being deleted in the foreground.
 func (r *gcRun) awaitedByForegroundDeletion(uid types.UID) bool {
 	if r.awaited == nil {
 		r.awaited = map[types.UID]bool{}
@@ -206,12 +213,6 @@ func (r *gcRun) awaitedByForegroundDeletion(uid types.UID) bool {
 				if facts.deleting && facts.foreground || !r.v.resolve(key, owner).state.resolved() {
 					r.awaited[owner.uid] = true
 				}
-			}
-		}
-		if r.members[r.root].foreground == gcForegroundDeletion {
-			rootFacts, _ := r.v.facts.object(r.root)
-			for _, owner := range rootFacts.owners {
-				r.awaited[owner.uid] = true
 			}
 		}
 	}
@@ -252,9 +253,9 @@ func (r *gcRun) classify(dependent objectKey) gcMember {
 		switch {
 		case member.level > gcKept:
 			switch {
-			case !member.orphan || member.foreground == gcForegroundDeletion:
+			case member.orphan == gcNoOrphan || member.foreground == gcForegroundDeletion:
 				reached = true
-			case member.foreground == gcMaybeForeground:
+			case member.orphan == gcMaybeOrphan || member.foreground == gcMaybeForeground:
 				reached = true
 				note(gcOrphaned)
 			default:
@@ -282,15 +283,19 @@ func (r *gcRun) classify(dependent objectKey) gcMember {
 			return gcMember{}
 		}
 	}
+	orphan := gcNoOrphan
+	if facts.orphan {
+		orphan = gcOrphan
+	}
 	switch {
 	case !reached && released && exposed != 0:
-		return gcMember{level: gcUncertain, reason: exposed, foreground: r.foregroundOf(facts, links), orphan: facts.orphan}
+		return gcMember{level: gcUncertain, reason: exposed, foreground: r.foregroundOf(facts, links), orphan: orphan}
 	case !reached:
 		return gcMember{}
 	case reason != 0:
-		return gcMember{level: gcUncertain, reason: reason, foreground: r.foregroundOf(facts, links), orphan: facts.orphan}
+		return gcMember{level: gcUncertain, reason: reason, foreground: r.foregroundOf(facts, links), orphan: orphan}
 	}
-	return gcMember{level: gcExpected, foreground: r.foregroundOf(facts, links), orphan: facts.orphan}
+	return gcMember{level: gcExpected, foreground: r.foregroundOf(facts, links), orphan: orphan}
 }
 
 // foregroundOf says whether the collector deletes a member in the
