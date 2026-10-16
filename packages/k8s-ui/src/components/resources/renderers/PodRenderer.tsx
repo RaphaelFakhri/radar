@@ -340,6 +340,16 @@ export function PodRenderer({
   // Pod filesystem modal state
   const [podFilesContainer, setPodFilesContainer] = useState<string | null>(null)
 
+  // A sidecar can be running while the pod is still Pending, and a stopped
+  // container has no live files, so match the image against running containers.
+  const runningImageContainer = selectedImage
+    ? getExecContainerNames(data).find((name) => {
+        const spec = [...containers, ...initContainers].find((c: any) => c.name === name)
+        const status = [...containerStatuses, ...initContainerStatuses].find((st: any) => st.name === name)
+        return spec?.image === selectedImage && !!status?.state?.running
+      })
+    : undefined
+
   const handleOpenTerminal = (containerName?: string) => {
     const container = containerName || getDefaultContainerName(data)
     if (namespace && podName && container) {
@@ -994,11 +1004,8 @@ export function PodRenderer({
         podName: podName || '',
         pullSecrets: imagePullSecrets,
         onClose: () => setSelectedImage(null),
-        onSwitchToPodFiles: isRunning && canExec && renderPodBrowser ? () => {
-          // Find which container uses this image and open pod files for it
-          const sidecars = initContainers.filter((c: any) => c.restartPolicy === 'Always')
-          const match = [...containers, ...sidecars].find((c: any) => c.image === selectedImage)
-          setPodFilesContainer(match?.name || containers[0]?.name)
+        onSwitchToPodFiles: canExec && renderPodBrowser && (isRunning || runningImageContainer) ? () => {
+          setPodFilesContainer(runningImageContainer || containers[0]?.name)
         } : undefined,
       })}
 

@@ -137,6 +137,58 @@ describe('PodRenderer sidecar files and image', () => {
   })
 })
 
+describe('PodRenderer image to live files', () => {
+  function renderWith(data: typeof pod) {
+    let browser: { initialContainer: string } | undefined
+    let imageBrowser: { image: string; onSwitchToPodFiles?: () => void } | undefined
+    act(() => {
+      root.render(
+        <PodRenderer
+          data={data}
+          onCopy={() => undefined}
+          copied={null}
+          canExec
+          renderPodBrowser={(props) => { browser = props; return null }}
+          renderImageBrowser={(props) => { imageBrowser = props; return null }}
+        />,
+      )
+    })
+    return { getBrowser: () => browser, getImageBrowser: () => imageBrowser }
+  }
+
+  const openImage = (name: string) => {
+    const card = initCard(name)
+    const link = Array.from(card.querySelectorAll('button')).find((el) => el.textContent?.startsWith('Image:'))
+    if (!link) throw new Error(`no image link on ${name}`)
+    act(() => (link as HTMLElement).click())
+  }
+
+  it('does not send a stopped sidecar\'s image to its live files', () => {
+    const { getBrowser, getImageBrowser } = renderWith(pod)
+    // stopped-sidecar and migrate share the busybox image; neither is a running exec target.
+    openImage('stopped-sidecar')
+    expect(getImageBrowser()?.image).toBe('busybox')
+    act(() => getImageBrowser()!.onSwitchToPodFiles!())
+    expect(getBrowser()?.initialContainer).toBe('app')
+  })
+
+  it('keeps the live-files link for a running sidecar while the pod is still Pending', () => {
+    const pending = { ...pod, status: { ...pod.status, phase: 'Pending' } }
+    const { getBrowser, getImageBrowser } = renderWith(pending)
+    openImage('log-shipper')
+    expect(getImageBrowser()?.onSwitchToPodFiles).toBeDefined()
+    act(() => getImageBrowser()!.onSwitchToPodFiles!())
+    expect(getBrowser()?.initialContainer).toBe('log-shipper')
+  })
+
+  it('offers no live-files link in a Pending pod when nothing using the image runs', () => {
+    const pending = { ...pod, status: { ...pod.status, phase: 'Pending' } }
+    const { getImageBrowser } = renderWith(pending)
+    openImage('stopped-sidecar')
+    expect(getImageBrowser()?.onSwitchToPodFiles).toBeUndefined()
+  })
+})
+
 describe('getExecContainerNames', () => {
   it('lists regular containers first, then native sidecars, never one-shot init containers', () => {
     expect(getExecContainerNames(pod)).toEqual(['app', 'log-shipper', 'stopped-sidecar'])
