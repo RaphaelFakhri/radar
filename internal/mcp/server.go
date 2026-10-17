@@ -15,7 +15,8 @@ import (
 )
 
 // newServer builds a Radar MCP server. instructions is the server-instructions
-// text sent at initialize; empty sends none.
+// text sent in the initialize result and, on protocol 2026-07-28, the
+// server/discover result; empty sends none.
 func newServer(includeWrites bool, instructions string) *mcpsdk.Server {
 	paramRegistry := newToolParamRegistry()
 	server := mcpsdk.NewServer(
@@ -23,7 +24,10 @@ func newServer(includeWrites bool, instructions string) *mcpsdk.Server {
 			Name:    "radar",
 			Version: version.Current,
 		},
-		&mcpsdk.ServerOptions{Instructions: instructions},
+		&mcpsdk.ServerOptions{
+			Instructions: instructions,
+			SetCacheable: privateCacheScope,
+		},
 	)
 
 	// Repair recognisable argument-name mistakes before schema validation, and
@@ -36,6 +40,15 @@ func newServer(includeWrites bool, instructions string) *mcpsdk.Server {
 	registerResources(server)
 
 	return server
+}
+
+// privateCacheScope marks every cacheable result (server/discover, the list
+// methods, resources/read) as cacheable only by the requesting user's client.
+// Radar answers with one caller's RBAC-filtered view of one cluster, so a
+// shared intermediary must not serve it to anyone else; the SDK's default
+// scope is "public".
+func privateCacheScope(_ context.Context, _ mcpsdk.Request, c *mcpsdk.Cacheable) {
+	c.CacheScope = "private"
 }
 
 // newFullServer is the public server with read and write tools, served over
@@ -92,7 +105,8 @@ func investigationEvidenceReferenceMiddleware(refs *investigationrefs.Registry) 
 			if err != nil {
 				return result, err
 			}
-			if method == "initialize" || method == "tools/list" {
+			// server/discover replaces initialize on protocol 2026-07-28.
+			if method == "initialize" || method == "server/discover" || method == "tools/list" {
 				if scope, _ := ctx.Value(investigationEvidenceScopeKey{}).(string); scope != "" {
 					refs.MarkConnected(scope)
 				}
@@ -145,8 +159,18 @@ func annotateInvestigationEvidenceReference(result *mcpsdk.CallToolResult, ref s
 	result.Content = append([]mcpsdk.Content{marker}, result.Content...)
 }
 
+// maxRequestBodyBytes bounds one MCP request over HTTP. The SDK's default is
+// 4 MiB, below what apply_resource accepts: a multi-document manifest of
+// objects that are each under the API server's limit can be larger, and the
+// JSON-escaped YAML grows in transit. This matches the SDK's cap on one stdio
+// frame, so both transports accept the same calls.
+const maxRequestBodyBytes = mcpsdk.DefaultMaxLineLength
+
 func handlerForServer(server *mcpsdk.Server) http.Handler {
-	streamOpts := &mcpsdk.StreamableHTTPOptions{Stateless: true}
+	streamOpts := &mcpsdk.StreamableHTTPOptions{
+		Stateless:           true,
+		MaxRequestBodyBytes: maxRequestBodyBytes,
+	}
 	// The MCP SDK auto-enables DNS-rebinding protection (Host header must be
 	// loopback) when the server binds to a loopback address. That blocks
 	// Docker-isolated callers reaching us via host.docker.internal. Allow

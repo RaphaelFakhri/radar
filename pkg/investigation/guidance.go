@@ -4,8 +4,9 @@ package investigation
 // question, how to read Radar's signals, and the evidence and untrusted-data
 // rules. It lives here, beside the investigation prompts, so every product that
 // puts it in front of an agent uses the same bytes. Radar's public MCP
-// endpoints (/mcp, /mcp-readonly, stdio) send it as server instructions; the
-// private investigation transport sends none.
+// endpoints (/mcp, /mcp-readonly, stdio) send it as server instructions, in
+// the initialize result or, on protocol 2026-07-28, which has no initialize,
+// the server/discover result; the private investigation transport sends none.
 //
 // Clients show server instructions differently: some at session start, some
 // only after the model has loaded Radar's tools, and some cut long text (Claude
