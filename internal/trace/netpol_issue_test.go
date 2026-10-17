@@ -123,3 +123,47 @@ func TestReconcilePolicyDowngradesServiceDenyAll(t *testing.T) {
 		}
 	}
 }
+
+// The in-cluster verify path settles the Service hop's deny-all policy issue
+// with the Pods hop's prediction once real traffic got through, so the
+// verdict re-derives off degraded; a dropped in-cluster request keeps both.
+func TestApplyInClusterResultsSettlesServiceDenyAll(t *testing.T) {
+	trace := func() *Trace {
+		return &Trace{
+			Subject: ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"},
+			Verdict: VerdictDegraded,
+			Downstream: []Hop{
+				{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"}, Edge: "entry:Service", Findings: []Finding{{
+					Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress - Would block all inbound traffic",
+				}}},
+				{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods",
+					Meta:     map[string]any{"policyVerdict": "would-deny", "policyNames": []string{"deny-all"}, "policyPort": ":80", "policyDenyPort": int32(80)},
+					Findings: []Finding{{Code: codePolicyWouldDeny, Severity: SeverityWarning, Message: "A network rule here would block this traffic"}}},
+			},
+			Routes: []RouteResult{{Route: "rec", Target: "rec:80", Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
+				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"}}},
+			Coverage: &Coverage{Tested: 1, Passed: 1},
+		}
+	}
+
+	tr := trace()
+	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("rec", "rec:80", ""): cleanInClusterPass()})
+	for i, h := range tr.Downstream {
+		for _, f := range h.Findings {
+			if f.Severity != SeverityInfo {
+				t.Errorf("hop %d finding %s = %s, want info after real in-cluster traffic got through", i, f.Code, f.Severity)
+			}
+		}
+	}
+	if tr.Verdict == VerdictDegraded {
+		t.Errorf("verdict = %s, want it re-derived off degraded", tr.Verdict)
+	}
+
+	tr = trace()
+	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("rec", "rec:80", ""): {{
+		Layer: probe.LayerTCP, Path: probe.PathData, Vantage: probe.VantageInCluster, OK: false, Detail: "connection timed out",
+	}}})
+	if f := tr.Downstream[0].Findings[0]; f.Severity != SeverityWarning {
+		t.Errorf("Service hop finding = %s, want the warning kept when in-cluster traffic was dropped", f.Severity)
+	}
+}

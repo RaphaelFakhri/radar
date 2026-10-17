@@ -469,6 +469,8 @@ rbac:
   additionalRules: []       # Arbitrary extra ClusterRole rules
 ```
 
+Radar's NetworkPolicy check (an issue when a policy leaves every pod behind a Service with no allowed inbound traffic) also reads the policies of other engines that can allow what a core NetworkPolicy denies: Cilium, Calico, Antrea (`rbac.crdGroups.antrea`), EKS VPC CNI (`rbac.crdGroups.awsNetworkPolicy`) and `policy.networking.k8s.io`. If one of those APIs is served but Radar can't read it, the check stays silent for the Services it might cover, so keep these groups enabled.
+
 Calico access is read-only (`get`, `list`, and `watch`) for both API groups and is enabled by default. Set `rbac.crdGroups.calico=false` to disable it. If chart-managed Calico access is disabled, grant only the resources you need through `rbac.additionalRules`; both groups may be required while a cluster exposes modern and legacy Calico APIs.
 
 The chart grants cluster-wide `get/list/watch` on VictoriaMetrics VMAgent, VMCluster and VMSingle whenever it grants cluster-wide Secrets reads: `rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or cloud mode. These objects can carry inline credentials, so they share the same grant decision as Secrets; there is no separate VictoriaMetrics setting. All other VictoriaMetrics kinds are excluded from this rule. See the [chart reference](../deploy/helm/radar/README.md#crd-access) for exclusions and wildcard grants.

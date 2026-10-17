@@ -814,6 +814,12 @@ func reconcileInClusterPolicy(t *Trace) {
 				Command:  h.Findings[idx].Command,
 			}
 			sortFindingsBySeverity(h.Findings)
+			// The Service hop in front carries the same prediction as a
+			// policy issue; a deny-all covers every port, so any real pass
+			// on this branch settles it too.
+			if i > 0 && h.Edge == "Service->Pods" && t.Downstream[i-1].Resource.Kind == "Service" {
+				downgradeDenyAllIngress(&t.Downstream[i-1])
+			}
 		}
 	}
 	branches := downstreamBranches(t.Downstream)

@@ -340,6 +340,7 @@ func policyObject(spec map[string]any) *unstructured.Unstructured {
 }
 
 func TestOtherPolicyViewMayApply(t *testing.T) {
+	allowIn := []any{map[string]any{"action": "Allow"}}
 	cnp := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}
 	ccnp := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumclusterwidenetworkpolicies"}
 	gnp := schema.GroupVersionResource{Group: "crd.projectcalico.org", Version: "v1", Resource: "globalnetworkpolicies"}
@@ -394,17 +395,32 @@ func TestOtherPolicyViewMayApply(t *testing.T) {
 		{"Cilium selector on the cluster name", served, fakePolicyLister{objects: objects(ccnp, "", cilium(map[string]any{"matchLabels": map[string]any{"io.cilium.k8s.policy.cluster": "a"}}, "ingress"))}, shopNS, true},
 		{"admin-tier cluster policy", served, fakePolicyLister{objects: objects(clusterNP, "", policyObject(map[string]any{"tier": "Admin"}))}, shopNS, true},
 		{"baseline-tier cluster policy can't override", served, fakePolicyLister{objects: objects(clusterNP, "", policyObject(map[string]any{"tier": "Baseline"}))}, shopNS, false},
-		{"Calico global policy selecting the pods", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'"}))}, shopNS, true},
+		{"Calico global policy selecting the pods", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'", "ingress": allowIn}))}, shopNS, true},
+		// Calico's recommended global default-deny: it selects the pods but
+		// allows only DNS egress, so it can't allow inbound traffic.
+		{"Calico global default-deny with only a DNS egress allow", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
+			"selector": "projectcalico.org/namespace not in {'kube-system', 'calico-system'}", "types": []any{"Ingress", "Egress"},
+			"egress": []any{map[string]any{"action": "Allow", "protocol": "UDP", "destination": map[string]any{"selector": "k8s-app == 'kube-dns'", "ports": []any{53}}}},
+		}))}, shopNS, false},
+		{"Calico ingress policy with only Deny and Log rules", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
+			"selector": "app == 'rec'", "types": []any{"Ingress"}, "ingress": []any{map[string]any{"action": "Log"}, map[string]any{"action": "Deny"}},
+		}))}, shopNS, false},
+		{"Calico ingress Pass rule may fall through to an allow", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
+			"selector": "app == 'rec'", "ingress": []any{map[string]any{"action": "Pass"}},
+		}))}, shopNS, true},
+		{"Calico ingress rule with an action Radar can't read", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
+			"selector": "app == 'rec'", "ingress": []any{map[string]any{"action": "Reroute"}},
+		}))}, shopNS, true},
 		{"Calico global policy selecting other pods", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'web'"}))}, shopNS, false},
 		{"Calico global policy for another namespace", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'"}))}, shopNS, false},
-		{"Calico namespace selector with unknown namespace labels", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'"}))}, nil, true},
-		{"Calico service-account selector can't be judged", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"serviceAccountSelector": "role == 'x'"}))}, shopNS, true},
+		{"Calico namespace selector with unknown namespace labels", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "ingress": allowIn}))}, nil, true},
+		{"Calico service-account selector can't be judged", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"serviceAccountSelector": "role == 'x'", "ingress": allowIn}))}, shopNS, true},
 		{"Calico egress-only policy can't allow inbound", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'", "types": []any{"Egress"}}))}, shopNS, false},
 		{"Calico policy with only egress rules defaults to Egress", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'", "egress": []any{map[string]any{"action": "Allow"}}}))}, shopNS, false},
 		{"Calico selector on another service account's endpoint label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'payments-api'"}))}, shopNS, false},
-		{"Calico selector on the endpoint service-account label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'default'"}))}, shopNS, true},
+		{"Calico selector on the endpoint service-account label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'default'", "ingress": allowIn}))}, shopNS, true},
 		{"Calico service-account selector plus an excluding namespace selector", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "serviceAccountSelector": "role == 'x'"}))}, shopNS, false},
-		{"Calico selector Radar can't parse", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app ==="}))}, shopNS, true},
+		{"Calico selector Radar can't parse", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app ===", "ingress": allowIn}))}, shopNS, true},
 		{"unsynced is unknown", served, fakePolicyLister{unsynced: true}, shopNS, true},
 		{"list error is unknown", served, fakePolicyLister{err: errors.New("forbidden")}, shopNS, true},
 		{"served without a dynamic cache is unknown", served, nil, shopNS, true},
@@ -489,7 +505,7 @@ func TestOtherPolicyViewMemoizes(t *testing.T) {
 	gnp := schema.GroupVersionResource{Group: "crd.projectcalico.org", Version: "v1", Resource: "globalnetworkpolicies"}
 	calls := 0
 	lister := fakePolicyLister{calls: &calls, objects: map[schema.GroupVersionResource]map[string][]*unstructured.Unstructured{
-		gnp: {"": {policyObject(map[string]any{"namespaceSelector": "team == 'other'"})}},
+		gnp: {"": {policyObject(map[string]any{"namespaceSelector": "team == 'other'", "ingress": []any{map[string]any{"action": "Allow"}}})}},
 	}}
 	view := &otherPolicyView{discovery: fakePolicyDiscovery{"crd.projectcalico.org/GlobalNetworkPolicy": gnp}, lister: lister}
 	pods := []*corev1.Pod{netpolTestPod("rec-1", map[string]string{"app": "rec"}, true)}
