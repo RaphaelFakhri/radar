@@ -84,7 +84,6 @@ var typedKinds = []struct {
 	{"Node", "nodes", ""},
 	{"Namespace", "namespaces", ""},
 	{"ResourceQuota", "resourcequotas", ""},
-	{"LimitRange", "limitranges", ""},
 	{"ServiceAccount", "serviceaccounts", ""},
 	{"IngressClass", "ingressclasses", "networking.k8s.io"},
 	{"Event", "events", ""},

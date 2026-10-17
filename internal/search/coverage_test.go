@@ -17,7 +17,6 @@ import (
 func TestSearch_NewTypedKindsAndKubectlNames(t *testing.T) {
 	p := &fakeProvider{typed: map[string][]runtime.Object{
 		"resourcequotas":  {&corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "memory-limit-quota"}}},
-		"limitranges":     {&corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "defaults"}}},
 		"serviceaccounts": {&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "checkout"}}},
 		"ingresses":       {&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"}}},
 		"networkpolicies": {&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "deny-all"}}},
@@ -25,7 +24,6 @@ func TestSearch_NewTypedKindsAndKubectlNames(t *testing.T) {
 	for query, want := range map[string]string{
 		"kind:ResourceQuota":  "memory-limit-quota",
 		"kind:resourcequotas": "memory-limit-quota",
-		"kind:LimitRange":     "defaults",
 		"kind:sa":             "checkout",
 		"kind:ingresses":      "web",
 		"kind:netpol":         "deny-all",
