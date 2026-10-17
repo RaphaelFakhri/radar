@@ -203,14 +203,19 @@ unknown, partial and denied values first: every piece here exists to keep them.
     (`pkg/k8score/read_scope.go`), which MCP, Capacity and Vitals use too. It splits
     the namespaces asked for into read, loading, failed and not collected, so a
     namespace whose own informer has synced is readable while another still
-    loads; `Complete` means the whole target is readable now, and
-    `TargetReadiness()` is the state of the requested namespaces alone. Read
-    the way you checked: a kind's lister matches its whole-kind `Readiness`,
-    and `ReadableObjects`/`ReadableObject` match the per-namespace answer
-    (several background kinds have no lister until every namespace loads).
-    CNPG's caller adapter is `internal/server/cnpg_read_scope.go`. Namespace selection
-    utilities live in `internal/readscope`; scope alone does not establish
-    initial readiness.
+    loads. `Complete` means every requested namespace is readable now, and
+    `TargetReadiness()` is the state of the requested namespaces alone.
+    CNPG's caller adapter is `internal/server/cnpg_read_scope.go`. Namespace
+    selection utilities live in `internal/readscope`; scope alone does not
+    establish initial readiness.
+  - After a per-namespace check, read through something that serves exactly
+    those namespaces. The listers of ConfigMaps, Secrets, Events, PVCs,
+    PersistentVolumes, StorageClasses, PodDisruptionBudgets and
+    NetworkPolicies are nil until every namespace of the kind has loaded, so
+    read them with `ReadableObjects`/`ReadableObject`. Every other kind's
+    lister exists while the kind loads and serves a loaded namespace's objects
+    from that namespace's own store: a lookup inside a namespace the
+    assessment reports read is complete, a list across namespaces is not.
   - A per-object read with several sources reports a `ReadSource`
     `{state, grant, reason}` per source (`internal/integration/reads.go`), with the missing
     permission as a `Grant` (`internal/auth/grant.go`), never a sentence.

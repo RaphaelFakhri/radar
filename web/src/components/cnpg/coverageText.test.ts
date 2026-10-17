@@ -7,16 +7,6 @@ describe('coverage wording', () => {
     expect(coverageEmpty(mixed, 'Pods')).toBe('No Pods visible: no access in c; Radar does not cache Pods in b.')
     expect(coverageLabel(mixed)).toBe('no access in c; not cached by Radar in b')
   })
-  it("doesn't blame the caller for namespaces an older Radar named as denied", () => {
-    // An older Radar sends no uncachedNamespaces and lists the namespaces it
-    // doesn't cache as denied, so it can't say which cause applies.
-    const older = { state: 'partial' as const, deniedNamespaces: ['db'], allowedNamespaces: ['other'] }
-    expect(coverageEmpty(older, 'Pods')).toBe('No Pods visible: not read in db.')
-    expect(coverageLabel(older)).toBe('not read in db')
-    const current = { ...older, uncachedNamespaces: [] }
-    expect(coverageEmpty(current, 'Pods')).toBe('No Pods visible: no access in db.')
-    expect(coverageLabel(current)).toBe('no access in db')
-  })
   it('falls back to the state when no namespace is named', () => {
     expect(coverageEmpty({ state: 'uncached' }, 'Pods')).toBe('Radar does not cache Pods in this scope.')
     expect(coverageEmpty({ state: 'partial' }, 'Pods')).toBe('No Pods visible. Some namespaces were not read.')

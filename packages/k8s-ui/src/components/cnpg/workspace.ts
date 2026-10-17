@@ -49,11 +49,7 @@ export interface CNPGKindCoverage {
   state: CNPGCoverageState
   /** Denied namespaces, named only when the caller supplied the candidate list. */
   deniedNamespaces?: string[]
-  /**
-   * Namespaces the caller may read but Radar's cache does not hold, named
-   * under the same rule. Absent from an older Radar, which listed them under
-   * deniedNamespaces too, so a namespace it names there may not be denied.
-   */
+  /** Namespaces the caller may read but Radar's cache does not hold, named under the same rule. */
   uncachedNamespaces?: string[]
   /** For partial coverage: the namespaces that were read. */
   allowedNamespaces?: string[]
@@ -465,9 +461,7 @@ export function coverageReadable(cov: CNPGKindCoverage, namespace?: string): boo
 export function cnpgCoverageGap(cov: CNPGKindCoverage, what: string, namespace?: string, notInstalled = 'Not installed'): string {
   // A namespace the server names wins over the kind's overall state: an
   // uncached scope can still name namespaces the caller was denied.
-  if (namespace && cov.deniedNamespaces?.includes(namespace)) {
-    return cov.uncachedNamespaces ? `No access to ${what}` : `${what} not read in ${namespace}`
-  }
+  if (namespace && cov.deniedNamespaces?.includes(namespace)) return `No access to ${what}`
   if (namespace && cov.uncachedNamespaces?.includes(namespace)) return `Radar does not cache ${what} in ${namespace}`
   switch (cov.state) {
     case 'denied':

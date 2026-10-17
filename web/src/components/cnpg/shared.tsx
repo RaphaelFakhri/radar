@@ -64,15 +64,10 @@ export function CNPGWorkspaceHeader({ title, subtitle, actions }: { title: strin
 }
 
 // The causes the server named for the namespaces it left unread. A partial or
-// uncached read can name both kinds of namespace at once. An older Radar sends
-// no uncachedNamespaces and listed both kinds as denied, so the namespaces it
-// names were only not read.
-function namedCauses(cov: CNPGKindCoverage | undefined, uncachedNoun: string): { denied?: string; unread?: string; uncached?: string } {
-  const named = cov?.deniedNamespaces?.length ? cov.deniedNamespaces.join(', ') : undefined
-  const apart = cov?.uncachedNamespaces !== undefined
+// uncached read can name both kinds of namespace at once.
+function namedCauses(cov: CNPGKindCoverage | undefined, uncachedNoun: string): { denied?: string; uncached?: string } {
   return {
-    denied: apart ? named : undefined,
-    unread: apart ? undefined : named,
+    denied: cov?.deniedNamespaces?.length ? cov.deniedNamespaces.join(', ') : undefined,
     uncached: cov?.uncachedNamespaces?.length ? `${uncachedNoun} in ${cov.uncachedNamespaces.join(', ')}` : undefined,
   }
 }
@@ -80,8 +75,8 @@ function namedCauses(cov: CNPGKindCoverage | undefined, uncachedNoun: string): {
 /** How much of a kind was read, in a few words ("not cached by Radar in pg"). */
 export function coverageLabel(cov: CNPGKindCoverage | undefined): string {
   if (!cov) return 'not read by this Radar'
-  const { denied, unread, uncached } = namedCauses(cov, 'not cached by Radar')
-  const named = [denied && `no access in ${denied}`, unread && `not read in ${unread}`, uncached].filter(Boolean)
+  const { denied, uncached } = namedCauses(cov, 'not cached by Radar')
+  const named = [denied && `no access in ${denied}`, uncached].filter(Boolean)
   if (named.length > 0) return named.join('; ')
   return COVERAGE_LABEL[cov?.state ?? ''] ?? cov?.state ?? 'unknown'
 }
@@ -182,8 +177,8 @@ export function coverageEmpty(cov: CNPGKindCoverage | undefined, noun: string): 
       return `No ${noun} in this scope.`
     case 'partial':
     case 'uncached': {
-      const { denied, unread, uncached } = namedCauses(cov, `Radar does not cache ${noun}`)
-      const causes = [denied && `no access in ${denied}`, unread && `not read in ${unread}`, uncached].filter(Boolean)
+      const { denied, uncached } = namedCauses(cov, `Radar does not cache ${noun}`)
+      const causes = [denied && `no access in ${denied}`, uncached].filter(Boolean)
       if (causes.length > 0) return `No ${noun} visible: ${causes.join('; ')}.`
       return cov.state === 'uncached' ? `Radar does not cache ${noun} in this scope.` : `No ${noun} visible. Some namespaces were not read.`
     }

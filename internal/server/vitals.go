@@ -195,8 +195,11 @@ func (s *Server) handleVitals(w http.ResponseWriter, r *http.Request) {
 		// numbers as the caller's whole world.
 		podsPartial = len(podNamespaces) < len(namespaces)
 	}
+	// Which namespaces Radar collects is known from its configuration while
+	// Pods still load, so a namespace-scoped cache marks Pods partial either way.
 	podAssessment := cache.AssessKindRead("pods", podNamespaces)
-	podsPartial = podsPartial || (podAssessment.Readiness == k8s.KindReady && !podAssessment.Complete)
+	podsPartial = podsPartial || len(podAssessment.Uncovered) > 0 ||
+		(podNamespaces == nil && !podAssessment.AllNamespaces && podAssessment.Readiness != k8s.KindUnavailable)
 
 	var scopedPods []*corev1.Pod
 	if podsReadable {

@@ -71,10 +71,15 @@ type KindReadAssessment struct {
 	// complete now; Failed when its load missed the sync deadline. Uncovered
 	// is known from configuration before any sync. An all-namespaces request
 	// on an all-namespaces informer has no partition: Readiness is its state
-	// and Read is nil. Otherwise Read is non-nil even when empty, because
-	// readers take a nil namespace list to mean every namespace.
+	// and Read is nil. So is a kind Radar doesn't watch (Readiness
+	// Unavailable), which has nothing to assess. Otherwise Read is non-nil
+	// even when empty, because readers take a nil namespace list to mean
+	// every namespace.
 	Read, Loading, Failed, Uncovered []string
-	// Complete: the whole target is readable now.
+	// Complete: every requested namespace is readable now; an empty target is
+	// complete. An all-namespaces request (Requested nil) is complete only on
+	// one informer over every namespace that has loaded: a namespace-scoped
+	// cache never collects every namespace.
 	Complete bool
 }
 
@@ -88,11 +93,13 @@ func (rc *ResourceCache) AssessKindRead(resource string, requested []string) Kin
 	covered := rc.KindNamespaces(resource)
 	if covered == nil {
 		a.AllNamespaces = true
-		a.Complete = a.Readiness == KindReady
-		if requested != nil {
-			a.Read = []string{}
-			a.assign(a.Readiness, slices.Clone(requested)...)
+		if requested == nil {
+			a.Complete = a.Readiness == KindReady
+			return a
 		}
+		a.Read = []string{}
+		a.assign(a.Readiness, slices.Clone(requested)...)
+		a.Complete = len(a.Loading) == 0 && len(a.Failed) == 0
 		return a
 	}
 	a.Read = []string{}
@@ -156,10 +163,10 @@ func (a *KindReadAssessment) assign(state KindReadiness, namespaces ...string) {
 	}
 }
 
-// readableIndexers returns, for each namespace, the store reads must use and
-// the namespace to select within it ("" for the store's whole contents). It
-// fails unless every namespace's store is complete now; nil namespaces means
-// the kind's whole scope.
+// readableIndexers returns one read per store a request needs. With nil
+// namespaces each read is a whole store, for the kind's whole scope; otherwise
+// each read selects one namespace's objects from the store holding them. It
+// fails unless every store involved is complete now.
 func (rc *ResourceCache) readableIndexers(resource string, namespaces []string) ([]func() []any, bool) {
 	if rc == nil || !rc.isEnabled(resource) || rc.kindStores[resource] == nil {
 		return nil, false

@@ -19,8 +19,8 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
-// A deferred kind collected namespace by namespace has no typed lister until
-// every namespace has loaded. A namespace that has loaded reads through its
+// ConfigMaps, PVCs and PodDisruptionBudgets collected namespace by namespace
+// have no typed lister until every namespace has loaded. A namespace that has loaded reads through its
 // own store, and one still loading says so.
 func TestDeferredKindsReadALoadedNamespaceWhileAnotherLoads(t *testing.T) {
 	kinds := []string{"configmaps", "persistentvolumeclaims", "poddisruptionbudgets"}

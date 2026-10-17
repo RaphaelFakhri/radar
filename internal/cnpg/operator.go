@@ -373,20 +373,20 @@ func (s *Reader) operatorConfigMap(ctx context.Context, cache *k8s.ResourceCache
 		state.Reason = "Radar does not watch ConfigMaps in " + namespace
 		return ref
 	}
-	loading, failed := namespaceLoadState(assessment)
-	switch {
-	case assessment.Readiness == k8s.KindUnavailable:
+	if assessment.Readiness == k8s.KindUnavailable {
 		state.Reason = "Radar is not collecting ConfigMaps"
 		return ref
-	case loading:
+	}
+	switch assessment.TargetReadiness() {
+	case k8s.KindPending:
 		state.Reason = "ConfigMaps are still loading"
 		return ref
-	case failed:
+	case k8s.KindFailed:
 		state.Reason = "ConfigMaps failed to load"
 		return ref
 	}
-	// The namespace's own store: a deferred kind's typed lister stays nil
-	// until every namespace of the kind has loaded.
+	// The namespace's own store: the ConfigMap lister is nil until every
+	// namespace's ConfigMaps have loaded.
 	obj, found, ok := cache.ReadableObject("configmaps", namespace, name)
 	cm, isConfigMap := obj.(*corev1.ConfigMap)
 	switch {

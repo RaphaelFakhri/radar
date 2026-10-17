@@ -291,29 +291,19 @@ func cnpgDesiredImage(cluster *unstructured.Unstructured) string {
 }
 
 func cnpgUncachedReason(fact, kind, namespace string, assessment k8score.KindReadAssessment) string {
-	loading, failed := namespaceLoadState(assessment)
 	switch {
 	case len(assessment.Uncovered) > 0:
 		return fmt.Sprintf("%s unknown: Radar watches %s only in the namespaces it chose when it connected, and %s is not one of them", fact, kind, namespace)
 	case assessment.Readiness == k8score.KindUnavailable:
 		return fmt.Sprintf("%s unknown: Radar is not collecting %s", fact, kind)
-	case loading:
+	}
+	switch assessment.TargetReadiness() {
+	case k8score.KindPending:
 		return fmt.Sprintf("%s unknown: Radar is still loading %s", fact, kind)
-	case failed:
+	case k8score.KindFailed:
 		return fmt.Sprintf("%s unknown: Radar failed to load %s", fact, kind)
 	}
 	return ""
-}
-
-// namespaceLoadState is whether the namespaces a read asked for are still
-// loading or failed to load. A namespace whose own informer has synced is
-// readable while another namespace of the kind still loads; a read of every
-// namespace has only the kind's state.
-func namespaceLoadState(assessment k8score.KindReadAssessment) (loading, failed bool) {
-	if assessment.Requested == nil {
-		return assessment.Readiness == k8score.KindPending, assessment.Readiness == k8score.KindFailed
-	}
-	return len(assessment.Loading) > 0, len(assessment.Failed) > 0
 }
 
 func (s *Reader) hANodesSource(ctx context.Context, cache *k8s.ResourceCache) integration.ReadSource {

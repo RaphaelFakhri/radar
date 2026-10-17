@@ -380,12 +380,7 @@ func InitResourceCache(ctx context.Context) error {
 		// runs under contextOpMu, so the operation that superseded the probe is
 		// already tearing this cache down, and the ctx.Err() check below drops
 		// out of the boot path that does not hold that lock.
-		permResult, probeErr := bootstrapResourcePermissions(rbacCtx, func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
-			if retry {
-				InvalidateResourcePermissionsCache()
-			}
-			return CheckResourcePermissions(ctx)
-		})
+		permResult, probeErr := bootstrapResourcePermissions(rbacCtx, freshResourcePermissions)
 		cancel()
 		logTiming("    Resource access probes: %v", time.Since(rbacStart))
 
@@ -2285,39 +2280,52 @@ func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
 	return clonePermissionCheckResult(rc.permissionResult)
 }
 
-// A transient startup 401 must not freeze a narrowed informer set for the
-// lifetime of the connection. Retry once within the existing probe budget.
-// Credentials rejected by every probe fail initialization into the
-// connection's auth owner. A rejection limited to some probes, while others
-// authenticated, keeps what they granted, as a denial would: the identity
-// works, and failing the whole connection would hide every kind it can read.
-// Non-auth probe budget expiry retains established grants; outer cancellation
-// is checked by initialization before any informer is wired.
+// bootstrapResourcePermissions runs the startup access probes that choose the
+// cache's informer scope. A 401 rejects Radar's identity, not one scope, so a
+// 401 in only some probes is most likely a token refreshed mid-probe: probe
+// once more, within the same budget, rather than leave those kinds switched
+// off for the life of the connection.
+//
+//   - Credentials rejected by every probe fail initialization into the
+//     connection's auth owner.
+//   - A rejection limited to some probes keeps what the others granted, as a
+//     denial would: the identity works, and failing the connection would hide
+//     every kind it can read.
+//   - A retry the budget cut short is not used. Probes still in flight at the
+//     deadline count as allowed, so its result is a guess; the first result
+//     stands, under the same rules.
+//   - Budget expiry otherwise keeps the grants the probe established.
+//     Cancellation returns ctx.Err(), so a superseded initialization wires
+//     nothing.
 func bootstrapResourcePermissions(ctx context.Context, check func(context.Context, bool) (*PermissionCheckResult, bool)) (*PermissionCheckResult, error) {
-	var rejected error
-	for attempt := 0; attempt < 2; attempt++ {
-		result, _ := check(ctx, attempt > 0)
-		err := permissionUnauthorized(result)
-		if err != nil {
-			rejected = err
-			if attempt == 0 && ctx.Err() == nil {
-				continue
-			}
-			if credentialsRejectedEverywhere(result) {
+	first, _ := check(ctx, false)
+	rejected := permissionUnauthorized(first)
+	if rejected != nil && ctx.Err() == nil {
+		retry, _ := check(ctx, true)
+		if ctx.Err() == nil {
+			if err := permissionUnauthorized(retry); err != nil && credentialsRejectedEverywhere(retry) {
 				return nil, fmt.Errorf("resource access probe rejected credentials: %w", err)
 			}
+			return retry, nil
 		}
-		if ctx.Err() != nil {
-			if rejected != nil && err == nil {
-				return nil, fmt.Errorf("resource access probe could not confirm recovered credentials within its budget: %w", rejected)
-			}
-			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, ctx.Err()
-			}
-		}
-		return result, nil
 	}
-	panic("unreachable")
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	if rejected != nil && credentialsRejectedEverywhere(first) {
+		return nil, fmt.Errorf("resource access probe rejected credentials: %w", rejected)
+	}
+	return first, nil
+}
+
+// freshResourcePermissions is the startup probe. A retry drops the cached
+// result first: it holds the very rejection being retried, and a retry that
+// read it back would never see refreshed credentials.
+func freshResourcePermissions(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+	if retry {
+		InvalidateResourcePermissionsCache()
+	}
+	return CheckResourcePermissions(ctx)
 }
 
 // credentialsRejectedEverywhere reports a probe in which no kind

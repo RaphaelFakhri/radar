@@ -112,3 +112,39 @@ func TestCapacityReadsLoadedNamespacesWhileAnotherIsStuck(t *testing.T) {
 		t.Fatalf("autoscaler status in loaded kube-system: %+v", coverage)
 	}
 }
+
+// On a loaded namespace-scoped cache, Capacity counts the namespaces Radar
+// collects and marks what it didn't read.
+func TestCapacityLoadedNamespaceScopedCache(t *testing.T) {
+	client := fake.NewClientset(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "alpha"}, Spec: corev1.PodSpec{NodeName: "node-1"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "beta"}, Spec: corev1.PodSpec{NodeName: "node-1"}},
+	)
+	t.Cleanup(func() {
+		k8s.ResetResourceCache()
+		if err := k8s.InitTestResourceCache(testFakeClient); err != nil {
+			t.Fatal(err)
+		}
+	})
+	k8s.ResetResourceCache()
+	if err := k8s.InitScopedTestResourceCache(client, map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "alpha"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		query, reason string
+		status        capacityapi.CoverageStatus
+		namespaces    []string
+		rows          int
+	}{
+		{"?namespaces=alpha,beta", "pod_cache_scope_partial", capacityapi.CoveragePartial, []string{"alpha"}, 1},
+		{"?namespaces=beta", "pod_cache_scope_unavailable", capacityapi.CoverageUnavailable, []string{}, 0},
+		{"", "pod_cache_scope_partial", capacityapi.CoveragePartial, []string{"alpha"}, 1},
+	} {
+		meta := capacityapi.NewResponseMeta(time.Now())
+		pods := (&Server{}).loadCapacityPods(httptest.NewRequest(http.MethodGet, "/api/capacity"+tc.query, nil), &meta, time.Now())
+		coverage := meta.Coverage[capacityapi.CoveragePods]
+		if len(pods) != tc.rows || coverage.Status != tc.status || coverage.ReasonCode != tc.reason || coverage.Scope != capacityapi.CoverageScopeExplicitNamespaces || !slices.Equal(coverage.Namespaces, tc.namespaces) {
+			t.Fatalf("%q: rows=%d coverage=%+v", tc.query, len(pods), coverage)
+		}
+	}
+}

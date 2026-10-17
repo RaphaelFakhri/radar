@@ -59,6 +59,15 @@ func TestAssessKindReadScopeAndReadiness(t *testing.T) {
 	if !cluster.Complete || !cluster.AllNamespaces || cluster.Read != nil {
 		t.Fatalf("cluster = %+v", cluster)
 	}
+	// An empty target is complete on either kind of cache, loaded or not.
+	ready = false
+	if loading := rc.AssessKindRead(Pods, []string{}); !loading.Complete || loading.TargetReadiness() != KindReady {
+		t.Fatalf("empty target on a loading cluster-wide cache = %+v", loading)
+	}
+	// The deadline set above still applies: a named target takes the kind's state.
+	if named := rc.AssessKindRead(Pods, []string{"alpha"}); named.Complete || named.TargetReadiness() != KindFailed {
+		t.Fatalf("named target on a loading cluster-wide cache = %+v", named)
+	}
 }
 
 func TestAssessKindReadRequestedScope(t *testing.T) {

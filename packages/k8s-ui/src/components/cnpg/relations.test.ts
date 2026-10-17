@@ -324,7 +324,7 @@ describe('relationUnavailable', () => {
   const ws = (state: any, deniedNamespaces?: string[]): CNPGWorkspaceResponse => {
     const coverage: CNPGWorkspaceResponse['coverage'] = {}
     for (const k of CNPG_WORKSPACE_KEYS) coverage[k] = { state: 'full' }
-    coverage.backups = { state, deniedNamespaces, uncachedNamespaces: [] }
+    coverage.backups = { state, deniedNamespaces }
     return { installed: true, context: 'c', namespaces: null, coverage, objects: {}, issues: [], audit: [], backupsOmitted: 0 }
   }
 

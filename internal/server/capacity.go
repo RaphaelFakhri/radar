@@ -774,18 +774,6 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		return nil
 	}
 	namespaces = assessment.Read
-	if !assessment.Complete && len(namespaces) == 0 {
-		coverage := unavailableCoverage("pod_cache_scope_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
-		if explicit || !assessment.AllNamespaces && sourceNamespaces == nil {
-			coverage.Scope = capacityapi.CoverageScopeExplicitNamespaces
-		} else if sourceNamespaces != nil {
-			coverage.Scope = capacityapi.CoverageScopeAllAuthorizedNamespaces
-		}
-		coverage.Namespaces = append([]string{}, namespaces...)
-		meta.Coverage[capacityapi.CoveragePods] = coverage
-		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
-		return nil
-	}
 	pods := readscope.ListPodsScoped(cache.Pods(), namespaces)
 	scope := capacityapi.CoverageScopeCluster
 	status := capacityapi.CoverageAvailable
