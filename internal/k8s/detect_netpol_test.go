@@ -405,6 +405,9 @@ func TestOtherPolicyViewMayApply(t *testing.T) {
 		{"Calico ingress policy with only Deny and Log rules", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
 			"selector": "app == 'rec'", "types": []any{"Ingress"}, "ingress": []any{map[string]any{"action": "Log"}, map[string]any{"action": "Deny"}},
 		}))}, shopNS, false},
+		{"Calico ingress rule that isn't an object may allow", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
+			"selector": "app == 'rec'", "types": []any{"Ingress"}, "ingress": []any{nil},
+		}))}, shopNS, true},
 		{"Calico ingress Pass rule may fall through to an allow", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
 			"selector": "app == 'rec'", "ingress": []any{map[string]any{"action": "Pass"}},
 		}))}, shopNS, true},

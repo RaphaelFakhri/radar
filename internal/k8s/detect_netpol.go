@@ -394,7 +394,11 @@ func calicoMayAllow(policy *unstructured.Unstructured, dir netpol.Direction) boo
 		return true
 	}
 	for _, rule := range rules {
-		action, _ := rule.(map[string]any)["action"].(string)
+		m, ok := rule.(map[string]any)
+		if !ok {
+			return true
+		}
+		action, _ := m["action"].(string)
 		if !strings.EqualFold(action, "Deny") && !strings.EqualFold(action, "Log") {
 			return true
 		}
