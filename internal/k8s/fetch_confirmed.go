@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,10 @@ import (
 
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
+
+// errClusterChanged means a context switch happened while a direct read was
+// confirming a cache answer, so neither the read nor the cache may be served.
+var errClusterChanged = errors.New("the cluster connection changed during the read")
 
 // CacheUnconfirmedError reports a single-object read that missed a cache which
 // cannot confirm absence (list-only or stale), when the direct read meant to
@@ -72,6 +77,8 @@ func FetchResourceConfirmed(ctx context.Context, cache *ResourceCache, kind, nam
 		return live, "", nil
 	case apierrors.IsNotFound(liveErr):
 		return nil, "", liveErr
+	case errors.Is(liveErr, errClusterChanged):
+		return nil, "", &CacheUnconfirmedError{Resource: key, Namespace: namespace, Name: name, State: state, Err: liveErr}
 	case err == nil:
 		return obj, fmt.Sprintf("Radar's cache for %s %s; this copy may be out of date (a direct read failed: %v)", key, state, liveErr), nil
 	default:
@@ -93,11 +100,11 @@ func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupV
 	// generation checked after taking it proves it is cache's cluster. An
 	// answer that arrives after a switch is dropped too.
 	if !cacheGenerationCurrent(cache.Generation()) {
-		return nil, fmt.Errorf("the cluster connection changed during the read")
+		return nil, errClusterChanged
 	}
 	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	if !cacheGenerationCurrent(cache.Generation()) {
-		return nil, fmt.Errorf("the cluster connection changed during the read")
+		return nil, errClusterChanged
 	}
 	if err != nil {
 		return nil, err

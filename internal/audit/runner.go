@@ -141,21 +141,25 @@ func CollectTypedInput(cache *k8s.ResourceCache, namespaces []string) *bp.CheckI
 	return input
 }
 
+// kindStaleIn reports whether key's list-only cache stopped refreshing in any
+// of namespaces (nil = anywhere).
+func kindStaleIn(cache *k8s.ResourceCache, key string, namespaces []string) bool {
+	if len(namespaces) == 0 {
+		return cache.KindStale(key, "")
+	}
+	for _, ns := range namespaces {
+		if cache.KindStale(key, ns) {
+			return true
+		}
+	}
+	return false
+}
+
 // dropStaleInputs clears each input whose list-only cache stopped refreshing
 // (KindStale), so the checks that need it report it as a missing input instead
 // of judging a snapshot that may be hours old.
 func dropStaleInputs(cache *k8s.ResourceCache, namespaces []string, input *bp.CheckInput) {
-	stale := func(key string) bool {
-		if len(namespaces) == 0 {
-			return cache.KindStale(key, "")
-		}
-		for _, ns := range namespaces {
-			if cache.KindStale(key, ns) {
-				return true
-			}
-		}
-		return false
-	}
+	stale := func(key string) bool { return kindStaleIn(cache, key, namespaces) }
 	if stale(k8score.Pods) {
 		input.Pods = nil
 	}

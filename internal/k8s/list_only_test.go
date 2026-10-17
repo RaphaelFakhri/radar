@@ -247,4 +247,13 @@ func TestFetchResourceConfirmed_StaleHit(t *testing.T) {
 	if err != nil || obj == nil || !strings.Contains(note, "may be out of date") {
 		t.Fatalf("want the cached copy with a staleness note, got obj=%v note=%q err=%v", obj, note, err)
 	}
+
+	// After a context switch neither the read nor the stale copy may answer.
+	cacheMu.Lock()
+	cacheGeneration++
+	cacheMu.Unlock()
+	var unconfirmed *CacheUnconfirmedError
+	if obj, _, err := FetchResourceConfirmed(ctx, cache, "secrets", "shop", "db"); obj != nil || !errors.As(err, &unconfirmed) {
+		t.Fatalf("after a context switch: want an unconfirmed error and no object, got obj=%v err=%v", obj, err)
+	}
 }
