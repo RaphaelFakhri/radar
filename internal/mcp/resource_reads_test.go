@@ -400,7 +400,7 @@ func TestResourceReadToolErrorTransport(t *testing.T) {
 	setupFakeCacheForFilterTests(t)
 	_ = withClusterAdmin(t, "transport-reader")
 	denyClusterRead(t, "transport-reader", "/nodes")
-	server := newServer(false)
+	server := newServer(false, "")
 	server.AddReceivingMiddleware(func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
 		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
 			return next(pkgauth.ContextWithUser(ctx, &pkgauth.User{Username: "transport-reader"}), method, req)
@@ -1142,7 +1142,7 @@ func TestListResourcesPartialCoverageTransport(t *testing.T) {
 	for _, tc := range fixture.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			setupLoadingServicesFixture(t, tc.Objects...)
-			session := connectTo(t, newServer(false))
+			session := connectTo(t, newServer(false, ""))
 			result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_resources", Arguments: tc.Arguments})
 			if err != nil {
 				t.Fatal(err)

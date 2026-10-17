@@ -274,12 +274,13 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"universal relevance verdict. Helm operation entries rank by category and recency " +
 			"and are not raised by this flag. This is " +
 			"often faster than reading " +
-			"ReplicaSet histories or individual audit/log streams, especially when issues " +
-			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
-			"filter by namespace, kind, or name when you know the scope. Omit namespace when " +
+			"ReplicaSet histories or audit/log streams, especially when issues " +
+			"are empty or dominated by baseline failures. Bound the window with since; narrow by " +
+			"namespace, kind or name. Runs of 5+ plain creates are listed " +
+			"in `created` as `+<seconds after first>s Kind/name` lines, counted in limit. " +
+			"Omit namespace when " +
 			"the relevant change may be outside the app namespace. Also includes native Helm " +
-			"release deployment/operation history as `source: helm` changes, so failed upgrades, " +
-			"rollbacks, and successful current revisions appear in the same recent-change feed. " +
+			"history as `source: helm` changes (failed upgrades, rollbacks, current revisions). " +
 			"If `sourcesErrored` includes helm, treat the result as partial rather than proof " +
 			"that no Helm deployment happened. Use get_helm_release include=history,operations " +
 			"for the full Helm revision trail. Other edited fields list under `other spec " +
@@ -396,8 +397,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
 		Name: "issues",
 		Description: "Use for 'what's broken right now?': live state, not posture. Returns " +
-			"grouped critical/warning failures across workloads, Jobs/CronJobs, HPAs, " +
-			"PVCs, Nodes, references, pod startup, native Helm, and False controller conditions. " +
+			"grouped critical/warning failures in workloads, Jobs/CronJobs, HPAs, " +
+			"PVCs, Nodes, NetworkPolicies, references, pod startup, native Helm, False controller conditions. " +
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
 			"`unchecked_sources` lists sources Radar couldn't check, so their issues may be " +
 			"missing; don't call them healthy. `helm` means failed or stuck Helm releases. " +
@@ -409,7 +410,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"When present, `timing_summary` reconciles timing fields whose scopes differ; otherwise " +
 			"read `first_seen` as 'active at least since' and `issue_timing` as timing evidence, " +
 			"not a root-cause verdict. Never treat resource age as issue age. " +
-			"When `recent_changes` is present, inspect it before concluding the returned " +
+			"When `recent_changes` is present, inspect it before concluding the " +
 			"issues explain the symptom. Follow `recent_changes_guidance` when present. " +
 			"`recent_changes_reason=" + meaningfulchanges.ChangesReasonNoCriticalIssues +
 			"` means no critical row, not healthy. The `" +
@@ -1470,7 +1471,7 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 		ContainerCompletionSplit: resourcecontextrefs.ContainerCompletionSplitFromShape(
 			k8s.FindContainerCompletionSplitForObject(cache, obj, time.Now()),
 		),
-		ServiceBackends: mcpServiceBackendLookup{cache: cache},
+		ServiceBackends: k8s.ServiceBackendLookup{Cache: cache},
 	}
 
 	// Wired unconditionally: a nil index is exactly the case that needs to
@@ -1747,13 +1748,21 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 	} else if recentResult.OutputCapped || totalMatched > len(changes) {
 		resp.NarrowHint = "Radar observed the full requested window but returned only its highest-ranked changes; lower-ranked changes were omitted." + narrowAdvice
 	}
+	// After the cap and the hint, so both still describe every returned
+	// change. A name= query is one object's history and stays as rows.
+	if input.Name == "" {
+		resp.Changes, resp.Created = meaningfulchanges.CompactCreates(resp.Changes)
+	}
 	return toJSONResult(resp)
 }
 
 type getChangesResponseMCP struct {
-	Changes        []mcpChange `json:"changes"`
-	NarrowHint     string      `json:"narrowHint,omitempty"`
-	SourcesErrored []string    `json:"sourcesErrored,omitempty"`
+	Changes []mcpChange `json:"changes"`
+	// Created lists runs of plain creates compactly; see
+	// issuesapi.CreatedObjects. Its objects count toward limit.
+	Created        []issuesapi.CreatedObjects `json:"created,omitempty"`
+	NarrowHint     string                     `json:"narrowHint,omitempty"`
+	SourcesErrored []string                   `json:"sourcesErrored,omitempty"`
 }
 
 func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topologyInput) (*mcp.CallToolResult, any, error) {
@@ -3590,24 +3599,47 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	if err != nil {
 		return nil, nil, err
 	}
+	resp := searchResponseMCP{Result: result, KindHint: searchKindHint(result.UnsearchedKinds)}
 	// Steering hint when the result was capped.
 	if result.TotalMatched > result.Total {
-		return toJSONResult(searchResponseMCP{
-			Result: result,
-			NarrowHint: fmt.Sprintf(
-				"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
-				result.Total, result.TotalMatched,
-			),
-		})
+		resp.NarrowHint = fmt.Sprintf(
+			"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
+			result.Total, result.TotalMatched,
+		)
 	}
-	return toJSONResult(result)
+	return toJSONResult(resp)
 }
 
 // searchResponseMCP embeds search.Result so the JSON shape stays identical
-// except for the added narrowHint field.
+// except for the added hint fields.
 type searchResponseMCP struct {
 	search.Result
 	NarrowHint string `json:"narrowHint,omitempty"`
+	KindHint   string `json:"kindHint,omitempty"`
+}
+
+// searchKindHint tells the agent what to do about each kind the search could
+// not answer for, so an empty result isn't read as "none exist".
+func searchKindHint(unsearched []search.UnsearchedKind) string {
+	hints := make([]string, 0, len(unsearched))
+	for _, u := range unsearched {
+		switch u.Reason {
+		case search.UnsearchedNotIndexed:
+			hints = append(hints, fmt.Sprintf("Search has no cached kind matching kind:%s; use list_resources kind=%s or get_resource. For a short name, try the Kind or its plural.", u.Kind, u.Kind))
+		case search.UnsearchedUnreadable:
+			hints = append(hints, fmt.Sprintf("Radar couldn't read %s from its cache%s; it may still be loading, or Radar may not be allowed to list it. An empty result for it doesn't mean none exist.", u.Kind, searchHintNamespaces(u.Namespaces)))
+		case search.UnsearchedClusterScoped:
+			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces (by the request or your namespace scope); use list_resources kind=%s.", u.Kind, u.Kind))
+		}
+	}
+	return strings.Join(hints, " ")
+}
+
+func searchHintNamespaces(namespaces []string) string {
+	if len(namespaces) == 0 {
+		return ""
+	}
+	return " for namespaces " + strings.Join(namespaces, ", ")
 }
 
 // toJSONResult marshals data into a text content MCP result.

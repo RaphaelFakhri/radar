@@ -552,7 +552,24 @@ type RolloutRiskSummary struct {
 // require looking at related resources.
 type ServiceSummary struct {
 	SelectedPods *PodSelectionSummary `json:"selectedPods,omitempty"`
-	Warnings     []ServiceWarning     `json:"warnings,omitempty"`
+	// Workloads groups the selected Pods by the workload that runs them. Set
+	// only when they come from more than one workload, which is often
+	// deliberate (canary, blue/green); the mixed_backends warning is
+	// what marks it as a likely mistake.
+	Workloads []ServiceBackendWorkload `json:"workloads,omitempty"`
+	// WorkloadsTruncated: more workloads were selected than Workloads lists.
+	WorkloadsTruncated bool `json:"workloadsTruncated,omitempty"`
+	// MixedBackends explains the mixed_backends warning: the workloads,
+	// whether they are different applications, and any targetPort some of
+	// them don't declare.
+	MixedBackends string           `json:"mixedBackends,omitempty"`
+	Warnings      []ServiceWarning `json:"warnings,omitempty"`
+}
+
+type ServiceBackendWorkload struct {
+	ContextRef
+	Pods  int `json:"pods"`
+	Ready int `json:"ready"`
 }
 
 type PodSelectionSummary struct {
@@ -570,6 +587,10 @@ const (
 	ServiceWarningNoSelector     ServiceWarning = "no_selector"
 	ServiceWarningNoSelectedPods ServiceWarning = "no_selected_pods"
 	ServiceWarningNoReadyPods    ServiceWarning = "no_ready_pods"
+	// ServiceWarningMixedBackends: the selected workloads run
+	// different image repositories, or some declare the numeric targetPort
+	// while others declare other ports but not it.
+	ServiceWarningMixedBackends ServiceWarning = "mixed_backends"
 )
 
 type IngressSummary struct {
@@ -705,10 +726,14 @@ type HPAMetricSummary struct {
 // the subject resource. Pre-computed by callers and passed into the
 // generator — this package does not import internal/issues.
 type IssueSummary struct {
-	Count           int            `json:"count"`
-	HighestSeverity string         `json:"highestSeverity,omitempty"`
-	TopReason       string         `json:"topReason,omitempty"`
-	BySource        map[string]int `json:"bySource,omitempty"`
+	Count           int    `json:"count"`
+	HighestSeverity string `json:"highestSeverity,omitempty"`
+	TopReason       string `json:"topReason,omitempty"`
+	// TopSubject names the resource the top issue is about when that isn't
+	// the summarized resource, such as the NetworkPolicy isolating a Service,
+	// so a reader can go to it without another lookup.
+	TopSubject *ContextRef    `json:"topSubject,omitempty"`
+	BySource   map[string]int `json:"bySource,omitempty"`
 }
 
 // AuditSummary is a rollup of static posture findings scoped to the subject

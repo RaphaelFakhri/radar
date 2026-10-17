@@ -58,6 +58,7 @@ const (
 	CategoryPDBBlocksEvictions       Category = "pdb_blocks_evictions"
 	CategorySecretSyncFailed         Category = "secret_sync_failed"
 	CategoryServiceNoEndpoints       Category = "service_no_endpoints"
+	CategoryServiceMixedBackends     Category = "service_mixed_backends"
 	CategoryIngressBackendMissing    Category = "ingress_backend_missing"
 	CategoryIngressClassMissing      Category = "ingress_class_missing"
 	CategoryLoadBalancerPending      Category = "load_balancer_pending"
@@ -137,6 +138,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryPDBBlocksEvictions:       GroupConfiguration,
 	CategorySecretSyncFailed:         GroupConfiguration,
 	CategoryServiceNoEndpoints:       GroupNetworking,
+	CategoryServiceMixedBackends:     GroupNetworking,
 	CategoryIngressBackendMissing:    GroupNetworking,
 	CategoryIngressClassMissing:      GroupNetworking,
 	CategoryLoadBalancerPending:      GroupNetworking,
@@ -183,6 +185,9 @@ func GroupOf(c Category) CategoryGroup {
 	}
 	return GroupUnknown
 }
+
+// MessageSourceRadar marks an issue Message that Radar wrote.
+const MessageSourceRadar = "radar"
 
 type Scope string
 
@@ -335,6 +340,23 @@ type RecentChange struct {
 	ConsumedBy []string `json:"consumed_by,omitempty"`
 }
 
+// CreatedObjects is one run of plain creates in a namespace, listed compactly
+// instead of one RecentChange row each. A plain create row carries only the
+// object, its creation time and, for a ConfigMap, its consumers; its other
+// fields are constant (changeType and summary "add", change_category
+// lifecycle, rank_reason "resource create/delete for config or desired
+// state"). Each Objects line is "+<seconds after First>s Kind/name", with
+// " (used by Kind/name, ...)" appended when the row had consumed_by. A member's
+// timestamp is First plus its offset, in First's zone; its apiVersion is
+// APIVersions[Kind] (absent when the row had none).
+type CreatedObjects struct {
+	Namespace   string            `json:"namespace"`
+	First       string            `json:"first"`
+	Count       int               `json:"count"`
+	APIVersions map[string]string `json:"apiVersions,omitempty"`
+	Objects     []string          `json:"objects"`
+}
+
 type ClusterContext struct {
 	DNS *ClusterDNSContext `json:"dns,omitempty"`
 }
@@ -463,19 +485,28 @@ type Issue struct {
 	// RequiredReads describe the inventories behind a cross-resource finding.
 	// They are retained internally so cached and grouped projections can authorize it.
 	RequiredReads []EvidenceRead `json:"-"`
-	Severity      Severity       `json:"severity"`
-	Source        Source         `json:"source"`
-	Category      Category       `json:"category"`
-	CategoryGroup CategoryGroup  `json:"category_group"`
-	ID            string         `json:"id"`
-	GroupingScope Scope          `json:"grouping_scope"`
-	Kind          string         `json:"kind"`
-	Group         string         `json:"group,omitempty"`
-	Namespace     string         `json:"namespace,omitempty"`
-	Name          string         `json:"name"`
-	Reason        string         `json:"reason"`
-	Message       string         `json:"message,omitempty"`
-	RawMessage    string         `json:"raw_message,omitempty"`
+	// AffectedRefs are the resources a finding about another subject affects,
+	// all of them rather than the capped links a diagnostic fact shows.
+	// Related-issue lookup matches them; they are never serialized.
+	AffectedRefs  []Ref         `json:"-"`
+	Severity      Severity      `json:"severity"`
+	Source        Source        `json:"source"`
+	Category      Category      `json:"category"`
+	CategoryGroup CategoryGroup `json:"category_group"`
+	ID            string        `json:"id"`
+	GroupingScope Scope         `json:"grouping_scope"`
+	Kind          string        `json:"kind"`
+	Group         string        `json:"group,omitempty"`
+	Namespace     string        `json:"namespace,omitempty"`
+	Name          string        `json:"name"`
+	Reason        string        `json:"reason"`
+	Message       string        `json:"message,omitempty"`
+	RawMessage    string        `json:"raw_message,omitempty"`
+	// MessageSource is MessageSourceRadar when Message is Radar's own summary
+	// rather than text from Kubernetes or a controller, so a UI doesn't present
+	// it as raw output. A detector that sets it writes a Cause that stands on
+	// its own without Message.
+	MessageSource string `json:"message_source,omitempty"`
 	// Cause / Action / Remediation* carry parsed domain diagnosis. They give the
 	// Issues page + MCP a plain-English cause + next step when a detector has
 	// enough evidence. All optional — empty for issues without a parser.

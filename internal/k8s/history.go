@@ -68,6 +68,7 @@ var diffFunctions = map[string]kindDiffRegistration{
 	"Secret":                         {group: "", diff: diffSecret},
 	"SealedSecret":                   {group: "bitnami.com", diff: diffSealedSecret},
 	"Ingress":                        {group: "networking.k8s.io", diff: chainDiffs(diffIngress, diffIngressRouting), backstopRoot: "spec"},
+	"NetworkPolicy":                  {group: "networking.k8s.io", diff: diffNetworkPolicy},
 	"ReplicaSet":                     {group: "apps", diff: diffReplicaSet},
 	"DaemonSet":                      {group: "apps", diff: diffDaemonSet, backstopRoot: "spec"},
 	"StatefulSet":                    {group: "apps", diff: diffStatefulSet, backstopRoot: "spec"},
@@ -169,6 +170,8 @@ func diffInputForUnstructured(kind string, u *unstructured.Unstructured) any {
 		return typedOrUnstructured[corev1.Secret](u)
 	case "Ingress":
 		return typedOrUnstructured[networkingv1.Ingress](u)
+	case "NetworkPolicy":
+		return typedOrUnstructured[networkingv1.NetworkPolicy](u)
 	case "ReplicaSet":
 		return typedOrUnstructured[appsv1.ReplicaSet](u)
 	case "DaemonSet":
@@ -499,6 +502,16 @@ func diffPod(oldObj, newObj any) ([]FieldChange, []string) {
 
 	var changes []FieldChange
 	var summary []string
+
+	// A label edit changes which Services and NetworkPolicies select the pod.
+	if !equalStringMaps(oldPod.Labels, newPod.Labels) {
+		changes = append(changes, FieldChange{
+			Path:     "metadata.labels",
+			OldValue: oldPod.Labels,
+			NewValue: newPod.Labels,
+		})
+		summary = append(summary, "labels changed")
+	}
 
 	// Check phase
 	if oldPod.Status.Phase != newPod.Status.Phase {
