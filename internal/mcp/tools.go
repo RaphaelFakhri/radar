@@ -3441,13 +3441,9 @@ func searchKindHint(unsearched []search.UnsearchedKind) string {
 			if len(u.Namespaces) > 0 {
 				where = " in namespaces " + strings.Join(u.Namespaces, ", ")
 			}
-			list := "list_resources kind=" + u.Kind
-			if u.Group != "" {
-				list += " group=" + u.Group
-			}
-			hints = append(hints, fmt.Sprintf("%s is not loaded in Radar's cache yet or could not be read%s; results for it may be incomplete, so use %s.", u.Kind, where, list))
+			hints = append(hints, fmt.Sprintf("Radar's cache of %s is not loaded yet or not readable%s, so an empty result for it doesn't mean none exist; retry shortly.", u.Kind, where))
 		case search.UnsearchedClusterScoped:
-			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces; search without a namespace.", u.Kind))
+			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces; use list_resources kind=%s.", u.Kind, u.Kind))
 		}
 	}
 	return strings.Join(hints, " ")

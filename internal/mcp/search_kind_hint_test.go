@@ -18,8 +18,8 @@ func TestSearchKindHint(t *testing.T) {
 	})
 	for _, want := range []string{
 		"kind:role is not a kind search scans; use list_resources kind=role, or get_resource for one object.",
-		"Certificate is not loaded in Radar's cache yet or could not be read in namespaces b; results for it may be incomplete, so use list_resources kind=Certificate group=cert-manager.io.",
-		"IngressClass is cluster-scoped and this search was limited to namespaces; search without a namespace.",
+		"Radar's cache of Certificate is not loaded yet or not readable in namespaces b, so an empty result for it doesn't mean none exist; retry shortly.",
+		"IngressClass is cluster-scoped and this search was limited to namespaces; use list_resources kind=IngressClass.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hint %q does not contain %q", got, want)

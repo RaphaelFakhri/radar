@@ -59,15 +59,16 @@ func (p *CacheProvider) KindForGVR(gvr schema.GroupVersionResource) string {
 	return p.discovery.GetKindForGVR(gvr)
 }
 
-// TypedPending reports a deferred typed informer that has not synced yet; its
-// lister serves an empty store until then.
-func (p *CacheProvider) TypedPending(plural string) bool {
-	return p.cache.IsDeferredPending(k8s.CanonicalBuiltinKind(plural))
+func (p *CacheProvider) TypedSynced(plural string) bool {
+	return p.cache.IsKindReady(k8s.CanonicalBuiltinKind(plural))
 }
 
-// DynamicSynced reports whether every informer behind gvr has synced.
-func (p *CacheProvider) DynamicSynced(gvr schema.GroupVersionResource) bool {
-	return p.dynamic != nil && p.dynamic.IsSynced(gvr)
+func (p *CacheProvider) TypedCoversNamespace(plural, namespace string) bool {
+	return p.cache.KindCoversNamespace(k8s.CanonicalBuiltinKind(plural), namespace)
+}
+
+func (p *CacheProvider) DynamicSynced(gvr schema.GroupVersionResource, namespace string) bool {
+	return p.dynamic != nil && p.dynamic.IsNamespaceSynced(gvr, namespace)
 }
 
 func (p *CacheProvider) NamespacedForGVR(gvr schema.GroupVersionResource) (bool, bool) {
