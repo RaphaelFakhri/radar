@@ -1680,6 +1680,9 @@ func isPodKind(kind string) bool {
 }
 
 func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getChangesInput) (*mcp.CallToolResult, any, error) {
+	if err := requireConnected(); err != nil {
+		return nil, nil, err
+	}
 	since := 1 * time.Hour
 	if input.Since != "" {
 		parsed, err := parsePromDuration(input.Since)

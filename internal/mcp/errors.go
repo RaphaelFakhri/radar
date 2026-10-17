@@ -8,11 +8,12 @@ import (
 // errNotConnected explains WHY the cluster is unavailable. MCP callers are
 // usually AI agents: a bare "not connected" reads as a dead end, when a
 // credential-loss demotion actually self-heals once the operator
-// re-authenticates. The code says which of those it is.
+// re-authenticates. The code says which of those it is; while connecting the
+// message is the one REST gives for cluster_connecting.
 func errNotConnected() error {
 	status := k8s.GetConnectionStatus()
 	if status.State == k8s.StateConnecting {
-		return readErrorf(readreason.ClusterConnecting, "Radar is still connecting to the cluster; retry shortly")
+		return readErrorf(readreason.ClusterConnecting, "Cluster is still connecting, please retry shortly")
 	}
 	if status.State == k8s.StateDisconnected && status.Error != "" {
 		switch status.ErrorType {
@@ -26,4 +27,14 @@ func errNotConnected() error {
 		return readErrorf(readreason.ClusterDisconnected, "not connected to cluster: %s", status.Error)
 	}
 	return readErrorf(readreason.ClusterDisconnected, "not connected to cluster")
+}
+
+// requireConnected gates tools that read stores the cache feeds, such as the
+// change timeline: before the cluster has connected they are empty, and an
+// empty answer would read as "nothing happened".
+func requireConnected() error {
+	if k8s.IsConnected() {
+		return nil
+	}
+	return errNotConnected()
 }

@@ -1156,6 +1156,15 @@ func TestListResourcesPartialCoverageTransport(t *testing.T) {
 			if err := json.Unmarshal(got, &gotWire); err != nil {
 				t.Fatal(err)
 			}
+			// The fixture pins what Radar returns. Fields the SDK adds to every
+			// result (_meta, resultType) change with protocol versions.
+			if m, ok := gotWire.(map[string]any); ok {
+				for k := range m {
+					if k != "content" && k != "structuredContent" && k != "isError" {
+						delete(m, k)
+					}
+				}
+			}
 			if err := json.Unmarshal(tc.Result, &wantWire); err != nil {
 				t.Fatal(err)
 			}

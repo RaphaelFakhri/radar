@@ -574,6 +574,11 @@ func TestStaleSecretEnvManagedFieldsFallback(t *testing.T) {
 		if len(checks) != 1 || !checks[0].SecretChangedAt.Equal(changedAt) {
 			t.Fatalf("metadata-only write replaced the real data timestamp in diagnosis: %+v", checks)
 		}
+		// The manager has written since (the metadata update), so the note
+		// must name the retained write without calling it the latest.
+		if want := "had a write at " + changedAt.Format(time.RFC3339) + " by secret-controller, a field manager that owns its data"; !strings.Contains(checks[0].Message, want) || strings.Contains(checks[0].Message, "latest") {
+			t.Fatalf("note after a metadata-only update = %q, want it to contain %q and no recency claim", checks[0].Message, want)
+		}
 	})
 
 	t.Run("precise timeline evidence wins for the whole Secret", func(t *testing.T) {
@@ -906,6 +911,177 @@ func TestSecretDataManagerWriteIndex(t *testing.T) {
 		index.reconcile(change("new", k8score.OpUpdate, metadataDiff), helmRelease)
 		if write, ok := index.load("shop", "credentials"); ok {
 			t.Fatalf("Helm release payload Secret occupied the diagnostic timestamp index: %+v", write)
+		}
+	})
+}
+
+// TestSecretDataManagerWriteIndexSurvivesRepeatedTransform pins the
+// startup path of a watch-list informer: client-go transforms each object
+// present at startup twice (once into its temporary store, again on Replace),
+// and the second pass sees the managedFields the first pass stripped. The
+// write the first pass captured must survive it.
+func TestSecretDataManagerWriteIndexSurvivesRepeatedTransform(t *testing.T) {
+	dataWrite := time.Date(2026, time.July, 23, 8, 0, 0, 0, time.UTC)
+	managed := func(raw string) []metav1.ManagedFieldsEntry {
+		return []metav1.ManagedFieldsEntry{{
+			Manager: "secret-controller", Operation: metav1.ManagedFieldsOperationUpdate,
+			Time: &metav1.Time{Time: dataWrite}, FieldsType: "FieldsV1",
+			FieldsV1: &metav1.FieldsV1{Raw: []byte(raw)},
+		}}
+	}
+	newSecret := func(secretType corev1.SecretType, raw string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "credentials", Namespace: "shop", UID: types.UID("secret-uid"),
+				ResourceVersion: "7", ManagedFields: managed(raw),
+			},
+			Type: secretType,
+			Data: map[string][]byte{"password": []byte("value")},
+		}
+	}
+	// The informer transform as the cache wires it: capture, then strip.
+	transformTwice := func(index *secretDataManagerWriteIndex, secret *corev1.Secret) {
+		for range 2 {
+			index.capture(secret)
+			if _, err := k8score.DropManagedFields(secret); err != nil {
+				t.Fatalf("DropManagedFields: %v", err)
+			}
+		}
+	}
+	add := k8score.ResourceChange{Kind: "Secret", Namespace: "shop", Name: "credentials", UID: "secret-uid", Operation: k8score.OpAdd}
+
+	t.Run("data write made before startup is indexed", func(t *testing.T) {
+		index := newSecretDataManagerWriteIndex()
+		secret := newSecret(corev1.SecretTypeOpaque, `{"f:data":{"f:password":{}}}`)
+		transformTwice(index, secret)
+		index.reconcile(add, secret)
+		write, ok := index.load("shop", "credentials")
+		if !ok || !write.at.Equal(dataWrite) {
+			t.Fatalf("indexed write = (%+v, %v), want the data write at %v", write, ok, dataWrite)
+		}
+	})
+
+	t.Run("Secret never written by a data manager stays unindexed", func(t *testing.T) {
+		index := newSecretDataManagerWriteIndex()
+		secret := newSecret(corev1.SecretTypeOpaque, `{"f:metadata":{"f:labels":{"f:team":{}}}}`)
+		transformTwice(index, secret)
+		index.reconcile(add, secret)
+		if write, ok := index.load("shop", "credentials"); ok {
+			t.Fatalf("metadata-only Secret indexed a data write: %+v", write)
+		}
+	})
+
+	t.Run("Helm release Secret stays unindexed", func(t *testing.T) {
+		index := newSecretDataManagerWriteIndex()
+		secret := newSecret(corev1.SecretType("helm.sh/release.v1"), `{"f:data":{"f:release":{}}}`)
+		transformTwice(index, secret)
+		index.reconcile(add, secret)
+		if write, ok := index.load("shop", "credentials"); ok {
+			t.Fatalf("Helm release Secret indexed a data write: %+v", write)
+		}
+	})
+}
+
+// TestStaleSecretEnvManagedFieldsNamesLastDataWriter pins the writer the
+// fallback names: the manager owning Secret data whose entry supplied the
+// timestamp, shown as the API server recorded it. Because that timestamp moves
+// on a write to any field the manager owns, the note must not claim the write
+// changed data.
+func TestStaleSecretEnvManagedFieldsNamesLastDataWriter(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	startedAt := now.Add(-time.Hour)
+	entry := func(manager string, at time.Time, raw string) metav1.ManagedFieldsEntry {
+		return metav1.ManagedFieldsEntry{
+			Manager: manager, Operation: metav1.ManagedFieldsOperationUpdate,
+			Time: &metav1.Time{Time: at}, FieldsType: "FieldsV1",
+			FieldsV1: &metav1.FieldsV1{Raw: []byte(raw)},
+		}
+	}
+	const dataOnly = `{"f:data":{"f:password":{}}}`
+	checkFor := func(t *testing.T, fields ...metav1.ManagedFieldsEntry) StaleSecretEnvCheck {
+		t.Helper()
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "db-conn", Namespace: "shop", ManagedFields: fields},
+			Data:       map[string][]byte{"password": []byte("value")},
+		}
+		pod := staleSecretEnvPod("catalog", startedAt, true, secretKeyEnv("DB_PASSWORD", "db-conn", "password"))
+		cache := envHistoryTestCache(t, pod, secret)
+		checks := findStaleSecretEnvChecksWithManagedFields(cache, []*corev1.Pod{pod}, nil)
+		if len(checks) != 1 {
+			t.Fatalf("got %d checks, want 1: %+v", len(checks), checks)
+		}
+		msg := checks[0].Message
+		if !strings.Contains(msg, "managedFields cannot identify which field changed") || !strings.Contains(msg, "may not have touched data at all") {
+			t.Fatalf("named writer dropped the hedge: %q", msg)
+		}
+		if strings.Contains(msg, "data write") || strings.Contains(msg, "changed by") || strings.Contains(msg, "last written") || strings.Contains(msg, "latest") {
+			t.Fatalf("note claims more than managedFields establishes: %q", msg)
+		}
+		return checks[0]
+	}
+	written := func(at time.Time, writers string) string {
+		return "had a write at " + at.Format(time.RFC3339) + " by " + writers
+	}
+
+	t.Run("raw manager name, no mapping", func(t *testing.T) {
+		at := now.Add(-time.Minute)
+		check := checkFor(t, entry("kubectl-client-side-apply", at, dataOnly))
+		if want := written(at, "kubectl-client-side-apply, a field manager that owns its data"); !strings.Contains(check.Message, want) {
+			t.Fatalf("message %q does not contain %q", check.Message, want)
+		}
+	})
+
+	t.Run("several data owners name the one whose timestamp is used", func(t *testing.T) {
+		older, newer := now.Add(-30*time.Minute), now.Add(-time.Minute)
+		for _, order := range [][]metav1.ManagedFieldsEntry{
+			{entry("helm", older, dataOnly), entry("Go-http-client", newer, dataOnly)},
+			{entry("Go-http-client", newer, dataOnly), entry("helm", older, dataOnly)},
+		} {
+			check := checkFor(t, order...)
+			if !check.SecretChangedAt.Equal(newer) || !strings.Contains(check.Message, written(newer, "Go-http-client,")) || strings.Contains(check.Message, "helm") {
+				t.Fatalf("want the newest data owner Go-http-client at %v, got %v %q", newer, check.SecretChangedAt, check.Message)
+			}
+		}
+	})
+
+	t.Run("a later metadata-only manager is outside the claim", func(t *testing.T) {
+		dataAt, labelAt := now.Add(-30*time.Minute), now.Add(-time.Minute)
+		check := checkFor(t, entry("helm", dataAt, dataOnly), entry("kubectl-label", labelAt, `{"f:metadata":{"f:labels":{"f:team":{}}}}`))
+		if !check.SecretChangedAt.Equal(dataAt) || !strings.Contains(check.Message, written(dataAt, "helm,")) || strings.Contains(check.Message, "kubectl-label") {
+			t.Fatalf("want helm's write, got %v %q", check.SecretChangedAt, check.Message)
+		}
+	})
+
+	t.Run("a data owner's metadata-only write is not called a data change", func(t *testing.T) {
+		// external-secrets owns data and labels; its entry time is its last
+		// write to either, here a label change.
+		labelAt := now.Add(-time.Minute)
+		check := checkFor(t, entry("external-secrets", labelAt, `{"f:data":{"f:password":{}},"f:metadata":{"f:labels":{"f:synced":{}}}}`))
+		if !strings.Contains(check.Message, written(labelAt, "external-secrets,")) {
+			t.Fatalf("want the manager's last write, hedged: %q", check.Message)
+		}
+	})
+
+	t.Run("API server bookkeeping buckets are not named as writers", func(t *testing.T) {
+		at := now.Add(-time.Minute)
+		for _, bucket := range []string{"ancient-changes", "before-first-apply"} {
+			check := checkFor(t, entry(bucket, at, dataOnly))
+			if !strings.Contains(check.Message, written(at, "a field manager that owns its data")) || strings.Contains(check.Message, bucket) {
+				t.Fatalf("%s was named as a writer: %q", bucket, check.Message)
+			}
+		}
+		tied := checkFor(t, entry("ancient-changes", at, dataOnly), entry("helm", at, dataOnly))
+		if !strings.Contains(tied.Message, written(at, "helm, a field manager that owns its data")) {
+			t.Fatalf("a real writer tied with a bucket should be named alone: %q", tied.Message)
+		}
+	})
+
+	t.Run("tied timestamps name every tied manager", func(t *testing.T) {
+		at := now.Add(-time.Minute)
+		a := checkFor(t, entry("operator-b", at, dataOnly), entry("operator-a", at, dataOnly))
+		b := checkFor(t, entry("operator-a", at, dataOnly), entry("operator-b", at, dataOnly))
+		if want := written(at, "operator-a and operator-b, field managers that own its data"); !strings.Contains(a.Message, want) || a.Message != b.Message {
+			t.Fatalf("tie should name both managers in both orders: %q / %q", a.Message, b.Message)
 		}
 	})
 }

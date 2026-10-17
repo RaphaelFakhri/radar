@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1084,11 +1085,11 @@ func findStaleSecretEnvChecksWithManagedFields(cache *ResourceCache, pods []*cor
 				if observedSecrets[secretIdentity] || !secretExists(cache, pod.Namespace, secretName, exists, checked) {
 					return
 				}
-				changedAt, ok := secretDataManagerWriteTime(cache, pod.Namespace, secretName)
-				if !ok || !startedAt.Before(changedAt) {
+				write, ok := secretDataManagerLastWrite(cache, pod.Namespace, secretName)
+				if !ok || !startedAt.Before(write.at) {
 					return
 				}
-				out = append(out, newManagedFieldsStaleSecretEnvCheck(pod, container.Name, referenceKind, prefix, secretName, startedAt, changedAt))
+				out = append(out, newManagedFieldsStaleSecretEnvCheck(pod, container.Name, referenceKind, prefix, secretName, startedAt, write))
 				checksPerContainer[containerIdentity]++
 			}
 			for _, env := range container.Env {
@@ -1162,7 +1163,23 @@ func newStaleSecretEnvCheck(pod *corev1.Pod, container, envName, referenceKind, 
 	}
 }
 
-func newManagedFieldsStaleSecretEnvCheck(pod *corev1.Pod, container, referenceKind, prefix, secretName string, startedAt, changedAt time.Time) StaleSecretEnvCheck {
+// newManagedFieldsStaleSecretEnvCheck names the writer as recorded in the
+// Secret's managedFields, unmapped. A manager's timestamp moves on a write to
+// any field it owns, and the index keeps an earlier data timestamp across a
+// later metadata-only update, so the note claims only that this manager
+// wrote at that time, not that it was the latest write or a data change. The names are Secret
+// metadata: they reach only callers the resource context lets read the
+// Secret, which drops the whole row for anyone else.
+func newManagedFieldsStaleSecretEnvCheck(pod *corev1.Pod, container, referenceKind, prefix, secretName string, startedAt time.Time, write secretDataManagerWrite) StaleSecretEnvCheck {
+	changedAt := write.at
+	writer := "a field manager that owns its data"
+	switch names := slices.DeleteFunc(slices.Clone(write.managers), isUnnamedManagedFieldsManager); len(names) {
+	case 0:
+	case 1:
+		writer = names[0] + ", a field manager that owns its data"
+	default:
+		writer = strings.Join(names, " and ") + ", field managers that own its data"
+	}
 	return StaleSecretEnvCheck{
 		Namespace:          pod.Namespace,
 		PodName:            pod.Name,
@@ -1173,8 +1190,20 @@ func newManagedFieldsStaleSecretEnvCheck(pod *corev1.Pod, container, referenceKi
 		SecretName:         secretName,
 		ContainerStartedAt: startedAt,
 		SecretChangedAt:    changedAt,
-		Message:            fmt.Sprintf("Secret/%s was modified at %s by a field manager that owns Secret data, after container %s started at %s; managedFields cannot identify which field changed, so if the write touched a consumed key the running process may hold a stale env value until restart.", secretName, changedAt.UTC().Format(time.RFC3339), container, startedAt.UTC().Format(time.RFC3339)),
+		Message:            fmt.Sprintf("Secret/%s had a write at %s by %s, after container %s started at %s; managedFields cannot identify which field changed, so the write may not have touched data at all, and if the write touched a consumed key the running process may hold a stale env value until restart.", secretName, changedAt.UTC().Format(time.RFC3339), writer, container, startedAt.UTC().Format(time.RFC3339)),
 	}
+}
+
+// isUnnamedManagedFieldsManager reports managedFields entries that name no
+// actual writer: an empty manager, and the buckets the API server creates
+// itself, ancient-changes (older update managers compacted together) and
+// before-first-apply (fields owned before the first server-side apply).
+func isUnnamedManagedFieldsManager(manager string) bool {
+	switch manager {
+	case "", "ancient-changes", "before-first-apply":
+		return true
+	}
+	return false
 }
 
 func secretExists(cache *ResourceCache, namespace, name string, exists, checked map[string]bool) bool {
@@ -1188,19 +1217,19 @@ func secretExists(cache *ResourceCache, namespace, name string, exists, checked 
 	return exists[identity]
 }
 
-func secretDataManagerWriteTime(cache *ResourceCache, namespace, name string) (time.Time, bool) {
+func secretDataManagerLastWrite(cache *ResourceCache, namespace, name string) (secretDataManagerWrite, bool) {
 	if cache == nil || cache.secretWriteTimes == nil || cache.Secrets() == nil {
-		return time.Time{}, false
+		return secretDataManagerWrite{}, false
 	}
 	write, ok := cache.secretWriteTimes.load(namespace, name)
 	if !ok || write.at.IsZero() {
-		return time.Time{}, false
+		return secretDataManagerWrite{}, false
 	}
 	secret, err := cache.Secrets().Secrets(namespace).Get(name)
 	if err != nil || secret == nil || secret.Type == corev1.SecretType("helm.sh/release.v1") || string(secret.UID) != write.uid {
-		return time.Time{}, false
+		return secretDataManagerWrite{}, false
 	}
-	return write.at, true
+	return write, true
 }
 
 func secretsWithObservedDataWrites(events []timeline.TimelineEvent) map[string]bool {

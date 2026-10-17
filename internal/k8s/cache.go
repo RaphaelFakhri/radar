@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -154,6 +155,12 @@ func (c *ResourceCache) Generation() uint64 {
 type secretDataManagerWrite struct {
 	uid string
 	at  time.Time
+	// managers are the field managers whose entries carry at, the latest
+	// timestamp among managers that own Secret data (more than one on a tie),
+	// sorted. A manager's timestamp moves on a write to any field it owns,
+	// so at is the time of that manager's last write, not necessarily of a
+	// data change.
+	managers []string
 }
 
 type secretDataManagerWriteVersion struct {
@@ -217,6 +224,7 @@ func (index *secretDataManagerWriteIndex) capture(obj any) {
 		return
 	}
 	var latest time.Time
+	var latestManagers []string
 	for _, entry := range secret.ManagedFields {
 		if entry.Time == nil || entry.FieldsV1 == nil ||
 			(entry.Operation != metav1.ManagedFieldsOperationApply && entry.Operation != metav1.ManagedFieldsOperationUpdate) {
@@ -235,10 +243,15 @@ func (index *secretDataManagerWriteIndex) capture(obj any) {
 				continue
 			}
 		}
-		if entry.Time.Time.After(latest) {
+		switch {
+		case entry.Time.Time.After(latest):
 			latest = entry.Time.Time
+			latestManagers = []string{entry.Manager}
+		case entry.Time.Time.Equal(latest) && !slices.Contains(latestManagers, entry.Manager):
+			latestManagers = append(latestManagers, entry.Manager)
 		}
 	}
+	slices.Sort(latestManagers)
 	version := secretDataManagerWriteVersion{
 		namespace:       secret.Namespace,
 		name:            secret.Name,
@@ -249,9 +262,19 @@ func (index *secretDataManagerWriteIndex) capture(obj any) {
 		helm: secret.Type == corev1.SecretType("helm.sh/release.v1"),
 	}
 	if !latest.IsZero() {
-		pending.write = &secretDataManagerWrite{uid: string(secret.UID), at: latest}
+		pending.write = &secretDataManagerWrite{uid: string(secret.UID), at: latest, managers: latestManagers}
 	}
 	index.mu.Lock()
+	// Watch-list informers transform each object present at startup twice,
+	// and the second pass sees the managedFields the first one stripped (the
+	// same reason DropManagedFields checks for Helm digests). One object
+	// version always carries the same managedFields, so an empty set on a
+	// version already captured is that second pass, not new evidence: keep
+	// the first capture.
+	if _, captured := index.pending[version]; captured && len(secret.ManagedFields) == 0 {
+		index.mu.Unlock()
+		return
+	}
 	if _, exists := index.pending[version]; !exists && len(index.pending) >= index.pendingLimit {
 		// Transform observations are advisory. Under callback starvation,
 		// discard unmatched candidates rather than grow without bound; a
