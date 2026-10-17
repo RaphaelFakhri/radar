@@ -797,9 +797,12 @@ func reconcileInClusterPolicy(t *Trace) {
 	downgrade := func(start, end int, ports map[int32]bool) {
 		for i := start; i < end && i < len(t.Downstream); i++ {
 			h := &t.Downstream[i]
-			// A deny-all policy issue claims every port is blocked, so any
-			// real pass to this backend disproves it, whatever the port.
-			if h.Resource.Kind == "Service" && len(ports) > 0 {
+			// A deny-all policy issue claims every port is blocked, so a real
+			// pass to this backend disproves it whatever the port. The pass went
+			// through the Service, so it can't say which pod answered: settle
+			// only a lone policy issue, which isolates every backend (policies
+			// that split the pods each add their own issue).
+			if h.Resource.Kind == "Service" && len(ports) > 0 && countFindings(h.Findings, k8s.NetworkPolicyDenyAllIngressFingerprint) == 1 {
 				downgradeDenyAllIngress(h)
 			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
@@ -833,6 +836,16 @@ func reconcileInClusterPolicy(t *Trace) {
 			downgrade(b.start, b.end, ports)
 		}
 	}
+}
+
+func countFindings(findings []Finding, code string) int {
+	n := 0
+	for _, f := range findings {
+		if f.Code == code {
+			n++
+		}
+	}
+	return n
 }
 
 // inClusterPassCoversPrediction reports whether a real in-cluster pass
@@ -1249,8 +1262,8 @@ func primaryProblemFinding(t *Trace) (Finding, ResourceRef, bool) {
 				// traffic actually passed this branch ON THE DENIED PORT (direct dial
 				// or in-cluster data path), the prediction is contradicted and must not
 				// lead the diagnosis - demote it out of the candidates. A pass on a
-				// different port leaves the prediction standing.
-				if f.Code == codePolicyWouldDeny && realPassCoversDenyPort(passed[base+i], hopDenyPort(h.Meta)) {
+				// different port or protocol leaves the prediction standing.
+				if f.Code == codePolicyWouldDeny && inClusterPassCoversPrediction(passed[base+i], h.Meta) {
 					continue
 				}
 				if f.Severity == SeverityCritical || f.Severity == SeverityWarning {

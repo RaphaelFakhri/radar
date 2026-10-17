@@ -242,6 +242,10 @@ func TestApplyInClusterResultsSettlesDenyAllAcrossPorts(t *testing.T) {
 			if tt.wantHealthy && tr.Verdict == VerdictDegraded {
 				t.Errorf("verdict = %s, want it off degraded", tr.Verdict)
 			}
+			// A prediction the pass didn't reach still leads the diagnosis.
+			if f, _, ok := primaryProblemFinding(tr); tt.wantPods == SeverityWarning && (!ok || f.Code != codePolicyWouldDeny) {
+				t.Errorf("primary finding = %+v (found %v), want the standing would-deny", f, ok)
+			}
 		})
 	}
 }
@@ -266,5 +270,57 @@ func TestReconcilePolicySettlesDenyAllWithoutAPinnedPort(t *testing.T) {
 	}
 	if f := tr.Downstream[1].Findings[0]; f.Severity != SeverityWarning {
 		t.Errorf("Pods hop prediction = %s, want it kept: its port isn't pinned", f.Severity)
+	}
+}
+
+// Policies that split a Service's pods each add a deny-all issue to the
+// Service hop. A pass through the Service can't say which pod answered, and a
+// probe that reached only one pod doesn't disprove the other pod's policy, so
+// neither settles them.
+func TestDenyAllSplitAcrossPodsNeedsEveryPodReached(t *testing.T) {
+	svcHop := func() Hop {
+		return Hop{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"}, Edge: "entry:Service", Findings: []Finding{
+			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress (deny-a)"},
+			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress (deny-b)"},
+		}}
+	}
+	warnings := func(h Hop) int {
+		n := 0
+		for _, f := range h.Findings {
+			if f.Code == k8s.NetworkPolicyDenyAllIngressFingerprint && f.Severity == SeverityWarning {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Radar's own probes: one pod reached, the other dropped, then both reached.
+	for _, tt := range []struct {
+		name   string
+		podBOK bool
+		want   int
+	}{{"one pod dropped", false, 2}, {"both pods reached", true, 0}} {
+		pods := Hop{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods", Probes: []probe.Result{
+			{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Port: 80, Path: probe.PathData, OK: true},
+			{Layer: probe.LayerTCP, Target: "10.0.0.6:80", Port: 80, Path: probe.PathData, OK: tt.podBOK},
+		}}
+		tr := &Trace{Downstream: []Hop{svcHop(), pods}}
+		reconcilePolicyFindings(tr)
+		if got := warnings(tr.Downstream[0]); got != tt.want {
+			t.Errorf("%s: %d deny-all warnings left, want %d", tt.name, got, tt.want)
+		}
+	}
+
+	// The in-cluster test goes through the Service: two issues stay.
+	tr := &Trace{
+		Subject:    ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"},
+		Downstream: []Hop{svcHop(), {Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods"}},
+		Routes: []RouteResult{{Route: "rec", Target: "rec:80", Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
+			InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"}}},
+		Coverage: &Coverage{Tested: 1, Passed: 1},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("rec", "rec:80", ""): cleanInClusterPass()})
+	if got := warnings(tr.Downstream[0]); got != 2 {
+		t.Errorf("in-cluster pass through the Service: %d deny-all warnings left, want 2", got)
 	}
 }

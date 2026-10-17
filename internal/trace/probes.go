@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -165,12 +166,11 @@ func reconcilePolicyFindings(t *Trace) {
 		for i := range hops {
 			h := &hops[i]
 			// A deny-all policy issue on the Service in front claims every
-			// port of every pod is blocked, so any data-path pass to its pods
-			// disproves it.
-			if i > 0 && h.Edge == "Service->Pods" && hops[i-1].Resource.Kind == "Service" {
-				if portScopedOutcome(h.Probes, 0).dataOK {
-					downgradeDenyAllIngress(&hops[i-1])
-				}
+			// port of its pods is blocked. Policies can split the pods, each
+			// with its own issue, so settle only when every probed pod was
+			// reached on some port.
+			if i > 0 && h.Edge == "Service->Pods" && hops[i-1].Resource.Kind == "Service" && everyProbedPodReached(h.Probes) {
+				downgradeDenyAllIngress(&hops[i-1])
 			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
 				continue
@@ -244,6 +244,30 @@ func downgradeDenyAllIngress(h *Hop) {
 	}
 	h.Findings = append(kept, note)
 	sortFindingsBySeverity(h.Findings)
+}
+
+// everyProbedPodReached reports whether at least one pod got a data-path probe
+// and every pod that did was reached on at least one port.
+func everyProbedPodReached(probes []probe.Result) bool {
+	reached := map[string]bool{}
+	for _, p := range probes {
+		if p.Skipped || p.Path != probe.PathData {
+			continue
+		}
+		host := p.Target
+		if u, err := url.Parse(p.Target); err == nil && u.Host != "" {
+			host = u.Hostname()
+		} else if h, _, err := net.SplitHostPort(p.Target); err == nil {
+			host = h
+		}
+		reached[host] = reached[host] || p.OK
+	}
+	for _, ok := range reached {
+		if !ok {
+			return false
+		}
+	}
+	return len(reached) > 0
 }
 
 type probeOutcome struct {
