@@ -396,7 +396,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
 			"`unchecked_sources` lists sources Radar couldn't check, so their issues may be " +
 			"missing; don't call them healthy. `helm` means failed or stuck Helm releases; " +
-			"`missing_ref` with `resource` means references to that kind aren't checked (Radar can list it but not watch it). " +
+			"`missing_ref` + `resource`: references to that kind aren't checked. " +
 			"`diagnostic_context.role` marks roots, rollups, symptoms, or context; " +
 			"`related_issues[].count` is the root's affected subset, not the linked issue total. " +
 			"Confidence: `high` declared edge, `medium` lead to verify, `low` heuristic. " +
