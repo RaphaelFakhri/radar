@@ -291,7 +291,6 @@ func InitTestDynamicResourceCache(dynClient dynamic.Interface, resources []APIRe
 	return InitDynamicResourceCache(nil)
 }
 
-
 // ResetTestDynamicState tears down the dynamic cache + discovery singletons
 // and clears the dynamic client. Pairs with InitTestDynamicResourceCache.
 func ResetTestDynamicState() {
