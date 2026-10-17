@@ -112,7 +112,8 @@ type UnsearchedKind struct {
 }
 
 const (
-	// UnsearchedNotIndexed: no kind search scans matches the term.
+	// UnsearchedNotIndexed: the term matched no kind search scans: none of
+	// its typed kinds, and no CRD Radar is watching yet.
 	UnsearchedNotIndexed = "not_indexed"
 	// UnsearchedUnreadable: reading the kind from Radar's cache failed. The
 	// cache may still be loading, or Radar itself may not be allowed to list

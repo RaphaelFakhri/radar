@@ -17,7 +17,7 @@ func TestSearchKindHint(t *testing.T) {
 		{Kind: "IngressClass", Group: "networking.k8s.io", Reason: search.UnsearchedClusterScoped},
 	})
 	for _, want := range []string{
-		"kind:role doesn't name a kind search scans; use the Kind or its plural, or list_resources or get_resource.",
+		"Search has no cached kind matching kind:role; use list_resources kind=role or get_resource. For a short name, try the Kind or its plural.",
 		"Radar couldn't read Certificate from its cache for namespaces b; it may still be loading, or Radar may not be allowed to list it. An empty result for it doesn't mean none exist.",
 		"IngressClass is cluster-scoped and this search was limited to namespaces; use list_resources kind=IngressClass.",
 	} {
