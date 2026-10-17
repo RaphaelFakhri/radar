@@ -256,4 +256,10 @@ func TestFetchResourceConfirmed_StaleHit(t *testing.T) {
 	if obj, _, err := FetchResourceConfirmed(ctx, cache, "secrets", "shop", "db"); obj != nil || !errors.As(err, &unconfirmed) {
 		t.Fatalf("after a context switch: want an unconfirmed error and no object, got obj=%v err=%v", obj, err)
 	}
+
+	// Mid-switch the dynamic cache is already gone; still no stale fallback.
+	ResetTestDynamicState()
+	if obj, _, err := FetchResourceConfirmed(ctx, cache, "secrets", "shop", "db"); obj != nil || !errors.As(err, &unconfirmed) {
+		t.Fatalf("after teardown: want an unconfirmed error and no object, got obj=%v err=%v", obj, err)
+	}
 }

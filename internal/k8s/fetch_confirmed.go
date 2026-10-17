@@ -90,17 +90,18 @@ func FetchResourceConfirmed(ctx context.Context, cache *ResourceCache, kind, nam
 // and returns it in the form FetchResource would: typed, with the cache's
 // transform applied and Helm release Secret values removed.
 func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupVersionResource, namespace, name string) (runtime.Object, error) {
-	dynamicCache := GetDynamicResourceCache()
-	if dynamicCache == nil {
-		return nil, fmt.Errorf("dynamic resource cache not initialized")
-	}
 	// A context switch replaces both caches; reading through a dynamic cache
 	// taken after it would answer from the other cluster. The dynamic cache
 	// is torn down before the typed generation moves, so a matching
 	// generation checked after taking it proves it is cache's cluster. An
-	// answer that arrives after a switch is dropped too.
+	// answer that arrives after a switch is dropped too, and so is a missing
+	// dynamic cache mid-switch.
+	dynamicCache := GetDynamicResourceCache()
 	if !cacheGenerationCurrent(cache.Generation()) {
 		return nil, errClusterChanged
+	}
+	if dynamicCache == nil {
+		return nil, fmt.Errorf("dynamic resource cache not initialized")
 	}
 	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	if !cacheGenerationCurrent(cache.Generation()) {
