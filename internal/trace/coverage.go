@@ -805,18 +805,16 @@ func reconcileInClusterPolicy(t *Trace) {
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
 				continue
 			}
-			// The deny port is the pod-side port, while a route's pass is
-			// on the Service port; compare both.
-			denyPort := hopDenyPort(h.Meta)
-			covered := realPassCoversDenyPort(ports, denyPort)
-			if !covered && i > 0 && t.Downstream[i-1].Resource.Kind == "Service" {
-				for p := range ports {
-					if podPort, ok := podPortForService(&t.Downstream[i-1], h, p); ok && podPort == denyPort {
-						covered = true
-					}
+			// The deny port is a pod port, while a route's pass is on a
+			// Service port: map it through the Service when its ports are
+			// known.
+			passed := ports
+			if i > 0 && t.Downstream[i-1].Resource.Kind == "Service" {
+				if podPorts, ok := passedPodPorts(&t.Downstream[i-1], h, ports); ok {
+					passed = podPorts
 				}
 			}
-			if !covered {
+			if !realPassCoversDenyPort(passed, hopDenyPort(h.Meta)) {
 				continue
 			}
 			idx := findingIndexByCode(h.Findings, codePolicyWouldDeny)
@@ -844,6 +842,45 @@ func reconcileInClusterPolicy(t *Trace) {
 			downgrade(b.start, b.end, ports)
 		}
 	}
+}
+
+// passedPodPorts maps the Service ports a real pass went through to the pod
+// ports they forward to. The in-cluster requests are TCP, so only TCP Service
+// ports count and named targetPorts resolve to TCP container ports. A pass
+// whose port wasn't pinned (0) stays unpinned. false when the Service hop
+// carries no ports to map with.
+func passedPodPorts(svc, pods *Hop, ports map[int32]bool) (map[int32]bool, bool) {
+	if svc.Config == nil || len(svc.Config.Ports) == 0 {
+		return nil, false
+	}
+	isTCP := func(proto string) bool { return proto == "" || strings.EqualFold(proto, "TCP") }
+	out := map[int32]bool{}
+	for p := range ports {
+		if p == 0 {
+			out[0] = true
+			continue
+		}
+		for _, pm := range svc.Config.Ports {
+			if pm.Port != p || !isTCP(pm.Protocol) {
+				continue
+			}
+			podPort, ok := resolvePortMap(pm, func(name string) (int32, bool) {
+				if pods.Config == nil {
+					return 0, false
+				}
+				for _, cp := range pods.Config.ContainerPorts {
+					if cp.Name == name && isTCP(cp.Protocol) {
+						return cp.Port, true
+					}
+				}
+				return 0, false
+			})
+			if ok {
+				out[podPort] = true
+			}
+		}
+	}
+	return out, true
 }
 
 // reconcileInClusterTargetPort downgrades a static svc:targetport-no-listener

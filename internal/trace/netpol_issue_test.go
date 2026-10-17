@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -172,7 +173,7 @@ func TestApplyInClusterResultsSettlesServiceDenyAll(t *testing.T) {
 // port, and settles the Pods hop's prediction when the pass reached the denied
 // pod port, also when the Service port forwards to a different targetPort.
 func TestApplyInClusterResultsSettlesDenyAllAcrossPorts(t *testing.T) {
-	trace := func(denyPort int32, ports ...PortMap) *Trace {
+	trace := func(denyPort, servicePort int32, ports ...PortMap) *Trace {
 		return &Trace{
 			Subject: ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"},
 			Verdict: VerdictDegraded,
@@ -184,27 +185,46 @@ func TestApplyInClusterResultsSettlesDenyAllAcrossPorts(t *testing.T) {
 					Meta:     map[string]any{"policyVerdict": "would-deny", "policyNames": []string{"deny-all"}, "policyDenyPort": denyPort},
 					Findings: []Finding{{Code: codePolicyWouldDeny, Severity: SeverityWarning, Message: "A network rule here would block this traffic"}}},
 			},
-			Routes: []RouteResult{{Route: "rec", Target: "rec:80", Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
+			Routes: []RouteResult{{Route: "rec", Target: fmt.Sprintf("rec:%d", servicePort), Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
 				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/"}}},
 			Coverage: &Coverage{Tested: 1, Passed: 1},
 		}
+	}
+	pass := func(servicePort int32) map[string][]probe.Result {
+		return map[string][]probe.Result{InClusterResultKey("rec", fmt.Sprintf("rec:%d", servicePort), ""): cleanInClusterPass()}
 	}
 	severities := func(tr *Trace) (svc, pods string) {
 		return tr.Downstream[0].Findings[0].Severity, tr.Downstream[1].Findings[0].Severity
 	}
 
 	// Service :80 forwards to targetPort 8080, which the policy denies.
-	tr := trace(8080, PortMap{Port: 80, TargetPort: "8080"})
-	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("rec", "rec:80", ""): cleanInClusterPass()})
+	tr := trace(8080, 80, PortMap{Port: 80, TargetPort: "8080"})
+	ApplyInClusterResults(tr, pass(80))
 	if svc, pods := severities(tr); svc != SeverityInfo || pods != SeverityInfo || tr.Verdict == VerdictDegraded {
 		t.Errorf("targetPort 8080: Service %s, Pods %s, verdict %s; want both info and the verdict off degraded", svc, pods, tr.Verdict)
 	}
 
 	// The prediction is about pod port 9090, which the pass on :80 didn't reach.
-	tr = trace(9090, PortMap{Port: 80, TargetPort: "8080"}, PortMap{Port: 90, TargetPort: "9090"})
-	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("rec", "rec:80", ""): cleanInClusterPass()})
+	tr = trace(9090, 80, PortMap{Port: 80, TargetPort: "8080"}, PortMap{Port: 90, TargetPort: "9090"})
+	ApplyInClusterResults(tr, pass(80))
 	if svc, pods := severities(tr); svc != SeverityInfo || pods != SeverityWarning {
 		t.Errorf("other port: Service %s, Pods %s; want the deny-all settled and the :9090 prediction kept", svc, pods)
+	}
+
+	// A pass on Service port 80 reached pod port 8080, not the denied pod
+	// port 80 that Service port 90 forwards to.
+	tr = trace(80, 80, PortMap{Port: 80, TargetPort: "8080"}, PortMap{Port: 90, TargetPort: "80"})
+	ApplyInClusterResults(tr, pass(80))
+	if _, pods := severities(tr); pods != SeverityWarning {
+		t.Errorf("crossed ports: Pods %s, want the prediction about pod port 80 kept", pods)
+	}
+
+	// The in-cluster request is TCP, so it went through the TCP mapping of
+	// Service port 53, not the UDP one to the denied pod port.
+	tr = trace(5353, 53, PortMap{Port: 53, TargetPort: "5353", Protocol: "UDP"}, PortMap{Port: 53, TargetPort: "8080", Protocol: "TCP"})
+	ApplyInClusterResults(tr, pass(53))
+	if _, pods := severities(tr); pods != SeverityWarning {
+		t.Errorf("UDP mapping: Pods %s, want the prediction about UDP pod port 5353 kept", pods)
 	}
 }
 
