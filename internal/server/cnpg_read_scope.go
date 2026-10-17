@@ -35,7 +35,7 @@ func (s *Server) typedKindScopeWithCandidates(r *http.Request, cache *k8s.Resour
 	if len(assessment.Uncovered) > 0 && len(assessment.Uncovered) == len(allowed) {
 		return integration.KindAccess{State: integration.KindCoverageUncached, Denied: denied, Uncached: uncached}, []string{}
 	}
-	switch assessment.Readiness {
+	switch assessment.TargetReadiness() {
 	case k8score.KindPending:
 		return integration.KindAccess{State: integration.KindCoverageSyncing, Denied: denied, Uncached: uncached}, []string{}
 	case k8score.KindFailed:

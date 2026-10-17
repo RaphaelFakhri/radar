@@ -35,17 +35,37 @@ func TestBootstrapResourcePermissionsRetriesNamespace401BeforeWiring(t *testing.
 
 func TestBootstrapResourcePermissionsPersistent401FailsIntoAuthClassification(t *testing.T) {
 	for _, namespaceFailure := range []bool{false, true} {
-		result := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{}}
+		// Every kind ends disabled by the rejection, as probeResourceAccess
+		// records it: a namespace rejection also sets the kind's ProbeErrors.
 		rejection := apierrors.NewUnauthorized("credential rejected")
+		result := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}}, ProbeErrors: map[string]error{"pods": rejection}}
 		if namespaceFailure {
 			result.NamespaceProbeErrors = map[string]map[string]error{"pods": {"alpha": rejection}}
-		} else {
-			result.ProbeErrors = map[string]error{"pods": rejection}
 		}
 		calls := 0
 		got, err := bootstrapResourcePermissions(context.Background(), func(context.Context, bool) (*PermissionCheckResult, bool) { calls++; return result, true })
 		if got != nil || !apierrors.IsUnauthorized(err) || !isAuthClassification(ClassifyError(err)) || calls != 2 {
 			t.Fatalf("namespace=%v result=%+v err=%v classification=%q calls=%d", namespaceFailure, got, err, ClassifyError(err), calls)
+		}
+	}
+}
+
+// A rejection limited to some probes, while others authenticated, keeps what
+// they granted instead of failing the connection.
+func TestBootstrapResourcePermissionsPartial401KeepsAuthenticatedGrants(t *testing.T) {
+	rejection := apierrors.NewUnauthorized("rejected by a namespace-aware gateway")
+	for name, result := range map[string]*PermissionCheckResult{
+		"one namespace": {Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}}, NamespaceProbeErrors: map[string]map[string]error{"pods": {"alpha": rejection}}},
+		"one kind":      {Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}},
+		"beside denial": {Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}},
+	} {
+		calls := 0
+		got, err := bootstrapResourcePermissions(context.Background(), func(_ context.Context, retry bool) (*PermissionCheckResult, bool) {
+			calls++
+			return result, true
+		})
+		if err != nil || got != result || calls != 2 {
+			t.Fatalf("%s: result=%+v err=%v calls=%d", name, got, err, calls)
 		}
 	}
 }
