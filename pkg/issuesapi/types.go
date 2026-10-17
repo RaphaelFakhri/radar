@@ -335,6 +335,23 @@ type RecentChange struct {
 	ConsumedBy []string `json:"consumed_by,omitempty"`
 }
 
+// CreatedObjects is one run of plain creates in a namespace, listed compactly
+// instead of one RecentChange row each. A plain create row carries only the
+// object, its creation time and, for a ConfigMap, its consumers; its other
+// fields are constant (changeType and summary "add", change_category
+// lifecycle, rank_reason "resource create/delete for config or desired
+// state"). Each Objects line is "+<seconds after First>s Kind/name", with
+// " (used by Kind/name, ...)" appended when the row had consumed_by. A member's
+// timestamp is First plus its offset, in First's zone; its apiVersion is
+// APIVersions[Kind] (absent when the row had none).
+type CreatedObjects struct {
+	Namespace   string            `json:"namespace"`
+	First       string            `json:"first"`
+	Count       int               `json:"count"`
+	APIVersions map[string]string `json:"apiVersions,omitempty"`
+	Objects     []string          `json:"objects"`
+}
+
 type ClusterContext struct {
 	DNS *ClusterDNSContext `json:"dns,omitempty"`
 }

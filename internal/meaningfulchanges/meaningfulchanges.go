@@ -915,7 +915,7 @@ func classify(e timeline.TimelineEvent) (issuesapi.ChangeCategory, string) {
 			if e.EventType == timeline.EventTypeAdd && e.Reason == timeline.ReasonRecreated && e.Diff != nil && len(e.Diff.Fields) > 0 {
 				return issuesapi.ChangeCategorySpecConfig, "recreated with desired-state or configuration changes"
 			}
-			return issuesapi.ChangeCategoryLifecycle, "resource create/delete for config or desired state"
+			return issuesapi.ChangeCategoryLifecycle, lifecycleRankReason
 		}
 		return "", ""
 	}

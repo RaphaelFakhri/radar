@@ -268,12 +268,13 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"universal relevance verdict. Helm operation entries rank by category and recency " +
 			"and are not raised by this flag. This is " +
 			"often faster than reading " +
-			"ReplicaSet histories or individual audit/log streams, especially when issues " +
+			"ReplicaSet histories or audit/log streams, especially when issues " +
 			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
-			"filter by namespace, kind, or name when you know the scope. Omit namespace when " +
+			"filter by namespace, kind, or name when you know the scope. Runs of 5+ plain creates " +
+			"are listed in `created` as `+<s>s Kind/name` lines, counted in limit. " +
+			"Omit namespace when " +
 			"the relevant change may be outside the app namespace. Also includes native Helm " +
-			"release deployment/operation history as `source: helm` changes, so failed upgrades, " +
-			"rollbacks, and successful current revisions appear in the same recent-change feed. " +
+			"history as `source: helm` changes (failed upgrades, rollbacks, current revisions). " +
 			"If `sourcesErrored` includes helm, treat the result as partial rather than proof " +
 			"that no Helm deployment happened. Use get_helm_release include=history,operations " +
 			"for the full Helm revision trail. Other edited fields list under `other spec " +
@@ -1557,13 +1558,21 @@ func handleGetChanges(ctx context.Context, req *mcp.CallToolRequest, input getCh
 	} else if recentResult.OutputCapped || totalMatched > len(changes) {
 		resp.NarrowHint = "Radar observed the full requested window but returned only its highest-ranked changes; lower-ranked changes were omitted." + narrowAdvice
 	}
+	// After the cap and the hint, so both still describe every returned
+	// change. A name= query is one object's history and stays as rows.
+	if input.Name == "" {
+		resp.Changes, resp.Created = meaningfulchanges.CompactCreates(resp.Changes)
+	}
 	return toJSONResult(resp)
 }
 
 type getChangesResponseMCP struct {
-	Changes        []mcpChange `json:"changes"`
-	NarrowHint     string      `json:"narrowHint,omitempty"`
-	SourcesErrored []string    `json:"sourcesErrored,omitempty"`
+	Changes []mcpChange `json:"changes"`
+	// Created lists runs of plain creates compactly; see
+	// issuesapi.CreatedObjects. Its objects count toward limit.
+	Created        []issuesapi.CreatedObjects `json:"created,omitempty"`
+	NarrowHint     string                     `json:"narrowHint,omitempty"`
+	SourcesErrored []string                   `json:"sourcesErrored,omitempty"`
 }
 
 func handleGetTopology(ctx context.Context, req *mcp.CallToolRequest, input topologyInput) (*mcp.CallToolResult, any, error) {
