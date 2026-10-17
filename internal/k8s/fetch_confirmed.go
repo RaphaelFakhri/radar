@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -79,8 +80,8 @@ func FetchResourceConfirmed(ctx context.Context, cache *ResourceCache, kind, nam
 }
 
 // directTypedGet reads one built-in object from the cluster cache belongs to
-// and returns it in the typed form the cache would hold, with the cache's
-// transform applied so it is stripped the same way.
+// and returns it in the form FetchResource would: typed, with the cache's
+// transform applied and Helm release Secret values removed.
 func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupVersionResource, namespace, name string) (runtime.Object, error) {
 	dynamicCache := GetDynamicResourceCache()
 	if dynamicCache == nil {
@@ -89,11 +90,15 @@ func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupV
 	// A context switch replaces both caches; reading through a dynamic cache
 	// taken after it would answer from the other cluster. The dynamic cache
 	// is torn down before the typed generation moves, so a matching
-	// generation checked after taking it proves it is cache's cluster.
+	// generation checked after taking it proves it is cache's cluster. An
+	// answer that arrives after a switch is dropped too.
 	if !cacheGenerationCurrent(cache.Generation()) {
 		return nil, fmt.Errorf("the cluster connection changed during the read")
 	}
 	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
+	if !cacheGenerationCurrent(cache.Generation()) {
+		return nil, fmt.Errorf("the cluster connection changed during the read")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +112,9 @@ func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupV
 	out, err := k8score.DropManagedFields(typed)
 	if err != nil {
 		return nil, err
+	}
+	if secret, ok := out.(*corev1.Secret); ok {
+		return k8score.WithoutHelmReleaseValues(secret), nil
 	}
 	return out.(runtime.Object), nil
 }
