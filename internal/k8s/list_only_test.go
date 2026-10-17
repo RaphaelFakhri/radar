@@ -57,7 +57,10 @@ func newListOnlyCache(t *testing.T, listOnly []string, objects ...runtime.Object
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	return &ResourceCache{ResourceCache: core}
+	cacheMu.Lock()
+	gen := cacheGeneration
+	cacheMu.Unlock()
+	return &ResourceCache{ResourceCache: core, generation: gen}
 }
 
 func newListOnlySecretsCache(t *testing.T, listOnly bool, objects ...runtime.Object) *ResourceCache {
@@ -153,6 +156,28 @@ func TestFetchResourceConfirmed_ListOnlyMiss(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "periodic list") {
 		t.Fatalf("error should say why the cache could not answer: %v", err)
+	}
+}
+
+// After a context switch the dynamic cache belongs to another cluster; a
+// confirmation read through it must not answer for the old cache.
+func TestFetchResourceConfirmed_RefusesAfterContextSwitch(t *testing.T) {
+	defer ResetTestDynamicState()
+	cache := newListOnlySecretsCache(t, true)
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	other := &corev1.Secret{TypeMeta: metav1.TypeMeta{Kind: "Secret", APIVersion: "v1"}, ObjectMeta: metav1.ObjectMeta{Name: "only-on-b", Namespace: "shop"}}
+	if err := InitTestDynamicResourceCache(dynamicfake.NewSimpleDynamicClient(scheme, other), nil); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	cacheMu.Lock()
+	cacheGeneration++
+	cacheMu.Unlock()
+
+	_, _, err := FetchResourceConfirmed(context.Background(), cache, "secrets", "shop", "only-on-b")
+	var unconfirmed *CacheUnconfirmedError
+	if !errors.As(err, &unconfirmed) {
+		t.Fatalf("want an unconfirmed error after the generation moved, got %v", err)
 	}
 }
 
