@@ -6,8 +6,9 @@
 // maps a renamed code it can still receive from an older Radar.
 //
 // A code names its subject and condition. Where whose limit it is changes the
-// remedy, the prefix names that identity: caller_ for the caller's own access,
-// collector_ for Radar's own Kubernetes identity and what it collects. kind_
+// remedy, the prefix names that identity: user_ for the access of the user
+// asking (a person, or an agent acting as one), radar_ for Radar's own
+// Kubernetes identity and what it collects. kind_
 // codes are a kind's loading lifecycle; namespace_ and outside_ codes are how
 // the request targeted namespaces; cluster_ and connection_ are Radar's
 // cluster connection; the rest describe the request or the answer itself.
@@ -20,40 +21,40 @@ import "slices"
 type Code string
 
 const (
-	// CallerForbidden: the caller's own RBAC denies the exact operation requested.
-	CallerForbidden Code = "caller_forbidden"
-	// CallerNoNamespaceAccess: the caller's access reaches no namespace in the
-	// request's scope (Radar's membership check: the caller can list pods or
-	// deployments there). A namespace the caller named and can't see is
-	// CallerNamespaceNotVisible.
-	CallerNoNamespaceAccess Code = "caller_no_namespace_access"
-	// CallerPermissionCheckFailed: Radar could not complete the caller's permission
+	// UserForbidden: the user's own RBAC denies the exact operation requested.
+	UserForbidden Code = "user_forbidden"
+	// UserNoNamespaceAccess: the user's access reaches no namespace in the
+	// request's scope (Radar's membership check: the user can list pods or
+	// deployments there). A namespace the user named and can't see is
+	// UserNamespaceNotVisible.
+	UserNoNamespaceAccess Code = "user_no_namespace_access"
+	// UserPermissionCheckFailed: Radar could not complete the user's permission
 	// check. It is not a denial, and a retry can succeed.
-	CallerPermissionCheckFailed Code = "caller_permission_check_failed"
+	UserPermissionCheckFailed Code = "user_permission_check_failed"
 
-	// CollectorForbidden: Kubernetes refused Radar's own identity (its service
-	// account or kubeconfig user). Granting the caller access does not help.
-	CollectorForbidden Code = "collector_forbidden"
-	// CollectorCredentialsRejected: Kubernetes rejected Radar's own
+	// RadarForbidden: Kubernetes refused Radar's own identity (its service
+	// account or kubeconfig user). Granting the user access does not help.
+	RadarForbidden Code = "radar_forbidden"
+	// RadarCredentialsRejected: Kubernetes rejected Radar's own
 	// credentials (HTTP 401).
-	CollectorCredentialsRejected Code = "collector_credentials_rejected"
-	// CollectorNamespaceNotCollected: the target reaches namespaces Radar's collector
+	RadarCredentialsRejected Code = "radar_credentials_rejected"
+	// RadarNamespaceNotCollected: the target reaches namespaces Radar
 	// does not collect.
-	CollectorNamespaceNotCollected Code = "collector_namespace_not_collected"
+	RadarNamespaceNotCollected Code = "radar_namespace_not_collected"
 
 	// KindSyncPending: the kind is still loading.
 	KindSyncPending Code = "kind_sync_pending"
 	// KindSyncTimedOut: the kind's initial load did not finish by its deadline.
 	// Radar keeps trying and it may still finish, but repeating the request
-	// does not restart it; if it persists, Radar's collector connection or
+	// does not restart it; if it persists, Radar's connection or
 	// list/watch permissions need attention.
 	KindSyncTimedOut Code = "kind_sync_timed_out"
 	// KindWatchStartFailed: the kind's watch failed to start. A request that names
 	// the kind starts it again.
 	KindWatchStartFailed Code = "kind_watch_start_failed"
-	// CollectorKindNotWatched: Radar has no watch for the kind, and nothing more precise
+	// RadarKindNotWatched: Radar has no watch for the kind, and nothing more precise
 	// is known.
-	CollectorKindNotWatched Code = "collector_kind_not_watched"
+	RadarKindNotWatched Code = "radar_kind_not_watched"
 	// KindUnknown: neither the built-in catalog nor discovery resolves the kind.
 	KindUnknown Code = "kind_unknown"
 	// KindNotWatchable: the API cannot be list/watched, so Radar cannot collect
@@ -62,13 +63,13 @@ const (
 
 	// OutsideNamespacePin: the target is outside Radar's --namespace-scope pin.
 	OutsideNamespacePin Code = "outside_namespace_pin"
-	// OutsideNamespaceSelection: the target is outside the caller's saved
+	// OutsideNamespaceSelection: the target is outside the user's saved
 	// namespace selection.
 	OutsideNamespaceSelection Code = "outside_namespace_selection"
-	// CallerNamespaceNotVisible: the namespace is not among those the caller can
+	// UserNamespaceNotVisible: the namespace is not among those the user can
 	// see, or does not exist; the code does not say which.
-	CallerNamespaceNotVisible Code = "caller_namespace_not_visible"
-	// NamespaceNotFound: the namespace does not exist. Only a caller who can
+	UserNamespaceNotVisible Code = "user_namespace_not_visible"
+	// NamespaceNotFound: the namespace does not exist. Only a user who can
 	// see every namespace is told this.
 	NamespaceNotFound Code = "namespace_not_found"
 	// NamespaceRequired: a get of a namespaced kind named no namespace.
@@ -104,7 +105,7 @@ type Action string
 const (
 	// ActionRetry: the same request may succeed later; nothing has to change.
 	ActionRetry Action = "retry"
-	// ActionWait: retry later; if it persists, Radar's collector needs
+	// ActionWait: retry later; if it persists, Radar needs
 	// attention.
 	ActionWait Action = "wait"
 	// ActionRequestKind: a request that names the kind starts its watch again.
@@ -115,40 +116,40 @@ const (
 	ActionCheckTarget Action = "check_target"
 	// ActionChangeRequest: the request itself has to change.
 	ActionChangeRequest Action = "change_request"
-	// ActionCallerAccess: the caller's own Kubernetes access has to change.
-	ActionCallerAccess Action = "caller_access"
-	// ActionCollectorConfig: Radar's identity, credentials or collection
+	// ActionUserAccess: the user's own Kubernetes access has to change.
+	ActionUserAccess Action = "user_access"
+	// ActionRadarConfig: Radar's identity, credentials or collection
 	// configuration has to change.
-	ActionCollectorConfig Action = "collector_config"
+	ActionRadarConfig Action = "radar_config"
 	// ActionNone: the code is an answer, not a failure.
 	ActionNone Action = "none"
 )
 
 var actions = map[Code]Action{
-	CallerForbidden:                ActionCallerAccess,
-	CallerNoNamespaceAccess:        ActionCallerAccess,
-	CallerPermissionCheckFailed:    ActionRetry,
-	CollectorForbidden:             ActionCollectorConfig,
-	CollectorCredentialsRejected:   ActionCollectorConfig,
-	CollectorNamespaceNotCollected: ActionCollectorConfig,
-	KindSyncPending:                ActionRetry,
-	KindSyncTimedOut:               ActionWait,
-	KindWatchStartFailed:           ActionRequestKind,
-	CollectorKindNotWatched:        ActionCollectorConfig,
-	KindUnknown:                    ActionChangeRequest,
-	KindNotWatchable:               ActionChangeRequest,
-	OutsideNamespacePin:            ActionChangeRequest,
-	OutsideNamespaceSelection:      ActionChangeRequest,
-	CallerNamespaceNotVisible:      ActionChangeRequest,
-	NamespaceNotFound:              ActionChangeRequest,
-	NamespaceRequired:              ActionChangeRequest,
-	ObjectNotFound:                 ActionNone,
-	ListTooLarge:                   ActionChangeRequest,
-	FilterEvalFailed:               ActionChangeRequest,
-	ClusterConnecting:              ActionRetry,
-	ClusterDisconnected:            ActionCollectorConfig,
-	ConnectionChanged:              ActionCheckTarget,
-	ReadError:                      ActionRetry,
+	UserForbidden:              ActionUserAccess,
+	UserNoNamespaceAccess:      ActionUserAccess,
+	UserPermissionCheckFailed:  ActionRetry,
+	RadarForbidden:             ActionRadarConfig,
+	RadarCredentialsRejected:   ActionRadarConfig,
+	RadarNamespaceNotCollected: ActionRadarConfig,
+	KindSyncPending:            ActionRetry,
+	KindSyncTimedOut:           ActionWait,
+	KindWatchStartFailed:       ActionRequestKind,
+	RadarKindNotWatched:        ActionRadarConfig,
+	KindUnknown:                ActionChangeRequest,
+	KindNotWatchable:           ActionChangeRequest,
+	OutsideNamespacePin:        ActionChangeRequest,
+	OutsideNamespaceSelection:  ActionChangeRequest,
+	UserNamespaceNotVisible:    ActionChangeRequest,
+	NamespaceNotFound:          ActionChangeRequest,
+	NamespaceRequired:          ActionChangeRequest,
+	ObjectNotFound:             ActionNone,
+	ListTooLarge:               ActionChangeRequest,
+	FilterEvalFailed:           ActionChangeRequest,
+	ClusterConnecting:          ActionRetry,
+	ClusterDisconnected:        ActionRadarConfig,
+	ConnectionChanged:          ActionCheckTarget,
+	ReadError:                  ActionRetry,
 }
 
 // ActionFor reports what resolves c, and false for an undeclared code.
@@ -175,7 +176,7 @@ func Codes() []Code {
 
 // AffectsWholeCluster reports a code that blocks every read from this Radar,
 // not just one kind or namespace — the only codes that should make a fleet
-// client treat the cluster itself as failing. CollectorCredentialsRejected is
+// client treat the cluster itself as failing. RadarCredentialsRejected is
 // not one: a single read can be rejected while others succeed, as when a
 // token rotates mid-read. Once Radar confirms its credentials are rejected,
 // its connection is down and reads report ClusterDisconnected.
@@ -184,17 +185,17 @@ func AffectsWholeCluster(c Code) bool {
 }
 
 // precedence orders codes for an error that has to name one, by what the
-// caller should do first: fix a request no retry can answer, then wait for
+// user should do first: fix a request no retry can answer, then wait for
 // what resolves by itself — a retry then returns at least part of the answer —
 // then act on their own access, then on Radar's limits.
 var precedence = []Code{
 	NamespaceRequired, KindUnknown, KindNotWatchable, ListTooLarge,
 	ClusterDisconnected, ClusterConnecting, ConnectionChanged,
-	KindSyncPending, CallerPermissionCheckFailed, KindWatchStartFailed,
-	CallerForbidden, CallerNoNamespaceAccess, CallerNamespaceNotVisible, NamespaceNotFound,
+	KindSyncPending, UserPermissionCheckFailed, KindWatchStartFailed,
+	UserForbidden, UserNoNamespaceAccess, UserNamespaceNotVisible, NamespaceNotFound,
 	OutsideNamespacePin, OutsideNamespaceSelection,
-	CollectorCredentialsRejected, CollectorForbidden, CollectorKindNotWatched,
-	KindSyncTimedOut, CollectorNamespaceNotCollected, FilterEvalFailed, ReadError,
+	RadarCredentialsRejected, RadarForbidden, RadarKindNotWatched,
+	KindSyncTimedOut, RadarNamespaceNotCollected, FilterEvalFailed, ReadError,
 	ObjectNotFound,
 }
 
