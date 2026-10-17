@@ -62,3 +62,12 @@ func TestKindsDeduplicatesByKindAndGroup(t *testing.T) {
 		t.Fatalf("set = %+v", set)
 	}
 }
+
+func TestObjectsSortAndDeduplicate(t *testing.T) {
+	b := ObjectRef{Kind: "Pod", Namespace: "beta", Name: "web"}
+	a := ObjectRef{Kind: "Pod", Namespace: "alpha", Name: "web"}
+	set := Objects([]ObjectRef{b, a, b}, 2, 8)
+	if set.Count != 2 || len(set.Names) != 2 || set.Names[0] != a || set.Names[1] != b {
+		t.Fatalf("set = %+v, want alpha/web then beta/web", set)
+	}
+}

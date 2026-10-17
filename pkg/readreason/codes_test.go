@@ -120,3 +120,18 @@ func TestActionsFixtureMatchesTable(t *testing.T) {
 		t.Fatalf("%s is stale; rerun with READREASON_UPDATE=1", actionsFixture)
 	}
 }
+
+// Only a code that blocks every read marks the cluster itself as failing. A
+// rejected credential can be one read's, as when a token rotates mid-read.
+func TestAffectsWholeCluster(t *testing.T) {
+	for _, c := range []Code{ClusterConnecting, ClusterDisconnected} {
+		if !AffectsWholeCluster(c) {
+			t.Errorf("AffectsWholeCluster(%s) = false", c)
+		}
+	}
+	for _, c := range []Code{CollectorCredentialsRejected, CollectorForbidden, ConnectionChanged, KindSyncPending, CallerForbidden} {
+		if AffectsWholeCluster(c) {
+			t.Errorf("AffectsWholeCluster(%s) = true", c)
+		}
+	}
+}

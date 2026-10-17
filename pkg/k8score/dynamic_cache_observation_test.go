@@ -603,13 +603,13 @@ func TestReadServerChangesWhenAClusterWideInformerReplacesNamespaceOnes(t *testi
 	}
 }
 
-// A 401 rejects Radar's credentials, not one scope, so scope probing stops on
-// it instead of narrowing the kind to the namespaces that answered, and the
-// observation says credentials were rejected rather than access denied.
-func TestProbeScopesStopsOnRejectedCredentials(t *testing.T) {
+// A 401 rejects Radar's credentials, not one scope, so every probe stops on it
+// instead of narrowing the kind to the namespaces that answered, and each path
+// that records a failed probe says credentials were rejected, not access denied.
+func TestProbesStopOnRejectedCredentials(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	for name, rejected := range map[string]string{"cluster-wide probe": "", "a fallback namespace": "beta"} {
-		t.Run(name, func(t *testing.T) {
+		newCache := func(t *testing.T, fallbacks ...string) *DynamicResourceCache {
 			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
 			dyn.PrependReactor("list", "widgets", func(action k8stesting.Action) (bool, runtime.Object, error) {
 				switch ns := action.GetNamespace(); {
@@ -620,21 +620,75 @@ func TestProbeScopesStopsOnRejectedCredentials(t *testing.T) {
 				}
 				return false, nil, nil
 			})
-			cache, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, NamespaceFallbacks: []string{"alpha", "beta"}})
+			if len(fallbacks) == 0 {
+				fallbacks = []string{"alpha", "beta"}
+			}
+			cache, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, NamespaceFallbacks: fallbacks})
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(cache.Stop)
-			scopes, _, err := cache.probeScopes(gvr, "")
-			if !apierrors.IsUnauthorized(err) || scopes != nil {
-				t.Fatalf("scopes=%v err=%v, want the credential rejection", scopes, err)
-			}
-			if err := cache.EnsureWatching(gvr); !apierrors.IsUnauthorized(err) {
-				t.Fatalf("EnsureWatching err=%v, want the credential rejection", err)
-			}
+			return cache
+		}
+		rejectedCredentials := func(t *testing.T, cache *DynamicResourceCache) {
+			t.Helper()
 			if got := cache.Observation(gvr); got.State != DynamicObservationDenied || got.ReasonCode != "credentials_rejected" {
 				t.Fatalf("observation=%+v, want a credential rejection, not an access denial", got)
 			}
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Run("probeScopes", func(t *testing.T) {
+				scopes, _, err := newCache(t).probeScopes(gvr, "")
+				if !apierrors.IsUnauthorized(err) || scopes != nil {
+					t.Fatalf("scopes=%v err=%v, want the credential rejection", scopes, err)
+				}
+			})
+			t.Run("EnsureWatching", func(t *testing.T) {
+				cache := newCache(t)
+				if err := cache.EnsureWatching(gvr); !apierrors.IsUnauthorized(err) {
+					t.Fatalf("EnsureWatching err=%v, want the credential rejection", err)
+				}
+				rejectedCredentials(t, cache)
+			})
+			t.Run("WarmupParallel", func(t *testing.T) {
+				cache := newCache(t)
+				cache.WarmupParallel([]schema.GroupVersionResource{gvr}, time.Second)
+				rejectedCredentials(t, cache)
+			})
+			t.Run("probeCount", func(t *testing.T) {
+				// The count probe samples the first fallback namespace that
+				// answers, so the rejected one comes first here.
+				cache := newCache(t, "beta", "alpha")
+				count, err := cache.probeCount(gvr)
+				if count != -1 || !apierrors.IsUnauthorized(err) {
+					t.Fatalf("count=%d err=%v, want -1 with the credential rejection", count, err)
+				}
+				if !cache.retainAuthProbeFailure(gvr, "", true, err) {
+					t.Fatal("the count probe's rejection was not recorded")
+				}
+				rejectedCredentials(t, cache)
+			})
 		})
+	}
+}
+
+// Same compares informer sets: an all-namespaces read unions per-namespace
+// informers from a map, so equal sets can arrive in different orders.
+func TestReadServerSameIgnoresOrder(t *testing.T) {
+	a, b, c := &informerEntry{}, &informerEntry{}, &informerEntry{}
+	for name, tc := range map[string]struct {
+		x, y []*informerEntry
+		want bool
+	}{
+		"same order":      {[]*informerEntry{a, b}, []*informerEntry{a, b}, true},
+		"other order":     {[]*informerEntry{a, b}, []*informerEntry{b, a}, true},
+		"one replaced":    {[]*informerEntry{a, b}, []*informerEntry{a, c}, false},
+		"one more":        {[]*informerEntry{a}, []*informerEntry{a, b}, false},
+		"both empty":      {nil, nil, true},
+		"empty and other": {nil, []*informerEntry{a}, false},
+	} {
+		if got := (DynamicReadServer{entries: tc.x}).Same(DynamicReadServer{entries: tc.y}); got != tc.want {
+			t.Errorf("%s: Same = %v, want %v", name, got, tc.want)
+		}
 	}
 }
