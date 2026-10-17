@@ -593,7 +593,7 @@ otherwise the code says why it couldn't look.
 | `caller_namespace_not_visible` | A namespace you named is not among those you can see, or does not exist; the code doesn't say which. | Check the name, or your access |
 | `caller_permission_check_failed` | Radar could not complete your permission check. | Retry |
 | `collector_forbidden` | Kubernetes refused Radar's service account or kubeconfig identity. | Radar's access — granting yours does not help |
-| `collector_credentials_rejected` | Kubernetes rejected Radar's credentials. | Refresh Radar's credentials |
+| `collector_credentials_rejected` | Kubernetes rejected Radar's credentials on this read. If they stay rejected, Radar's connection goes down and reads report `cluster_disconnected`. | Refresh Radar's credentials |
 | `collector_namespace_not_collected` | The namespace is outside what Radar collects. | Radar's collection (`--namespaces`, `--max-scope-candidates`, or its RBAC) |
 | `kind_sync_pending` | The kind is still loading. | Retry shortly |
 | `kind_sync_timed_out` | The kind's initial load missed its deadline; Radar keeps trying. | Retry later; if it persists, Radar's connection or list/watch access |

@@ -2263,15 +2263,17 @@ func TestResourceReadsTypedReadinessIsPerNamespace(t *testing.T) {
 	}
 }
 
-// Every way Radar can be without a cluster answers with a code, so an agent
-// can tell waiting from fixing credentials.
+// Every way Radar can be without a cluster answers with a code that marks the
+// whole cluster as failing; the sentence says whether to wait or to fix
+// credentials. A confirmed credential rejection is the connection's, not one
+// read's, so it is not collector_credentials_rejected.
 func TestNotConnectedErrorsCarryCodes(t *testing.T) {
 	for _, tc := range []struct {
 		status k8s.ConnectionStatus
 		want   readreason.Code
 	}{
 		{k8s.ConnectionStatus{State: k8s.StateConnecting}, readreason.ClusterConnecting},
-		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "401", ErrorType: "auth-rejected"}, readreason.CollectorCredentialsRejected},
+		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "401", ErrorType: "auth-rejected"}, readreason.ClusterDisconnected},
 		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "plugin hung", ErrorType: "auth-plugin-stuck"}, readreason.ClusterDisconnected},
 		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "dial tcp: refused"}, readreason.ClusterDisconnected},
 	} {
@@ -2279,7 +2281,7 @@ func TestNotConnectedErrorsCarryCodes(t *testing.T) {
 		err := errNotConnected()
 		restore()
 		var re *readError
-		if !errors.As(err, &re) || re.code != tc.want {
+		if !errors.As(err, &re) || re.code != tc.want || !readreason.AffectsWholeCluster(re.code) {
 			t.Fatalf("%+v: got %v, want %s", tc.status, err, tc.want)
 		}
 	}
