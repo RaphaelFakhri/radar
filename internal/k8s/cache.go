@@ -380,7 +380,7 @@ func InitResourceCache(ctx context.Context) error {
 		// runs under contextOpMu, so the operation that superseded the probe is
 		// already tearing this cache down, and the ctx.Err() check below drops
 		// out of the boot path that does not hold that lock.
-		permResult, probeErr := bootstrapResourcePermissions(rbacCtx, freshResourcePermissions)
+		probe, probeErr := bootstrapResourcePermissions(rbacCtx, freshResourcePermissions)
 		cancel()
 		logTiming("    Resource access probes: %v", time.Since(rbacStart))
 
@@ -393,6 +393,11 @@ func InitResourceCache(ctx context.Context) error {
 			initErr = ctx.Err()
 			return
 		}
+		// Only the result the informers are built from becomes the
+		// process-wide one; a retry the probe budget cut short is never
+		// published.
+		publishResourcePermissions(probe)
+		permResult := probe.result
 
 		// scopes drives which informers are created and at what scope.
 		// k8score routes each kind through the matching factory (cluster-wide
@@ -2297,35 +2302,33 @@ func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
 //   - Budget expiry otherwise keeps the grants the probe established.
 //     Cancellation returns ctx.Err(), so a superseded initialization wires
 //     nothing.
-func bootstrapResourcePermissions(ctx context.Context, check func(context.Context, bool) (*PermissionCheckResult, bool)) (*PermissionCheckResult, error) {
-	first, _ := check(ctx, false)
-	rejected := permissionUnauthorized(first)
+func bootstrapResourcePermissions(ctx context.Context, probe func(context.Context, bool) permissionProbe) (permissionProbe, error) {
+	first := probe(ctx, false)
+	rejected := permissionUnauthorized(first.result)
 	if rejected != nil && ctx.Err() == nil {
-		retry, _ := check(ctx, true)
+		retry := probe(ctx, true)
 		if ctx.Err() == nil {
-			if err := permissionUnauthorized(retry); err != nil && credentialsRejectedEverywhere(retry) {
-				return nil, fmt.Errorf("resource access probe rejected credentials: %w", err)
+			if err := permissionUnauthorized(retry.result); err != nil && credentialsRejectedEverywhere(retry.result) {
+				return permissionProbe{}, fmt.Errorf("resource access probe rejected credentials: %w", err)
 			}
 			return retry, nil
 		}
 	}
 	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
+		return permissionProbe{}, err
 	}
-	if rejected != nil && credentialsRejectedEverywhere(first) {
-		return nil, fmt.Errorf("resource access probe rejected credentials: %w", rejected)
+	if rejected != nil && credentialsRejectedEverywhere(first.result) {
+		return permissionProbe{}, fmt.Errorf("resource access probe rejected credentials: %w", rejected)
 	}
 	return first, nil
 }
 
-// freshResourcePermissions is the startup probe. A retry drops the cached
-// result first: it holds the very rejection being retried, and a retry that
-// read it back would never see refreshed credentials.
-func freshResourcePermissions(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
-	if retry {
-		InvalidateResourcePermissionsCache()
-	}
-	return CheckResourcePermissions(ctx)
+// freshResourcePermissions is the startup probe. It publishes nothing: startup
+// publishes the result it picks. A retry bypasses the cached result, which may
+// hold the very rejection being retried, without bumping the generation, so
+// the first result can still be published if the retry is discarded.
+func freshResourcePermissions(ctx context.Context, retry bool) permissionProbe {
+	return probeResourcePermissions(ctx, retry)
 }
 
 // credentialsRejectedEverywhere reports a probe in which no kind

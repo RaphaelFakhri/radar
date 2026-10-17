@@ -985,11 +985,32 @@ func resolveProbeGVRs(p resourceProbe) []schema.GroupVersionResource {
 // SelfSubjectAccessReview is one indirection too many — it can disagree with
 // reality on clusters using webhook authorizers (e.g. GKE IAM).
 func CheckResourcePermissions(ctx context.Context) (*PermissionCheckResult, bool) {
+	probe := probeResourcePermissions(ctx, false)
+	return probe.result, publishResourcePermissions(probe)
+}
+
+// permissionProbe is a resource-access probe's result before it is published
+// as the process-wide permission result. Startup probes, picks one result and
+// publishes only that, so a discarded probe never becomes what every later
+// reader of GetCachedPermissionResult sees.
+type permissionProbe struct {
+	result    *PermissionCheckResult
+	hadErrors bool
+	// gen is the generation the probe started under; publishing checks it.
+	gen uint64
+	// unpublished is false for a result that is already the cache's, or that
+	// describes nothing to publish (no client).
+	unpublished bool
+}
+
+// probeResourcePermissions probes without publishing. It serves a fresh cached
+// result unless bypassCache is set.
+func probeResourcePermissions(ctx context.Context, bypassCache bool) permissionProbe {
 	resourcePermsMu.RLock()
-	if cachedPermResult != nil && time.Now().Before(resourcePermsExpiry) {
+	if !bypassCache && cachedPermResult != nil && time.Now().Before(resourcePermsExpiry) {
 		result := clonePermissionCheckResult(cachedPermResult)
 		resourcePermsMu.RUnlock()
-		return result, true
+		return permissionProbe{result: result}
 	}
 	// Captured before any probe input is read. The publish check retires this
 	// result if the generation moved since, so a writer that changes an input
@@ -1010,7 +1031,7 @@ func CheckResourcePermissions(ctx context.Context) (*PermissionCheckResult, bool
 	if GetClient() == nil || dyn == nil {
 		log.Printf("Warning: K8s client not initialized, returning no resource permissions")
 		// Current: nothing superseded this, there is simply nothing to probe.
-		return &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{}}, true
+		return permissionProbe{result: &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{}}}
 	}
 
 	forceNamespace := ForceNamespaceScope
@@ -1025,29 +1046,33 @@ func CheckResourcePermissions(ctx context.Context) (*PermissionCheckResult, bool
 
 	result, hadErrors := probeResourceAccess(ctx, dyn, scopeNamespaces, forceNamespace)
 	result.ScopeCandidatesTruncated = scopeCandidatesIncomplete
+	return permissionProbe{result: result, hadErrors: hadErrors, gen: probeGen, unpublished: true}
+}
 
-	resourcePermsMu.Lock()
-	if resourcePermsGen != probeGen {
-		currentGen := resourcePermsGen
-		resourcePermsMu.Unlock()
-		// The cluster or the namespace scope changed while this probe was in
-		// flight, so it describes something that is no longer current. Return
-		// it to the caller, since a caller torn down alongside the probe stays
-		// self-consistent with the client it already captured, but leave the
-		// cache to the probe that ran against the current one.
-		log.Printf("[perms] discarding probe result: the cluster or scope changed while it was in flight (generation %d→%d)", probeGen, currentGen)
-		return result, false
+// publishResourcePermissions makes a probe's result the process-wide one and
+// reports whether it is current. A probe that started before the cluster or
+// namespace scope last changed describes something no longer current: the
+// caller may still use it, since a caller torn down alongside the probe stays
+// self-consistent with the client it captured, but the cache is left to the
+// probe that ran against the current one.
+func publishResourcePermissions(probe permissionProbe) bool {
+	if !probe.unpublished {
+		return true
 	}
-	cachedPermResult = result
+	resourcePermsMu.Lock()
+	defer resourcePermsMu.Unlock()
+	if resourcePermsGen != probe.gen {
+		log.Printf("[perms] discarding probe result: the cluster or scope changed while it was in flight (generation %d→%d)", probe.gen, resourcePermsGen)
+		return false
+	}
+	cachedPermResult = probe.result
 	ttl := resourcePermsTTL
-	if hadErrors {
+	if probe.hadErrors {
 		ttl = resourcePermsErrorTTL
 		log.Printf("Warning: resource access probes had API errors, using short cache TTL (%v)", ttl)
 	}
 	resourcePermsExpiry = time.Now().Add(ttl)
-	resourcePermsMu.Unlock()
-
-	return result, true
+	return true
 }
 
 // MaxScopeCandidates was promoted to a package variable in deadlines.go
