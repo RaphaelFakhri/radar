@@ -95,20 +95,9 @@ func CompactCreates(changes []issuesapi.RecentChange) ([]issuesapi.RecentChange,
 			}
 			return changeKey(changes[candidates[i].index]) < changeKey(changes[candidates[j].index])
 		})
-		start := 0
-		for i := 1; i <= len(candidates); i++ {
-			// A run breaks on a long gap, and on a zone change (a DST
-			// boundary) so every member's timestamp can be rebuilt from
-			// First with First's zone suffix.
-			if i < len(candidates) &&
-				candidates[i].at.Sub(candidates[i-1].at) <= createRunMaxGap &&
-				candidates[i].zone == candidates[start].zone {
-				continue
-			}
-			run := candidates[start:i]
-			start = i
+		addRun := func(run []candidate) {
 			if len(run) < createRunMinSize {
-				continue
+				return
 			}
 			first := changes[run[0].index]
 			entry := issuesapi.CreatedObjects{
@@ -130,6 +119,17 @@ func CompactCreates(changes []issuesapi.RecentChange) ([]issuesapi.RecentChange,
 			}
 			created = append(created, entry)
 		}
+		start := 0
+		for i := 1; i < len(candidates); i++ {
+			// A run breaks on a long gap, and on a zone change (a DST
+			// boundary) so every member's timestamp can be rebuilt from
+			// First with First's zone suffix.
+			if candidates[i].at.Sub(candidates[i-1].at) > createRunMaxGap || candidates[i].zone != candidates[start].zone {
+				addRun(candidates[start:i])
+				start = i
+			}
+		}
+		addRun(candidates[start:])
 	}
 	if len(created) == 0 {
 		return changes, nil
