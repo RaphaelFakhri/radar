@@ -124,9 +124,15 @@ type ObjectSet struct {
 }
 
 // Objects builds an ObjectSet of count members. known holds the ones the
-// caller collected, which may be fewer than count; the set lists them only
-// when they are all of it.
+// caller collected, which may be fewer than count; the set lists them, sorted,
+// only when they are all of it.
 func Objects(known []ObjectRef, count, limit int) *ObjectSet {
+	known = slices.Clone(known)
+	slices.SortFunc(known, func(a, b ObjectRef) int {
+		return cmp.Or(strings.Compare(a.Namespace, b.Namespace), strings.Compare(a.Kind, b.Kind),
+			strings.Compare(a.Group, b.Group), strings.Compare(a.Name, b.Name))
+	})
+	known = slices.Compact(known)
 	count = max(count, len(known))
 	return &ObjectSet{Count: count, Names: listed(known, count, limit)}
 }

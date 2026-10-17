@@ -175,9 +175,12 @@ func Codes() []Code {
 
 // AffectsWholeCluster reports a code that blocks every read from this Radar,
 // not just one kind or namespace — the only codes that should make a fleet
-// client treat the cluster itself as failing.
+// client treat the cluster itself as failing. CollectorCredentialsRejected is
+// not one: a single read can be rejected while others succeed, as when a
+// token rotates mid-read. Once Radar confirms its credentials are rejected,
+// its connection is down and reads report ClusterDisconnected.
 func AffectsWholeCluster(c Code) bool {
-	return c == ClusterConnecting || c == ClusterDisconnected || c == CollectorCredentialsRejected
+	return c == ClusterConnecting || c == ClusterDisconnected
 }
 
 // precedence orders codes for an error that has to name one, by what the

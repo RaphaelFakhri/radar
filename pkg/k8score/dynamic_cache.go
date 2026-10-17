@@ -143,6 +143,22 @@ func (d *DynamicResourceCache) retainObservation(gvr schema.GroupVersionResource
 	d.observations[gvr] = retainedObservation{state: state, reasonCode: reasonCode, truncated: truncated, observedAt: time.Now().UTC()}
 }
 
+// retainAuthProbeFailure records an access probe that failed authentication
+// or authorization, and reports whether err was one. A 401 rejects Radar's
+// credentials, which no grant on this kind fixes, so it is recorded apart from
+// an RBAC denial.
+func (d *DynamicResourceCache) retainAuthProbeFailure(gvr schema.GroupVersionResource, preferredNS string, complete bool, err error) bool {
+	switch {
+	case apierrors.IsUnauthorized(err):
+		d.retainObservation(gvr, DynamicObservationDenied, "credentials_rejected", false)
+	case isAuthProbeError(err):
+		d.retainDeniedObservation(gvr, preferredNS, complete)
+	default:
+		return false
+	}
+	return true
+}
+
 func (d *DynamicResourceCache) retainDeniedObservation(gvr schema.GroupVersionResource, preferredNS string, complete bool) {
 	// A preferred-namespace denial proves only that request scope; it cannot
 	// replace the observation retained for the GVR as a whole.
@@ -168,13 +184,14 @@ func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) Dyna
 	return d.observation(gvr, "")
 }
 
-// NamespaceObservation is Observation with State and ReasonCode taken only
-// from the informer that serves reads of gvr in namespace: the cluster-wide
-// informer when there is one, otherwise namespace's own. Per-namespace
-// informers sync independently, so a namespace's readiness never reflects an
-// informer started for another namespace, which in a shared cache may be
-// another user's. Scope, Namespaces and Truncated still describe the whole
-// kind. When the kind has informers but none serves namespace, State is
+// NamespaceObservation is Observation with State, and the loading or stall
+// ReasonCode, taken only from the informer that serves reads of gvr in
+// namespace: the cluster-wide informer when there is one, otherwise
+// namespace's own. Per-namespace informers sync independently, so a
+// namespace's readiness never reflects an informer started for another
+// namespace, which in a shared cache may be another user's. Scope, Namespaces
+// and Truncated still describe the whole kind, and so does a synced
+// namespace's ReasonCode (such as namespace_partial). When the kind has informers but none serves namespace, State is
 // DynamicObservationUnwatched. An empty namespace, or a kind with no
 // informers, gets Observation(gvr).
 func (d *DynamicResourceCache) NamespaceObservation(gvr schema.GroupVersionResource, namespace string) DynamicResourceObservation {
@@ -356,13 +373,7 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 		}
 		scopes, complete, err := d.probeScopes(gvr, preferredNS)
 		if err != nil {
-			if apierrors.IsUnauthorized(err) {
-				// Radar's credentials were rejected, which no grant on this kind
-				// fixes, so it is recorded apart from an RBAC denial.
-				d.retainObservation(gvr, DynamicObservationDenied, "credentials_rejected", false)
-			} else if isAuthProbeError(err) {
-				d.retainDeniedObservation(gvr, preferredNS, complete)
-			}
+			d.retainAuthProbeFailure(gvr, preferredNS, complete, err)
 			return nil, fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
 		}
 		if preferredNS == "" {
@@ -752,6 +763,12 @@ func (d *DynamicResourceCache) gvrIsNamespaced(gvr schema.GroupVersionResource) 
 // whether to eager-warm high-cardinality CRDs like PolicyReports) can gate
 // informer creation on cluster size before paying the watch-layer cost.
 func (d *DynamicResourceCache) ProbeCount(gvr schema.GroupVersionResource) int {
+	count, _ := d.probeCount(gvr)
+	return count
+}
+
+// probeCount is ProbeCount that also returns the error behind -1 and -2.
+func (d *DynamicResourceCache) probeCount(gvr schema.GroupVersionResource) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -761,25 +778,25 @@ func (d *DynamicResourceCache) ProbeCount(gvr schema.GroupVersionResource) int {
 
 	if err != nil {
 		if ctx.Err() != nil {
-			return -2
+			return -2, err
 		}
 		if isAuthProbeError(err) {
-			return -1
+			return -1, err
 		}
 		log.Printf("[dynamic cache] probeCount for %s.%s/%s returned non-auth error (deferring): %v",
 			gvr.Resource, gvr.Group, gvr.Version, err)
-		return -2
+		return -2, err
 	}
 
 	count := len(list.Items)
 	if remaining := list.GetRemainingItemCount(); remaining != nil {
 		count += int(*remaining)
-		return count
+		return count, nil
 	}
 	if list.GetContinue() != "" {
-		return -2
+		return -2, nil
 	}
-	return count
+	return count, nil
 }
 
 func (d *DynamicResourceCache) probeCountList(ctx context.Context, gvr schema.GroupVersionResource) (*unstructured.UnstructuredList, error) {
@@ -795,6 +812,9 @@ func (d *DynamicResourceCache) probeCountList(ctx context.Context, gvr schema.Gr
 	if err == nil {
 		return list, nil
 	}
+	if apierrors.IsUnauthorized(err) {
+		return nil, err
+	}
 	if isAuthProbeError(err) && d.gvrIsNamespaced(gvr) {
 		// Size heuristic only — the first granted fallback namespace is a
 		// good-enough sample for the eager-warm decision.
@@ -803,6 +823,9 @@ func (d *DynamicResourceCache) probeCountList(ctx context.Context, gvr schema.Gr
 			nsList, nsErr := d.config.DynamicClient.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1})
 			if nsErr == nil {
 				return nsList, nil
+			}
+			if apierrors.IsUnauthorized(nsErr) {
+				return nil, nsErr
 			}
 			if !isAuthProbeError(nsErr) && fallbackErr == nil {
 				fallbackErr = nsErr
@@ -1728,9 +1751,7 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 	for range gvrs {
 		r := <-results
 		if r.err != nil {
-			if isAuthProbeError(r.err) {
-				d.retainDeniedObservation(r.gvr, "", r.complete)
-			} else {
+			if !d.retainAuthProbeFailure(r.gvr, "", r.complete, r.err) {
 				d.retainObservation(r.gvr, DynamicObservationDeferred, "scope_probe_failed", false)
 			}
 			continue
@@ -1920,6 +1941,7 @@ func (d *DynamicResourceCache) DiscoverAllCRDs() {
 		type probeResult struct {
 			gvr   schema.GroupVersionResource
 			count int // -1 = no access
+			err   error
 		}
 		results := make(chan probeResult, len(remaining))
 		sem := make(chan struct{}, maxConcurrentProbes)
@@ -1933,8 +1955,8 @@ func (d *DynamicResourceCache) DiscoverAllCRDs() {
 						results <- probeResult{gvr: g, count: -2}
 					}
 				}()
-				count := d.ProbeCount(g)
-				results <- probeResult{gvr: g, count: count}
+				count, err := d.probeCount(g)
+				results <- probeResult{gvr: g, count: count, err: err}
 			}(gvr)
 		}
 
@@ -1945,7 +1967,7 @@ func (d *DynamicResourceCache) DiscoverAllCRDs() {
 			r := <-results
 			if r.count == -1 {
 				noAccessCount++
-				d.retainDeniedObservation(r.gvr, "", true)
+				d.retainAuthProbeFailure(r.gvr, "", true, r.err)
 				continue
 			}
 			if r.count == -2 {
@@ -2110,9 +2132,17 @@ type DynamicReadServer struct {
 	entries []*informerEntry
 }
 
-// Same reports whether s and other are the same informers.
+// Same reports whether s and other are the same informers, in any order.
 func (s DynamicReadServer) Same(other DynamicReadServer) bool {
-	return slices.Equal(s.entries, other.entries)
+	if len(s.entries) != len(other.entries) {
+		return false
+	}
+	for _, e := range s.entries {
+		if !slices.Contains(other.entries, e) {
+			return false
+		}
+	}
+	return true
 }
 
 // ReadServer returns the informers serving reads of gvr in namespace now and
