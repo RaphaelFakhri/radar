@@ -313,10 +313,10 @@ func ciliumMaySelect(policy *unstructured.Unstructured, pods []*corev1.Pod, ns *
 }
 
 // calicoMaySelect reports whether a Calico policy that may allow traffic in
-// dir selects any of the pods, or can't be ruled out. Radar doesn't read ServiceAccount labels
-// here, and namespace labels may be unknown, so those selectors are dropped
-// before matching: what remains can still exclude the pods, but a match only
-// means the policy may apply.
+// dir selects any of the pods, or can't be ruled out. Radar doesn't read
+// ServiceAccount labels here, and namespace labels may be unknown, so those
+// selectors are dropped before matching: what remains can still exclude the
+// pods, but a match only means the policy may apply.
 func (v *otherPolicyView) calicoMaySelect(policy *unstructured.Unstructured, pods []*corev1.Pod, namespaceLabels map[string]string, dir netpol.Direction) bool {
 	if !calicoCovers(policy, dir) || !calicoMayAllow(policy, dir) {
 		return false

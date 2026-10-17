@@ -797,10 +797,26 @@ func reconcileInClusterPolicy(t *Trace) {
 	downgrade := func(start, end int, ports map[int32]bool) {
 		for i := start; i < end && i < len(t.Downstream); i++ {
 			h := &t.Downstream[i]
+			// A deny-all policy issue claims every port is blocked, so any
+			// real pass to this backend disproves it, whatever the port.
+			if h.Resource.Kind == "Service" && len(ports) > 0 {
+				downgradeDenyAllIngress(h)
+			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
 				continue
 			}
-			if !realPassCoversDenyPort(ports, hopDenyPort(h.Meta)) {
+			// The deny port is the pod-side port, while a route's pass is
+			// on the Service port; compare both.
+			denyPort := hopDenyPort(h.Meta)
+			covered := realPassCoversDenyPort(ports, denyPort)
+			if !covered && i > 0 && t.Downstream[i-1].Resource.Kind == "Service" {
+				for p := range ports {
+					if podPort, ok := podPortForService(&t.Downstream[i-1], h, p); ok && podPort == denyPort {
+						covered = true
+					}
+				}
+			}
+			if !covered {
 				continue
 			}
 			idx := findingIndexByCode(h.Findings, codePolicyWouldDeny)
@@ -814,12 +830,6 @@ func reconcileInClusterPolicy(t *Trace) {
 				Command:  h.Findings[idx].Command,
 			}
 			sortFindingsBySeverity(h.Findings)
-			// The Service hop in front carries the same prediction as a
-			// policy issue; a deny-all covers every port, so any real pass
-			// on this branch settles it too.
-			if i > 0 && h.Edge == "Service->Pods" && t.Downstream[i-1].Resource.Kind == "Service" {
-				downgradeDenyAllIngress(&t.Downstream[i-1])
-			}
 		}
 	}
 	branches := downstreamBranches(t.Downstream)

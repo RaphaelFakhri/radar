@@ -411,15 +411,15 @@ func TestOtherPolicyViewMayApply(t *testing.T) {
 		{"Calico ingress rule with an action Radar can't read", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{
 			"selector": "app == 'rec'", "ingress": []any{map[string]any{"action": "Reroute"}},
 		}))}, shopNS, true},
-		{"Calico global policy selecting other pods", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'web'"}))}, shopNS, false},
-		{"Calico global policy for another namespace", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'"}))}, shopNS, false},
+		{"Calico global policy selecting other pods", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'web'", "ingress": allowIn}))}, shopNS, false},
+		{"Calico global policy for another namespace", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "ingress": allowIn}))}, shopNS, false},
 		{"Calico namespace selector with unknown namespace labels", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "ingress": allowIn}))}, nil, true},
 		{"Calico service-account selector can't be judged", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"serviceAccountSelector": "role == 'x'", "ingress": allowIn}))}, shopNS, true},
 		{"Calico egress-only policy can't allow inbound", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'", "types": []any{"Egress"}}))}, shopNS, false},
 		{"Calico policy with only egress rules defaults to Egress", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app == 'rec'", "egress": []any{map[string]any{"action": "Allow"}}}))}, shopNS, false},
-		{"Calico selector on another service account's endpoint label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'payments-api'"}))}, shopNS, false},
+		{"Calico selector on another service account's endpoint label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'payments-api'", "ingress": allowIn}))}, shopNS, false},
 		{"Calico selector on the endpoint service-account label", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "projectcalico.org/serviceaccount == 'default'", "ingress": allowIn}))}, shopNS, true},
-		{"Calico service-account selector plus an excluding namespace selector", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "serviceAccountSelector": "role == 'x'"}))}, shopNS, false},
+		{"Calico service-account selector plus an excluding namespace selector", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"namespaceSelector": "team == 'other'", "serviceAccountSelector": "role == 'x'", "ingress": allowIn}))}, shopNS, false},
 		{"Calico selector Radar can't parse", served, fakePolicyLister{objects: objects(gnp, "", policyObject(map[string]any{"selector": "app ===", "ingress": allowIn}))}, shopNS, true},
 		{"unsynced is unknown", served, fakePolicyLister{unsynced: true}, shopNS, true},
 		{"list error is unknown", served, fakePolicyLister{err: errors.New("forbidden")}, shopNS, true},
@@ -496,6 +496,13 @@ func TestOtherPolicyViewDirections(t *testing.T) {
 		if !view.mayApply("shop", pods, ns, netpol.DirectionEgress) {
 			t.Errorf("%s egress policy not counted for outbound", name)
 		}
+	}
+
+	// Only Deny and Log egress rules can't allow outbound traffic either.
+	calicoEgressDeny := policyObject(map[string]any{"selector": "app == 'rec'", "egress": []any{map[string]any{"action": "Log"}, map[string]any{"action": "Deny"}}})
+	view := &otherPolicyView{discovery: served, lister: fakePolicyLister{objects: map[schema.GroupVersionResource]map[string][]*unstructured.Unstructured{gnp: {"": {calicoEgressDeny}}}}}
+	if view.mayApply("shop", pods, ns, netpol.DirectionEgress) {
+		t.Error("Calico egress policy with only Deny and Log rules counted for outbound")
 	}
 }
 

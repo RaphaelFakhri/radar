@@ -164,6 +164,14 @@ func reconcilePolicyFindings(t *Trace) {
 	visit := func(hops []Hop) {
 		for i := range hops {
 			h := &hops[i]
+			// A deny-all policy issue on the Service in front claims every
+			// port of every pod is blocked, so any data-path pass to its pods
+			// disproves it.
+			if i > 0 && h.Edge == "Service->Pods" && hops[i-1].Resource.Kind == "Service" {
+				if portScopedOutcome(h.Probes, 0).dataOK {
+					downgradeDenyAllIngress(&hops[i-1])
+				}
+			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
 				continue
 			}
@@ -188,11 +196,6 @@ func reconcilePolicyFindings(t *Trace) {
 					Severity: SeverityInfo,
 					Message:  "Traffic got through. A network rule here would block it - but either this cluster's network plugin doesn't enforce NetworkPolicy, or the static read missed an allow rule for this port.",
 					Command:  h.Findings[idx].Command,
-				}
-				// The Service hop in front carries the same prediction as a
-				// policy issue; traffic getting through settles it too.
-				if i > 0 && h.Edge == "Service->Pods" && hops[i-1].Resource.Kind == "Service" {
-					downgradeDenyAllIngress(&hops[i-1])
 				}
 			case o.dataFail && !o.dataOK && o.apiOK && !o.apiFail:
 				// CLEAN divergence on the SAME port: the in-cluster data path
