@@ -72,6 +72,21 @@ func TestBootstrapResourcePermissionsPartial401KeepsAuthenticatedGrants(t *testi
 	}
 }
 
+func TestCachePermissionEvidenceSurvivesIndependentGlobalRefresh(t *testing.T) {
+	bound := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "alpha"}}, ScopeNamespaces: map[string][]string{"pods": {"alpha", "beta"}}}
+	cache := &ResourceCache{permissionResult: clonePermissionCheckResult(bound)}
+	restore := SetTestPermissionResult(&PermissionCheckResult{Perms: &ResourcePermissions{}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("another generation")}})
+	defer restore()
+	evidence := cache.PermissionResult()
+	if evidence.Scopes["pods"].Namespace != "alpha" || evidence.ProbeErrors["pods"] != nil {
+		t.Fatalf("independent global evidence leaked into captured cache: %+v", evidence)
+	}
+	evidence.ScopeNamespaces["pods"][0] = "mutated"
+	if cache.PermissionResult().ScopeNamespaces["pods"][0] != "alpha" {
+		t.Fatal("caller mutated cache-bound evidence")
+	}
+}
+
 func TestBootstrapNamespace401RecoveryWiresRecoveredInformerCoverage(t *testing.T) {
 	dyn := fakeDyn(t, func(_ schema.GroupVersionResource, ns string) bool { return ns == "alpha" || ns == "beta" }).(*dynamicfake.FakeDynamicClient)
 	first := true
