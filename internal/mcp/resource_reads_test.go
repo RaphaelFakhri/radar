@@ -59,7 +59,7 @@ func TestResourceReadsReportCallerDenial(t *testing.T) {
 				} else {
 					_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Name: "hidden"})
 				}
-				for _, want := range []string{"caller_forbidden: Your Kubernetes access doesn't allow you to " + verb + " " + qualifiedResource(group, resource) + " across the cluster"} {
+				for _, want := range []string{"user_forbidden: Your Kubernetes access doesn't allow you to " + verb + " " + qualifiedResource(group, resource) + " across the cluster"} {
 					if err == nil || !strings.Contains(err.Error(), want) {
 						t.Errorf("want %q in caller error, got %v", want, err)
 					}
@@ -213,9 +213,9 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 			} else {
 				_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: ns, Name: "hidden"})
 			}
-			want := "caller_namespace_not_visible:"
+			want := "user_namespace_not_visible:"
 			if kind == "secrets" {
-				want = "caller_forbidden:"
+				want = "user_forbidden:"
 			}
 			if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), ns) || (kind == "secrets" && !strings.Contains(err.Error(), verb)) {
 				t.Fatalf("%s/%s: expected namespace caller denial, got %v", kind, verb, err)
@@ -235,7 +235,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 			} else {
 				_, _, err = handleGetResource(unchecked, nil, getResourceInput{Kind: kind, Namespace: "alpha", Name: "hidden"})
 			}
-			if err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
+			if err == nil || !strings.Contains(err.Error(), "user_permission_check_failed") {
 				t.Fatalf("%s/%s: expected failed SAR, got %v", kind, verb, err)
 			}
 		}
@@ -243,7 +243,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 
 	discoveryFailed := pkgauth.ContextWithUser(context.Background(), &pkgauth.User{Username: "uncached"})
 	_, _, err = handleListResources(discoveryFailed, nil, listResourcesInput{Kind: "pods"})
-	if err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
+	if err == nil || !strings.Contains(err.Error(), "user_permission_check_failed") {
 		t.Fatalf("expected failed namespace discovery, got %v", err)
 	}
 	oldPin, oldTarget := k8s.ForceNamespaceScope, k8s.GetNamespaceScopeTarget()
@@ -256,7 +256,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "pods", Namespace: "beta", Name: "hidden"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "outside_namespace_pin: ") || strings.Contains(err.Error(), "caller_forbidden") {
+		if err == nil || !strings.HasPrefix(err.Error(), "outside_namespace_pin: ") || strings.Contains(err.Error(), "user_forbidden") {
 			t.Fatalf("scope exclusion must not claim denial, got %v", err)
 		}
 	}
@@ -291,8 +291,8 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 		input listResourcesInput
 		want  string
 	}{
-		{listResourcesInput{Kind: "nodes"}, "collector_kind_not_watched: "},
-		{listResourcesInput{Kind: "services", Namespace: "beta"}, "collector_namespace_not_collected: "},
+		{listResourcesInput{Kind: "nodes"}, "radar_kind_not_watched: "},
+		{listResourcesInput{Kind: "services", Namespace: "beta"}, "radar_namespace_not_collected: "},
 	} {
 		_, _, err := handleListResources(context.Background(), nil, tc.input)
 		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -367,7 +367,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 						}
 						want := "kind_sync_pending"
 						if denied {
-							want = "collector_forbidden"
+							want = "radar_forbidden"
 						} else if b.Kind == "CustomResourceDefinition" && verb == "get" {
 							want = "object_not_found"
 						}
@@ -428,8 +428,8 @@ func TestResourceReadToolErrorTransport(t *testing.T) {
 		next      string
 	}{
 		// Only a cluster admin can change a denial, so it carries no next.
-		{"list_resources", map[string]any{"kind": "nodes"}, "caller_forbidden", "Your Kubernetes access doesn't allow you to list nodes across the cluster", ""},
-		{"get_resource", map[string]any{"kind": "nodes", "name": "hidden"}, "caller_forbidden", "Your Kubernetes access doesn't allow you to get nodes across the cluster", ""},
+		{"list_resources", map[string]any{"kind": "nodes"}, "user_forbidden", "Your Kubernetes access doesn't allow you to list nodes across the cluster", ""},
+		{"get_resource", map[string]any{"kind": "nodes", "name": "hidden"}, "user_forbidden", "Your Kubernetes access doesn't allow you to get nodes across the cluster", ""},
 		{"get_resource", map[string]any{"kind": "pods", "name": "hidden"}, "namespace_required", "Pods live in namespaces, so get_resource needs one.",
 			`Call get_resource again with namespace set. If you don't know it, call search with query "kind:pods hidden" to find it.`},
 	} {
@@ -502,10 +502,10 @@ func TestResourceReadsFailedSARCanRecover(t *testing.T) {
 				_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: "alpha", Name: "hidden"})
 				return err
 			}
-			if err := call(); err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "user_permission_check_failed") {
 				t.Fatalf("%s/%s first check: %v", kind, verb, err)
 			}
-			if err := call(); err == nil || !strings.Contains(err.Error(), "caller_forbidden: Your Kubernetes access") {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "user_forbidden: Your Kubernetes access") {
 				t.Fatalf("%s/%s retry must establish denial: %v", kind, verb, err)
 			}
 			if calls != 2 {
@@ -746,14 +746,14 @@ func setupCoverageRuleFixture(t *testing.T, class coverageClass) (kind string, p
 }
 
 // Typed kinds never read outside the coverage the startup probe fixed, so an
-// uncovered namespace is collector_namespace_not_collected. Custom resources and direct
+// uncovered namespace is radar_namespace_not_collected. Custom resources and direct
 // kinds read every requested namespace, so the same namespace is
-// collector_forbidden: Radar tried and was refused.
+// radar_forbidden: Radar tried and was refused.
 func coverageReason(class coverageClass) string {
 	if class == coverageTyped {
-		return "collector_namespace_not_collected"
+		return "radar_namespace_not_collected"
 	}
-	return "collector_forbidden"
+	return "radar_forbidden"
 }
 
 // partialCoverageReason is why an unrestricted read covered only some
@@ -762,9 +762,9 @@ func coverageReason(class coverageClass) string {
 // this very request and fell back to the candidate namespaces.
 func partialCoverageReason(class coverageClass) string {
 	if class == coverageDirect {
-		return "collector_forbidden"
+		return "radar_forbidden"
 	}
-	return "collector_namespace_not_collected"
+	return "radar_namespace_not_collected"
 }
 
 func TestResourceReadsCollectorCoverageRule(t *testing.T) {
@@ -857,8 +857,8 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 				case tc.uncollected:
 					// The caller didn't name beta: Radar not collecting it narrows
 					// the read rather than leaving a gap in it.
-					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"caller_access", "collection"}) || !slices.Equal(coverage.Read, tc.read) || !slices.Equal(coverage.Scope, tc.read) {
-						t.Fatalf("coverage = %+v, want read and scope %v narrowed by caller_access and collection", coverage, tc.read)
+					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"user_access", "collection"}) || !slices.Equal(coverage.Read, tc.read) || !slices.Equal(coverage.Scope, tc.read) {
+						t.Fatalf("coverage = %+v, want read and scope %v narrowed by user_access and collection", coverage, tc.read)
 					}
 					assertNoCollectorLeak(t, errors.New(coverage.Summary), tc.hidden...)
 				default:
@@ -866,8 +866,8 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 						t.Fatalf("coverage = %+v, want complete", coverage)
 					}
 				}
-				if tc.narrowed != slices.Contains(coverage.NarrowedBy, "caller_access") {
-					t.Fatalf("narrowedBy = %v, want caller_access: %v", coverage.NarrowedBy, tc.narrowed)
+				if tc.narrowed != slices.Contains(coverage.NarrowedBy, "user_access") {
+					t.Fatalf("narrowedBy = %v, want user_access: %v", coverage.NarrowedBy, tc.narrowed)
 				}
 				if got := rowNames(rows); !slices.Equal(got, tc.rows) {
 					t.Fatalf("rows = %v, want %v", got, tc.rows)
@@ -895,7 +895,7 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 			kind, _ := setupCoverageRuleFixture(t, class)
 			ctx := withRestrictedUser(t, "cold-coverage-reader", []string{"beta"})
 			_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `namespace "beta"`) {
+			if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") || !strings.Contains(err.Error(), `namespace "beta"`) {
 				t.Fatalf("uncovered cold scope must name the collector denial, got %v", err)
 			}
 			assertNoCollectorLeak(t, err, "alpha", "gamma")
@@ -909,7 +909,7 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		t.Cleanup(func() { k8s.ForceNamespaceScope = oldPin; k8s.SetNamespaceScopeOverride(oldTarget) })
 		ctx := withRestrictedUser(t, "pin-outsider", []string{"beta"})
 		_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "pods"})
-		if err == nil || !strings.HasPrefix(err.Error(), "caller_no_namespace_access:") || strings.Contains(err.Error(), "alpha") {
+		if err == nil || !strings.HasPrefix(err.Error(), "user_no_namespace_access:") || strings.Contains(err.Error(), "alpha") {
 			t.Fatalf("unscoped denial must not name the pinned namespace: %v", err)
 		}
 	})
@@ -1012,7 +1012,7 @@ func TestListSummaryBoundsNamespaceProse(t *testing.T) {
 				read[i] = fmt.Sprintf("team-%04d", count-i)
 			}
 			original := slices.Clone(read)
-			gaps := []resourceapi.Gap{{Code: readreason.CollectorNamespaceNotCollected}}
+			gaps := []resourceapi.Gap{{Code: readreason.RadarNamespaceNotCollected}}
 			coverage := listCoverageFor(false, readTarget{}, read, false, gaps)
 			expected := slices.Clone(read)
 			slices.Sort(expected)
@@ -1211,7 +1211,7 @@ func TestResourceReadsHiddenCoverageDoesNotChangeTheError(t *testing.T) {
 				} else {
 					_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: "beta", Name: "beta-object"})
 				}
-				if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+				if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") {
 					t.Fatalf("beta must be refused, got %v", err)
 				}
 				return err.Error()
@@ -1338,10 +1338,10 @@ func TestResourceReadsCollectorReasons(t *testing.T) {
 	t.Cleanup(k8s.ResetTestState)
 	for _, unauthorized := range []bool{false, true} {
 		probeErrors := map[string]error{}
-		want := "collector_forbidden:"
+		want := "radar_forbidden:"
 		if unauthorized {
 			probeErrors["nodes"] = apierrors.NewUnauthorized("expired token")
-			want = "collector_credentials_rejected:"
+			want = "radar_credentials_rejected:"
 		}
 		restore := k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"nodes": {}}, ProbeErrors: probeErrors})
 		for _, verb := range []string{"list", "get"} {
@@ -1365,7 +1365,7 @@ func TestResourceReadsCollectorReasons(t *testing.T) {
 		t.Fatalf("connecting dynamic: %v", err)
 	}
 	_, err = checkDynamicResourceRead(context.Background(), "widgets", "example.test", "alpha", "list", apierrors.NewUnauthorized("expired token"))
-	if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") || strings.Contains(err.Error(), "forbidden") || strings.Contains(err.Error(), "access_denied") {
+	if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") || strings.Contains(err.Error(), "forbidden") || strings.Contains(err.Error(), "access_denied") {
 		t.Fatalf("collector credentials: %v", err)
 	}
 	for _, kind := range []string{"pods", "widgets"} {
@@ -1385,7 +1385,7 @@ func TestResourceReadsNamespaceDenialAttribution(t *testing.T) {
 	ctx := withRestrictedUser(t, "attribution-reader", []string{"alpha"})
 	for _, kind := range []string{"pods", "widgets"} {
 		_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Namespace: "beta"})
-		for _, text := range []string{"caller_namespace_not_visible:", "doesn't exist or you can't access it", "beta", "list pods or deployments", "about every 2 minutes"} {
+		for _, text := range []string{"user_namespace_not_visible:", "doesn't exist or you can't access it", "beta", "list pods or deployments", "about every 2 minutes"} {
 			if err == nil || !strings.Contains(err.Error(), text) {
 				t.Fatalf("missing %s: %v", text, err)
 			}
@@ -1445,7 +1445,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 	}
 	ctx := withRestrictedUser(t, "uncovered-reader", []string{"beta"})
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "widgets", Context: "none"})
-	if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+	if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") {
 		t.Fatalf("caller namespace denied by collector must not return empty success: %v", err)
 	}
 	assertNoCollectorLeak(t, err, "alpha")
@@ -1456,7 +1456,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Namespace: "beta", Name: "x"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `in namespace "alpha".`) {
+		if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") || !strings.Contains(err.Error(), `in namespace "alpha".`) {
 			t.Fatalf("%s explicit uncovered scope: %v", verb, err)
 		}
 		assertNoCollectorLeak(t, err)
@@ -1484,7 +1484,7 @@ func TestResourceReadsDynamicUnauthorizedPrefix(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Namespace: "alpha", Name: "x"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") || strings.Contains(err.Error(), "expired token") {
+		if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") || strings.Contains(err.Error(), "expired token") {
 			t.Fatalf("%s credentials rejection: %v", verb, err)
 		}
 		if cause := collectorCause(err); cause == nil || !strings.Contains(cause.Error(), "expired token") {
@@ -1524,7 +1524,7 @@ func TestResourceReadsDynamicUnauthorizedIsNotMissingCoverage(t *testing.T) {
 			}
 			t.Cleanup(k8s.ResetTestDynamicState)
 			_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "widgets", Namespace: tc.namespace, Context: "none"})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") {
+			if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
 				t.Fatalf("credential rejection must fail the read even with readable namespaces: %v", err)
 			}
 			assertNoCollectorLeak(t, err)
@@ -1706,7 +1706,7 @@ func TestResourceReadsUnrestrictedDirectListsFallBackToCandidates(t *testing.T) 
 					}
 					result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: b.Resource, Context: "none"})
 					if tc.wantErr != nil {
-						if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+						if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") {
 							t.Fatalf("a read that covered nothing must fail, got %v", err)
 						}
 						for _, text := range tc.wantErr {
@@ -1755,7 +1755,7 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 		}))
 		for _, input := range []listResourcesInput{{Kind: "nodes"}, {Kind: "pods", Namespace: "alpha"}} {
 			_, _, err := handleListResources(context.Background(), nil, input)
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") {
+			if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
 				t.Fatalf("%s: %v", input.Kind, err)
 			}
 			assertNoCollectorLeak(t, err)
@@ -1785,7 +1785,7 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 		t.Cleanup(k8s.ResetTestDynamicState)
 		for _, kind := range []string{"rollout", "application"} {
 			_, _, err := handleDiagnose(context.Background(), nil, diagnoseInput{diagnoseCommonInput: diagnoseCommonInput{Kind: kind, Namespace: "alpha", Name: "web"}})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || strings.Contains(err.Error(), "object_not_found") {
+			if err == nil || !strings.HasPrefix(err.Error(), "radar_forbidden:") || strings.Contains(err.Error(), "object_not_found") {
 				t.Fatalf("%s: a collector refusal is not an absent object: %v", kind, err)
 			}
 			assertNoCollectorLeak(t, err)
@@ -1798,8 +1798,8 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 			cause error
 			want  string
 		}{
-			{fmt.Errorf("failed to get pod metrics: %w", collectorRefusal(schema.GroupResource{Group: "metrics.k8s.io", Resource: "pods"}, "get", "alpha")), "collector_forbidden: "},
-			{apierrors.NewUnauthorized(collectorIdentity + " token expired"), "collector_credentials_rejected: "},
+			{fmt.Errorf("failed to get pod metrics: %w", collectorRefusal(schema.GroupResource{Group: "metrics.k8s.io", Resource: "pods"}, "get", "alpha")), "radar_forbidden: "},
+			{apierrors.NewUnauthorized(collectorIdentity + " token expired"), "radar_credentials_rejected: "},
 		} {
 			err := collectorAuthError(context.Background(), tc.cause, target, "alpha")
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -1865,7 +1865,7 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: "pods", Namespace: "alpha", Name: "present"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") || strings.Contains(err.Error(), "alpha rejected token") {
+		if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") || strings.Contains(err.Error(), "alpha rejected token") {
 			t.Fatalf("%s: namespace credential rejection lost: %v", verb, err)
 		}
 		if cause := collectorCause(err); cause == nil || !strings.Contains(cause.Error(), "alpha rejected token") {
@@ -1877,7 +1877,7 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 		t.Fatalf("healthy namespace incorrectly denied: %v", err)
 	}
 	_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
-	if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") {
+	if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
 		t.Fatalf("unscoped list must not omit a namespace whose credentials were rejected: %v", err)
 	}
 	for _, tc := range []struct {
@@ -1886,7 +1886,7 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 	}{{"auth disabled", context.Background()}, {"cluster-wide", withClusterAdmin(t, "credential-admin")}} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := handleListResources(tc.ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_credentials_rejected:") {
+			if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
 				t.Fatalf("unrestricted list must not omit a namespace whose credentials were rejected: %v", err)
 			}
 		})
@@ -1898,7 +1898,7 @@ func TestDiagnoseRejectsUnobservedTypedTargets(t *testing.T) {
 		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
 			client := fake.NewClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "present", Namespace: "alpha"}})
 			var err error
-			want := "collector_namespace_not_collected:"
+			want := "radar_namespace_not_collected:"
 			if pending {
 				err = k8s.InitTestPromotedSyncingCache(client, 5*time.Second, time.Minute, map[string]time.Duration{"pods": time.Hour})
 				want = "kind_sync_pending:"
@@ -2029,7 +2029,7 @@ func TestResourceReadErrorDetails(t *testing.T) {
 	if !ok {
 		t.Fatal(err)
 	}
-	if body := result.StructuredContent.(mcpReadError); body.ErrorCode != readreason.CallerForbidden || body.Coverage != nil {
+	if body := result.StructuredContent.(mcpReadError); body.ErrorCode != readreason.UserForbidden || body.Coverage != nil {
 		t.Fatalf("an exact-access failure says where in words, without coverage: %+v", body)
 	}
 }
@@ -2266,7 +2266,7 @@ func TestResourceReadsTypedReadinessIsPerNamespace(t *testing.T) {
 // Every way Radar can be without a cluster answers with a code that marks the
 // whole cluster as failing; the sentence says whether to wait or to fix
 // credentials. A confirmed credential rejection is the connection's, not one
-// read's, so it is not collector_credentials_rejected.
+// read's, so it is not radar_credentials_rejected.
 func TestNotConnectedErrorsCarryCodes(t *testing.T) {
 	for _, tc := range []struct {
 		status k8s.ConnectionStatus
@@ -2305,7 +2305,7 @@ func readErrorNext(t *testing.T, err error) string {
 // actionable one and next still covers the cause that clears by itself.
 func TestFailedListNamesEveryCause(t *testing.T) {
 	var gaps gapSet
-	gaps.add(readreason.CallerForbidden, errors.New("denied"), "alpha")
+	gaps.add(readreason.UserForbidden, errors.New("denied"), "alpha")
 	gaps.add(readreason.KindSyncTimedOut, errors.New("slow"), "beta")
 	err := withListCoverage(context.Background(), gaps.failure(), "secrets", readTarget{namespaces: []string{"alpha", "beta"}, explicit: true}, false)
 	result, ok := readErrorResult(err)
@@ -2321,7 +2321,7 @@ func TestFailedListNamesEveryCause(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, body.Error)
 		}
 	}
-	if body.ErrorCode != readreason.CallerForbidden || body.Coverage != nil || body.Next != `Retry in a minute to read namespace "beta".` {
+	if body.ErrorCode != readreason.UserForbidden || body.Coverage != nil || body.Next != `Retry in a minute to read namespace "beta".` {
 		t.Fatalf("body = %+v", body)
 	}
 }
@@ -2329,10 +2329,10 @@ func TestFailedListNamesEveryCause(t *testing.T) {
 func TestFailedListNextComesFromEveryGap(t *testing.T) {
 	cov := &resourceapi.Coverage{Status: resourceapi.CoveragePartial, Scope: resourceapi.Scope{Type: resourceapi.ScopeNamespaces, Namespaces: resourceapi.Names([]string{"alpha", "beta"}, resourceapi.MCPSetLimit)},
 		Gaps: []resourceapi.Gap{
-			{Code: readreason.CallerForbidden, Namespaces: resourceapi.Names([]string{"alpha"}, resourceapi.MCPSetLimit)},
+			{Code: readreason.UserForbidden, Namespaces: resourceapi.Names([]string{"alpha"}, resourceapi.MCPSetLimit)},
 			{Code: readreason.KindSyncTimedOut, Namespaces: resourceapi.Names([]string{"beta"}, resourceapi.MCPSetLimit)},
 		}}
-	err := &readError{code: readreason.CallerForbidden, err: errors.New("denied"), coverage: cov}
+	err := &readError{code: readreason.UserForbidden, err: errors.New("denied"), coverage: cov}
 	if next := readErrorNext(t, err); next != `Retry in a minute to read namespace "beta".` {
 		t.Fatalf("next = %q", next)
 	}
@@ -2359,7 +2359,7 @@ func TestDenialNamesRadarCloudOwner(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("RADAR_CLOUD_MODE", tc.cloud)
 			msg := resourcePermissionError(tc.ctx, true, "list", "", "secrets", "beta").Error()
-			_, who := gapReason(tc.ctx, "secrets", readreason.CallerForbidden)
+			_, who := gapReason(tc.ctx, "secrets", readreason.UserForbidden)
 			for _, got := range []string{msg, who} {
 				if tc.want == "" {
 					if strings.Contains(got, "Radar Cloud") {
@@ -2413,10 +2413,10 @@ func TestListNamesRadarCloudOwnerOnlyForDenials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body := extractText(t, result); strings.Contains(body, "Radar Cloud") || !strings.Contains(body, "caller_permission_check_failed") {
+	if body := extractText(t, result); strings.Contains(body, "Radar Cloud") || !strings.Contains(body, "user_permission_check_failed") {
 		t.Fatalf("a failed permission check is retried, not escalated to an owner: %s", body)
 	}
-	for _, code := range []readreason.Code{readreason.CollectorNamespaceNotCollected, readreason.CollectorForbidden, readreason.KindSyncPending} {
+	for _, code := range []readreason.Code{readreason.RadarNamespaceNotCollected, readreason.RadarForbidden, readreason.KindSyncPending} {
 		if why, who := gapReason(denied, "secrets", code); strings.Contains(why+who, "Radar Cloud") {
 			t.Fatalf("%s isn't the caller's access to widen: %q / %q", code, why, who)
 		}

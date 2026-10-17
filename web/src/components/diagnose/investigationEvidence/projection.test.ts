@@ -2159,7 +2159,7 @@ describe("honest zero and partial-result states", () => {
         truncated: true,
         narrowHint: "subgraph capped at 25 nodes",
         omitted: [
-          { field: "uses.secrets", reason: "caller_forbidden" },
+          { field: "uses.secrets", reason: "user_forbidden" },
           { field: "referencedBy", reason: "budget_exceeded" },
         ],
       }),
@@ -2757,7 +2757,7 @@ describe("failedStepMessage", () => {
     const body = JSON.stringify({
       error:
         'namespace "beta" is not among the namespaces you can see, or does not exist',
-      error_code: "caller_namespace_not_visible",
+      error_code: "user_namespace_not_visible",
       coverage: { status: "partial", scope: { type: "namespaces" }, gaps: [] },
     });
     expect(failedStepMessage(body)).toBe(
@@ -2765,8 +2765,8 @@ describe("failedStepMessage", () => {
     );
   });
   it("keeps any other failure text as it came", () => {
-    expect(failedStepMessage("caller_forbidden: your role cannot list pods")).toBe(
-      "caller_forbidden: your role cannot list pods",
+    expect(failedStepMessage("user_forbidden: your role cannot list pods")).toBe(
+      "user_forbidden: your role cannot list pods",
     );
     expect(failedStepMessage('{"error":"no code"}')).toBe(
       '{"error":"no code"}',

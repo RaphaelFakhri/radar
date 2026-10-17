@@ -1071,7 +1071,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				if !classified || code == readreason.ConnectionChanged {
 					return nil, nil, err
 				}
-				if code == readreason.CollectorForbidden {
+				if code == readreason.RadarForbidden {
 					refused = append(refused, ns)
 					if refusal == nil {
 						refusal = collectorCause(err)
@@ -1079,7 +1079,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				}
 				// A namespace Radar doesn't collect or is refused in narrows a
 				// read the caller didn't scope; one they named is a gap.
-				if (code == readreason.CollectorNamespaceNotCollected || code == readreason.CollectorForbidden) && !target.explicit && !clusterScoped {
+				if (code == readreason.RadarNamespaceNotCollected || code == readreason.RadarForbidden) && !target.explicit && !clusterScoped {
 					uncollected[code] = append(uncollected[code], ns)
 					if uncollectedErr[code] == nil {
 						uncollectedErr[code] = err
@@ -1094,7 +1094,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 		if len(uncollected) > 0 {
 			if len(read) > 0 {
-				target = target.narrowedByCollection(nil, slices.Concat(uncollected[readreason.CollectorNamespaceNotCollected], uncollected[readreason.CollectorForbidden]))
+				target = target.narrowedByCollection(nil, slices.Concat(uncollected[readreason.RadarNamespaceNotCollected], uncollected[readreason.RadarForbidden]))
 			} else {
 				for code, namespaces := range uncollected {
 					gaps.add(code, uncollectedErr[code], namespaces...)
@@ -1111,7 +1111,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 						covered = observation.Namespaces
 					}
 				}
-				gaps.firstErr[readreason.CollectorForbidden] = coverageError(ctx, collector, refused, covered, refusal)
+				gaps.firstErr[readreason.RadarForbidden] = coverageError(ctx, collector, refused, covered, refusal)
 			}
 			return nil, nil, withListCoverage(ctx, gaps.failure(), collector.resource, target, clusterScoped)
 		}
@@ -1159,14 +1159,14 @@ func readErrorCodeOf(err error) (readreason.Code, bool) {
 		return re.code, true
 	}
 	if apierrors.IsForbidden(err) {
-		return readreason.CollectorForbidden, true
+		return readreason.RadarForbidden, true
 	}
 	return "", false
 }
 
 func isCollectorForbidden(err error) bool {
 	var re *readError
-	return errors.As(err, &re) && re.code == readreason.CollectorForbidden
+	return errors.As(err, &re) && re.code == readreason.RadarForbidden
 }
 
 func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getResourceInput) (*mcp.CallToolResult, any, error) {
