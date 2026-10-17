@@ -21,10 +21,16 @@ import (
 
 // Claude Code before v2.1.296 keeps only the first 2,048 characters of server
 // instructions, and newer versions 4,096. The routing has to survive the
-// shorter cut, and the whole text stays under the longer one.
+// shorter cut, and the whole text stays under the longer one. Codex describes
+// a deferred server by the first line alone, cut at 250 characters
+// (MAX_NAMESPACE_DESCRIPTION_CHARS in codex-rs/core/src/context/world_state/tools.rs).
 const (
 	maxInstructionChars = 3800
-	routingCutoffChars  = 2048
+	// Radar Hub prepends a fleet preamble of about 550 characters to the full
+	// server's text and keeps the total under 4,000.
+	maxFullServerChars = 3440
+	routingCutoffChars = 2048
+	firstLineChars     = 250
 )
 
 func TestServerInstructionsFitClientLimits(t *testing.T) {
@@ -37,6 +43,18 @@ func TestServerInstructionsFitClientLimits(t *testing.T) {
 		if end < 0 || len([]rune(text[:end])) >= routingCutoffChars {
 			t.Errorf("includeWrites=%v: routing ends at char %d, must end before %d", includeWrites, end, routingCutoffChars)
 		}
+		if n := len([]rune(text)); includeWrites && n > maxFullServerChars {
+			t.Errorf("full server text is %d chars, limit %d so Radar Hub's preamble fits", n, maxFullServerChars)
+		}
+		firstLine, _, _ := strings.Cut(text, "\n")
+		if n := len([]rune(firstLine)); n > firstLineChars {
+			t.Errorf("includeWrites=%v: first line is %d chars, limit %d", includeWrites, n, firstLineChars)
+		}
+		for _, tool := range []string{"issues", "diagnose", "get_changes", "get_resource", "list_resources", "search", "get_workload_logs", "get_pod_logs", "get_events"} {
+			if !strings.Contains(firstLine, tool) {
+				t.Errorf("includeWrites=%v: first line does not name core tool %s", includeWrites, tool)
+			}
+		}
 		if !strings.HasSuffix(text, investigation.ResultDiscipline+" "+investigation.UntrustedClusterData) {
 			t.Errorf("includeWrites=%v: text does not end with ResultDiscipline and UntrustedClusterData", includeWrites)
 		}
@@ -47,7 +65,7 @@ func TestServerInstructionsFitClientLimits(t *testing.T) {
 // name fields of an issues row, and instructionTimingValues the issue_timing
 // values they name; neither is a tool.
 var (
-	instructionIssueFields  = []string{"incident_parent", "issue_timing", "timing_summary"}
+	instructionIssueFields  = []string{"incident_parent", "issue_timing", "resource_created_at", "timing_summary"}
 	instructionTimingValues = []string{"started_after_resource_was_healthy", "started_at_resource_creation"}
 )
 
@@ -98,19 +116,17 @@ func TestServerInstructionsNameOnlyRegisteredTools(t *testing.T) {
 // either side changes, the test fails and the pairing gets rechecked by hand.
 var instructionClaims = []struct{ tool, says, backedBy, param string }{
 	{tool: "issues", says: "Symptom known, faulty resource not: issues", backedBy: "live state"},
-	{tool: "issues", says: "references to missing ConfigMaps", backedBy: "references"},
+	{tool: "issues", says: "references to missing objects", backedBy: "references"},
 	{tool: "diagnose", says: "a Pod, Deployment, StatefulSet, DaemonSet or Rollout", backedBy: "Pod, Deployment, StatefulSet, DaemonSet and Argo Rollout"},
-	{tool: "diagnose", says: "current and previous logs, warning events, startup blockers", backedBy: "current and previous logs, Warning events, startup blockers"},
 	{tool: "diagnose", says: "a Service, Ingress or route that traffic doesn't reach", backedBy: "traffic not reaching a service, route or ingress"},
-	{tool: "diagnose", says: "(per-route reachability)", backedBy: "per-route reachability"},
 	{tool: "diagnose", says: "an Argo CD Application or Flux Kustomization or HelmRelease (sync and health)", backedBy: "GitOps sync/health"},
-	{tool: "get_changes", says: "field diffs", backedBy: "field-level diffs"},
 	{tool: "get_pod_logs", says: "get_pod_logs for one container or its previous instance", param: "previous"},
 	{tool: "get_pod_logs", says: "the grep argument of get_pod_logs", param: "grep"},
 	{tool: "get_workload_logs", says: "or get_workload_logs", param: "grep"},
 	{tool: "search", says: "status message): search", backedBy: "status message"},
 	{tool: "top_resources", says: "OOMKills: top_resources", backedBy: "OOMKills"},
-	{tool: "get_neighborhood", says: "get_neighborhood for the graph around it", backedBy: "service routing"},
+	{tool: "get_neighborhood", says: "service routing): get_neighborhood", backedBy: "service routing"},
+	{tool: "get_neighborhood", says: "The graph around one object (owners, selectors, config references", backedBy: "targetPort/selector/endpoints problems, dependency timeouts, config/secret refs, owner chains"},
 	{tool: "get_cluster_audit", says: "get_cluster_audit is configuration posture", backedBy: "STATIC CONFIG POSTURE"},
 	{tool: "manage_workload", says: "manage_workload to restart, scale or roll back", backedBy: "'rollback'"},
 }
@@ -216,5 +232,35 @@ func TestInitializeReturnsServerInstructions(t *testing.T) {
 	}
 	if serverInstructions(false) == serverInstructions(true) || strings.Contains(serverInstructions(false), "patch_resource") {
 		t.Fatal("read-only instructions must leave out the write tools")
+	}
+}
+
+// started_at_resource_creation can come from the owner workload's condition
+// (issue_timing_basis owner_condition), so a Pod row may carry its
+// Deployment's timing, and the classifier accepts a short healthy window after
+// creation (internal/k8s/issue_timing.go). The instructions must not read it
+// as the onset of the specific failure or as continuous failure since creation.
+func TestServerInstructionsScopeCreationTimingToResourceOrOwner(t *testing.T) {
+	text := serverInstructions(true)
+	if !strings.Contains(text, "started_at_resource_creation means the resource, or its owner workload, started failing during creation or first reconciliation.") {
+		t.Error("instructions no longer scope started_at_resource_creation to the resource or its owner workload")
+	}
+	for _, overclaim := range []string{"the failure has been present since", "failing since it was created"} {
+		if strings.Contains(text, overclaim) {
+			t.Errorf("instructions say %q; the timing classification supports neither the specific failure's onset nor continuity since creation", overclaim)
+		}
+	}
+}
+
+// Radar Hub can hide the Kubernetes write tools from a read-only organization
+// while still listing other vendors' write tools, so the fixes line conditions
+// each Kubernetes write tool on that tool being listed.
+func TestServerInstructionsConditionFixesOnKubernetesWriteTools(t *testing.T) {
+	text := serverInstructions(true)
+	if !strings.Contains(text, "- Fixes, each only if listed: patch_resource") {
+		t.Error("the fixes line no longer conditions each write tool on that tool being listed")
+	}
+	if strings.Contains(text, "write tools:") {
+		t.Error("the fixes line is conditioned on write tools in general, which other vendors' tools can satisfy")
 	}
 }
