@@ -51,7 +51,7 @@ type ContentField struct {
 // the candidate or when at least one free token didn't land anywhere.
 func match(q Query, c candidate) (int, []MatchedField, []MatchSnippet, bool) {
 	// Hard filters first — cheaper to reject early.
-	if len(q.KindFilter) > 0 && !kindMatches(c.Kind, c.Resource, q.KindFilter) {
+	if len(q.KindFilter) > 0 && !kindMatches(c.Kind, c.Group, c.Resource, q.KindFilter) {
 		return 0, nil, nil, false
 	}
 	if len(q.NSFilter) > 0 && !sliceContainsFold(q.NSFilter, c.Namespace) {
@@ -230,8 +230,10 @@ func snippetForToken(value, tok string) string {
 // kindMatches returns true if any of the kind filters refer to the candidate
 // kind. Filters are case-insensitive and accept the singular Kind ("Pod"), a
 // trailing-s plural ("pods"), the resource plural ("ingresses",
-// "networkpolicies"), or a kubectl alias of a built-in ("netpol", "pvc").
-func kindMatches(kind, resource string, filters []string) bool {
+// "networkpolicies"), or a kubectl alias of a built-in ("netpol", "pvc"). An
+// alias names the built-in only, so it doesn't match a CRD that reuses the
+// built-in's Kind in another group (kind:svc is not a Knative Service).
+func kindMatches(kind, group, resource string, filters []string) bool {
 	low := strings.ToLower(kind)
 	plural := low + "s"
 	for _, f := range filters {
@@ -242,7 +244,7 @@ func kindMatches(kind, resource string, filters []string) bool {
 		if resource != "" && fLow == strings.ToLower(resource) {
 			return true
 		}
-		if b, ok := resourceid.BuiltinForName(fLow); ok && b.Kind == kind {
+		if b, ok := resourceid.BuiltinForName(fLow); ok && b.Kind == kind && b.Group == group {
 			return true
 		}
 	}

@@ -41,6 +41,23 @@ func TestSearch_NewTypedKindsAndKubectlNames(t *testing.T) {
 	}
 }
 
+func TestSearch_BuiltinAliasDoesNotMatchCRDWithSameKind(t *testing.T) {
+	knative := schema.GroupVersionResource{Group: "serving.knative.dev", Version: "v1", Resource: "services"}
+	u := &unstructured.Unstructured{}
+	u.SetNamespace("shop")
+	u.SetName("hello")
+	p := &fakeProvider{
+		typed:      map[string][]runtime.Object{"services": {&corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"}}}},
+		dynamic:    map[schema.GroupVersionResource][]*unstructured.Unstructured{knative: {u}},
+		kinds:      map[schema.GroupVersionResource]string{knative: "Service"},
+		namespaced: map[schema.GroupVersionResource]bool{knative: true},
+	}
+	res, _ := Search(context.Background(), p, Parse("kind:svc"), Options{Include: IncludeNone})
+	if len(res.Hits) != 1 || res.Hits[0].Name != "web" || res.Hits[0].Group != "" {
+		t.Fatalf("kind:svc must match only core Services: %+v", res.Hits)
+	}
+}
+
 func TestSearch_IrregularCRDPluralMatchesThroughWholeSearch(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}
 	u := &unstructured.Unstructured{}
@@ -96,7 +113,7 @@ func TestSearch_ReportsKindsItCouldNotAnswerFor(t *testing.T) {
 	t.Run("list error", func(t *testing.T) {
 		p := &fakeProvider{typedErr: map[string]error{"resourcequotas": errors.New("forbidden")}}
 		res, _ := Search(context.Background(), p, Parse("kind:ResourceQuota"), Options{Include: IncludeNone})
-		if len(res.UnsearchedKinds) != 1 || !reflect.DeepEqual(res.UnsearchedKinds[0], UnsearchedKind{Kind: "ResourceQuota", Reason: UnsearchedUnavailable}) {
+		if len(res.UnsearchedKinds) != 1 || !reflect.DeepEqual(res.UnsearchedKinds[0], UnsearchedKind{Kind: "ResourceQuota", Reason: UnsearchedUnreadable}) {
 			t.Fatalf("unsearched = %+v", res.UnsearchedKinds)
 		}
 	})
@@ -116,16 +133,15 @@ func TestSearch_ReportsKindsItCouldNotAnswerFor(t *testing.T) {
 			dynamicErrNamespaces: map[string]bool{"b": true},
 		}
 		res, _ := Search(context.Background(), p, Parse("kind:Certificate"), Options{Include: IncludeNone, Namespaces: []string{"a", "b"}})
-		want := UnsearchedKind{Kind: "Certificate", Group: "cert-manager.io", Reason: UnsearchedUnavailable, Namespaces: []string{"b"}}
-		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Kind != want.Kind || res.UnsearchedKinds[0].Group != want.Group ||
-			strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
+		want := UnsearchedKind{Kind: "Certificate", Group: "cert-manager.io", Reason: UnsearchedUnreadable, Namespaces: []string{"b"}}
+		if len(res.UnsearchedKinds) != 1 || !reflect.DeepEqual(res.UnsearchedKinds[0], want) {
 			t.Fatalf("unsearched = %+v, want %+v", res.UnsearchedKinds, want)
 		}
 	})
 	t.Run("typed informer does not watch a requested namespace", func(t *testing.T) {
 		p := &fakeProvider{typedUnwatched: map[string]bool{"b": true}}
 		res, _ := Search(context.Background(), p, Parse("kind:ResourceQuota"), Options{Include: IncludeNone, Namespaces: []string{"a", "b"}})
-		if len(res.UnsearchedKinds) != 1 || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
+		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Reason != UnsearchedUnreadable || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
 			t.Fatalf("unsearched = %+v", res.UnsearchedKinds)
 		}
 	})
@@ -144,7 +160,7 @@ func TestSearch_ReportsKindsItCouldNotAnswerFor(t *testing.T) {
 			return p
 		}
 		res, _ := Search(context.Background(), newProvider("b"), Parse("kind:Certificate"), Options{Include: IncludeNone, Namespaces: []string{"a", "b"}})
-		if len(res.UnsearchedKinds) != 1 || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
+		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Reason != UnsearchedUnavailable || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
 			t.Fatalf("unsynced b: unsearched = %+v", res.UnsearchedKinds)
 		}
 		if res, _ := Search(context.Background(), newProvider("b"), Parse("kind:Certificate"), Options{Include: IncludeNone, Namespaces: []string{"a"}}); len(res.UnsearchedKinds) != 0 {

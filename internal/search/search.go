@@ -192,10 +192,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	// Typed kinds.
 	for _, tk := range typedKinds {
-		if !shouldScanTyped(tk.Kind, tk.Plural, q) {
+		if !shouldScanTyped(tk.Kind, tk.Group, tk.Plural, q) {
 			continue
 		}
-		coverage.matched(tk.Kind, tk.Plural)
+		coverage.matched(tk.Kind, tk.Group, tk.Plural)
 		if opts.SkipKinds[tk.Kind] {
 			// Per-user RBAC says no — drop the kind entirely whether
 			// or not the query asked for it. An explicit `kind:Secret`
@@ -228,7 +228,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		// Partial results are better than blanking the whole search; an
 		// explicit kind: filter is told what wasn't read.
 		if err != nil {
-			coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnavailable})
+			coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnreadable})
 			continue
 		}
 		if coverage != nil && cacheState != nil {
@@ -242,7 +242,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 					}
 				}
 				if len(unwatched) > 0 {
-					coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnavailable, Namespaces: unwatched})
+					coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnreadable, Namespaces: unwatched})
 				}
 			}
 		}
@@ -296,10 +296,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if kind == "" {
 			continue
 		}
-		if !shouldScanCRD(kind, gvr.Resource, q) {
+		if !shouldScanCRD(kind, gvr.Group, gvr.Resource, q) {
 			continue
 		}
-		coverage.matched(kind, gvr.Resource)
+		coverage.matched(kind, gvr.Group, gvr.Resource)
 		clusterScoped, gvrGroup, gvrResource := classifyDynamicScope(p, gvr, kind)
 		if clusterScoped {
 			if opts.CanReadClusterScoped != nil && !opts.CanReadClusterScoped(kind, gvrGroup, gvrResource) {
@@ -315,7 +315,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if clusterScoped || len(opts.Namespaces) == 0 {
 			its, err := p.ListDynamic(ctx, gvr, "")
 			if err != nil {
-				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnavailable})
+				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnreadable})
 				continue
 			}
 			// Checked after the list, which may have started the informer.
@@ -324,19 +324,23 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			}
 			items = its
 		} else {
-			var failed []string
+			var unreadable, unsynced []string
 			for _, ns := range opts.Namespaces {
 				its, err := p.ListDynamic(ctx, gvr, ns)
-				if err != nil || (coverage != nil && cacheState != nil && !cacheState.DynamicSynced(gvr, ns)) {
-					failed = append(failed, ns)
-				}
 				if err != nil {
+					unreadable = append(unreadable, ns)
 					continue
+				}
+				if coverage != nil && cacheState != nil && !cacheState.DynamicSynced(gvr, ns) {
+					unsynced = append(unsynced, ns)
 				}
 				items = append(items, its...)
 			}
-			if len(failed) > 0 {
-				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnavailable, Namespaces: failed})
+			if len(unreadable) > 0 {
+				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnreadable, Namespaces: unreadable})
+			}
+			if len(unsynced) > 0 {
+				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnavailable, Namespaces: unsynced})
 			}
 		}
 		res.Searched += len(items)
@@ -458,9 +462,9 @@ func classifyDynamicScope(p Provider, gvr schema.GroupVersionResource, kind stri
 // shouldScanTyped also consults Options.SkipKinds via the closure below
 // when invoked from Search; the standalone form here only honors the
 // query-derived kind filter.
-func shouldScanTyped(kind, resource string, q Query) bool {
+func shouldScanTyped(kind, group, resource string, q Query) bool {
 	if len(q.KindFilter) > 0 {
-		return kindMatches(kind, resource, q.KindFilter)
+		return kindMatches(kind, group, resource, q.KindFilter)
 	}
 	// Default skip-list: events are high-volume diagnostic data, not
 	// resources users find by name. Honored only when no explicit kind
@@ -468,9 +472,9 @@ func shouldScanTyped(kind, resource string, q Query) bool {
 	return strings.ToLower(kind) != "event"
 }
 
-func shouldScanCRD(kind, resource string, q Query) bool {
+func shouldScanCRD(kind, group, resource string, q Query) bool {
 	if len(q.KindFilter) > 0 {
-		return kindMatches(kind, resource, q.KindFilter)
+		return kindMatches(kind, group, resource, q.KindFilter)
 	}
 	return true
 }
@@ -502,12 +506,12 @@ func newKindCoverage(q Query) *kindCoverage {
 	return &kindCoverage{terms: q.KindFilter, hit: make(map[string]bool), seen: make(map[string]bool)}
 }
 
-func (k *kindCoverage) matched(kind, resource string) {
+func (k *kindCoverage) matched(kind, group, resource string) {
 	if k == nil {
 		return
 	}
 	for _, term := range k.terms {
-		if kindMatches(kind, resource, []string{term}) {
+		if kindMatches(kind, group, resource, []string{term}) {
 			k.hit[term] = true
 		}
 	}
