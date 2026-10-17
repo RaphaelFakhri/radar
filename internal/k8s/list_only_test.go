@@ -25,6 +25,11 @@ import (
 // cache has noticed.
 func newListOnlyCache(t *testing.T, listOnly []string, objects ...runtime.Object) *ResourceCache {
 	t.Helper()
+	return newListOnlyCacheStaleAfter(t, 0, listOnly, objects...)
+}
+
+func newListOnlyCacheStaleAfter(t *testing.T, staleAfter time.Duration, listOnly []string, objects ...runtime.Object) *ResourceCache {
+	t.Helper()
 	client := fake.NewClientset(objects...)
 	for _, resource := range listOnly {
 		gr := schema.GroupResource{Resource: resource}
@@ -43,6 +48,8 @@ func newListOnlyCache(t *testing.T, listOnly []string, objects ...runtime.Object
 		ResourceTypes:  types,
 		DeferredTypes:  map[string]bool{},
 		ResourceScopes: scopes,
+
+		ListOnlyStaleAfter: staleAfter,
 	})
 	if err != nil {
 		t.Fatalf("NewResourceCache: %v", err)
@@ -204,5 +211,40 @@ func TestServiceSelectorMatchesNoPods_ListOnlyPods(t *testing.T) {
 	listOnly := newListOnlyCache(t, []string{k8score.Pods}, svc)
 	if got := detectServiceBackendProblems(listOnly, svc, nil, now); len(got) != 0 {
 		t.Fatalf("list-only Pods: want no finding, got %+v", got)
+	}
+}
+
+// A stale cache hit is re-read from the API server; when that read fails the
+// cached copy is still served, with a warning that it may be out of date. A
+// confirmed 404 wins over the stale copy.
+func TestFetchResourceConfirmed_StaleHit(t *testing.T) {
+	defer ResetTestDynamicState()
+	cached := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "shop"}}
+	cache := newListOnlyCacheStaleAfter(t, time.Nanosecond, []string{k8score.Secrets}, cached)
+	deadline := time.Now().Add(5 * time.Second)
+	for !cache.KindStale(k8score.Secrets, "shop") {
+		if time.Now().After(deadline) {
+			t.Fatal("Secrets never reported stale")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	dyn := dynamicfake.NewSimpleDynamicClient(scheme)
+	if err := InitTestDynamicResourceCache(dyn, nil); err != nil {
+		t.Fatalf("InitTestDynamicResourceCache: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, _, err := FetchResourceConfirmed(ctx, cache, "secrets", "shop", "db"); !apierrors.IsNotFound(err) {
+		t.Fatalf("deleted on the server: want NotFound over the stale copy, got %v", err)
+	}
+
+	dyn.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("apiserver unavailable")
+	})
+	obj, note, err := FetchResourceConfirmed(ctx, cache, "secrets", "shop", "db")
+	if err != nil || obj == nil || !strings.Contains(note, "may be out of date") {
+		t.Fatalf("want the cached copy with a staleness note, got obj=%v note=%q err=%v", obj, note, err)
 	}
 }
