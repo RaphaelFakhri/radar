@@ -1074,6 +1074,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	// Service would silently leak the wrong object.
 	var resourceData any
 	var rawObj runtime.Object
+	var cacheNote string
 	if group != "" && !k8s.TypedKindOwnsGroup(kind, group) {
 		u, dynErr := cache.GetDynamicWithGroup(ctx, kind, namespace, name, group)
 		if dynErr != nil {
@@ -1082,7 +1083,12 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		resourceData = aicontext.MinifyUnstructured(u, aicontext.LevelDetail)
 		rawObj = u
 	} else {
-		obj, err := k8s.FetchResource(cache, kind, namespace, name)
+		obj, note, err := k8s.FetchResourceConfirmed(ctx, cache, kind, namespace, name)
+		cacheNote = note
+		var unconfirmed *k8s.CacheUnconfirmedError
+		if errors.As(err, &unconfirmed) {
+			return nil, nil, err
+		}
 		if err == k8s.ErrUnknownKind {
 			u, dynErr := cache.GetDynamicWithGroup(ctx, kind, namespace, name, group)
 			if dynErr != nil {
@@ -1141,6 +1147,9 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	}
 	if truncationNote != "" {
 		warnings = append(warnings, truncationNote)
+	}
+	if cacheNote != "" {
+		warnings = append(warnings, cacheNote)
 	}
 
 	defaultConfigMapChanges := meaningfulchanges.ConfigMapKind(kind)

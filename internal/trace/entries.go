@@ -1043,7 +1043,7 @@ func selectedPods(deps Deps, svc *corev1.Service) (pods []*corev1.Pod, unreadabl
 	// "0 pods" - reporting a confident "no backends / 0 ready" for a Service whose
 	// namespace falls outside pod scope would false-condemn it. Trust an empty list
 	// only when the informer actually covers this namespace.
-	if len(got) == 0 && !deps.Cache.KindCoversNamespace("pods", svc.Namespace) {
+	if len(got) == 0 && !deps.Cache.KindAbsenceVerifiable("pods", svc.Namespace) {
 		return nil, true
 	}
 	return got, false
@@ -1154,7 +1154,7 @@ func ingressUpstreamsForService(deps Deps, svc *corev1.Service) ([]Hop, bool) {
 	// cache that reliably covers this Service's namespace is authoritative for
 	// "these are ALL the Ingresses"; anything less keeps the matches found but
 	// flags the enumeration as possibly incomplete.
-	authoritative := deps.Cache.IsSyncComplete() && deps.Cache.KindCoversNamespace("ingresses", svc.Namespace)
+	authoritative := deps.Cache.IsSyncComplete() && deps.Cache.KindAbsenceVerifiable("ingresses", svc.Namespace)
 	return out, authoritative
 }
 

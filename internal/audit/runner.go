@@ -89,7 +89,7 @@ func RunFromCache(cache *k8s.ResourceCache, namespaces []string, opts *RunOption
 	// absence is authoritative for every namespace — same coverage gate the
 	// dynamic Traefik kinds use. Namespace-scoped fallback → leave nil → skip.
 	// Middleware subjects (errors.service refs) need it too, not just routes.
-	if (len(input.IngressRoutes) > 0 || len(input.MiddlewareSubjects) > 0) && cache.IsKindClusterWide("services") {
+	if (len(input.IngressRoutes) > 0 || len(input.MiddlewareSubjects) > 0) && cache.KindAbsenceVerifiable("services", "") {
 		input.AllServices = ListNamespaced(cache.Services(), nil)
 	}
 

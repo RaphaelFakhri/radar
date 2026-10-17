@@ -2203,8 +2203,8 @@ func scaledToZeroBackingWorkload(cache *ResourceCache, svc *corev1.Service) (sca
 	// positive (a match we actually found) is always trustworthy. nonMatch
 	// downgrades every "found nothing" verdict to scope-unverifiable when either
 	// typed workload informer can't observe the namespace.
-	typedCovered := cache.KindCoversNamespace("deployments", svc.Namespace) &&
-		cache.KindCoversNamespace("statefulsets", svc.Namespace)
+	typedCovered := cache.KindAbsenceVerifiable("deployments", svc.Namespace) &&
+		cache.KindAbsenceVerifiable("statefulsets", svc.Namespace)
 	nonMatch := func(outcome rolloutLookupOutcome) rolloutLookupOutcome {
 		if !typedCovered {
 			return rolloutLookupScopeUnverifiable
