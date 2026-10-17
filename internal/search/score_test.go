@@ -139,21 +139,29 @@ func TestMatch_ContentSnippet(t *testing.T) {
 
 func TestKindMatches_Variants(t *testing.T) {
 	cases := []struct {
-		kind, filter string
-		want         bool
+		kind, resource, filter string
+		want                   bool
 	}{
-		{"Pod", "pod", true},
-		{"Pod", "Pod", true},
-		{"Pod", "pods", true},
-		{"Service", "svc", false}, // we don't expand short names
-		{"Deployment", "deployment", true},
-		{"Deployment", "deployments", true},
-		{"Pod", "service", false},
+		{"Pod", "pods", "pod", true},
+		{"Pod", "pods", "Pod", true},
+		{"Pod", "pods", "pods", true},
+		{"Service", "services", "svc", true}, // kubectl aliases of built-ins resolve
+		{"Deployment", "deployments", "deployment", true},
+		{"Deployment", "deployments", "deployments", true},
+		{"Pod", "pods", "service", false},
+		{"Ingress", "ingresses", "ingresses", true},
+		{"NetworkPolicy", "networkpolicies", "networkpolicies", true},
+		{"NetworkPolicy", "networkpolicies", "netpol", true},
+		{"PersistentVolumeClaim", "persistentvolumeclaims", "pvc", true},
+		{"HorizontalPodAutoscaler", "hpas", "horizontalpodautoscalers", true},
+		{"CiliumNetworkPolicy", "ciliumnetworkpolicies", "ciliumnetworkpolicies", true},
+		{"ResourceQuota", "resourcequotas", "resourcequota", true},
+		{"Role", "", "rolebinding", false},
 	}
 	for _, tc := range cases {
-		got := kindMatches(tc.kind, []string{tc.filter})
+		got := kindMatches(tc.kind, tc.resource, []string{tc.filter})
 		if got != tc.want {
-			t.Errorf("kindMatches(%q, %q) = %v, want %v", tc.kind, tc.filter, got, tc.want)
+			t.Errorf("kindMatches(%q, %q, %q) = %v, want %v", tc.kind, tc.resource, tc.filter, got, tc.want)
 		}
 	}
 }

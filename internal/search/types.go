@@ -93,7 +93,35 @@ type Result struct {
 	// FilterErrorSample is the first eval error message verbatim so
 	// the caller has an actionable hint. Empty when FilterErrors=0.
 	FilterErrorSample string `json:"filter_error_sample,omitempty"`
+	// UnsearchedKinds lists kind: filter terms the search could not answer
+	// for, so an empty result for them reads as "not looked at", not "none
+	// exist". Kinds the caller may not list are left out, as before.
+	UnsearchedKinds []UnsearchedKind `json:"unsearched_kinds,omitempty"`
 }
+
+// UnsearchedKind is one kind a kind: filter asked for that the search did not
+// fully scan.
+type UnsearchedKind struct {
+	Kind  string `json:"kind"`
+	Group string `json:"group,omitempty"`
+	// Reason is UnsearchedNotIndexed, UnsearchedUnavailable or
+	// UnsearchedClusterScoped.
+	Reason string `json:"reason"`
+	// Namespaces are the namespaces that could not be read, when only some
+	// failed.
+	Namespaces []string `json:"namespaces,omitempty"`
+}
+
+const (
+	// UnsearchedNotIndexed: no kind search scans matches the term.
+	UnsearchedNotIndexed = "not_indexed"
+	// UnsearchedUnavailable: the kind is scanned, but Radar's cache for it
+	// has not loaded or could not be read.
+	UnsearchedUnavailable = "unavailable"
+	// UnsearchedClusterScoped: the kind is cluster-scoped and the search was
+	// limited to namespaces, so none of its objects could match.
+	UnsearchedClusterScoped = "cluster_scoped"
+)
 
 // IncludeMode controls per-hit verbosity.
 type IncludeMode int

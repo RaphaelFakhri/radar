@@ -3409,24 +3409,48 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	if err != nil {
 		return nil, nil, err
 	}
+	resp := searchResponseMCP{Result: result, KindHint: searchKindHint(result.UnsearchedKinds)}
 	// Steering hint when the result was capped.
 	if result.TotalMatched > result.Total {
-		return toJSONResult(searchResponseMCP{
-			Result: result,
-			NarrowHint: fmt.Sprintf(
-				"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
-				result.Total, result.TotalMatched,
-			),
-		})
+		resp.NarrowHint = fmt.Sprintf(
+			"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
+			result.Total, result.TotalMatched,
+		)
 	}
-	return toJSONResult(result)
+	return toJSONResult(resp)
 }
 
 // searchResponseMCP embeds search.Result so the JSON shape stays identical
-// except for the added narrowHint field.
+// except for the added hint fields.
 type searchResponseMCP struct {
 	search.Result
 	NarrowHint string `json:"narrowHint,omitempty"`
+	KindHint   string `json:"kindHint,omitempty"`
+}
+
+// searchKindHint tells the agent what to do about each kind the search could
+// not answer for, so an empty result isn't read as "none exist".
+func searchKindHint(unsearched []search.UnsearchedKind) string {
+	hints := make([]string, 0, len(unsearched))
+	for _, u := range unsearched {
+		switch u.Reason {
+		case search.UnsearchedNotIndexed:
+			hints = append(hints, fmt.Sprintf("kind:%s is not a kind search scans; use list_resources kind=%s, or get_resource for one object.", u.Kind, u.Kind))
+		case search.UnsearchedUnavailable:
+			where := ""
+			if len(u.Namespaces) > 0 {
+				where = " in namespaces " + strings.Join(u.Namespaces, ", ")
+			}
+			list := "list_resources kind=" + u.Kind
+			if u.Group != "" {
+				list += " group=" + u.Group
+			}
+			hints = append(hints, fmt.Sprintf("%s is not loaded in Radar's cache yet or could not be read%s; results for it may be incomplete, so use %s.", u.Kind, where, list))
+		case search.UnsearchedClusterScoped:
+			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces; search without a namespace.", u.Kind))
+		}
+	}
+	return strings.Join(hints, " ")
 }
 
 // toJSONResult marshals data into a text content MCP result.
