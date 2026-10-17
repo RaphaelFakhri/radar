@@ -56,6 +56,7 @@ describe("get_changes created runs", () => {
         {
           namespace: "shop",
           first: "2026-10-16T04:43:24+03:00",
+          count: 1,
           objects: ["Service/cart"],
         },
       ],
@@ -63,16 +64,48 @@ describe("get_changes created runs", () => {
         {
           namespace: "shop",
           first: "not a time",
+          count: 1,
           objects: ["+0s Service/cart"],
         },
       ],
-      [{ first: "2026-10-16T04:43:24+03:00", objects: ["+0s Service/cart"] }],
+      [
+        {
+          first: "2026-10-16T04:43:24+03:00",
+          count: 1,
+          objects: ["+0s Service/cart"],
+        },
+      ],
       [
         {
           namespace: "shop",
           first: "2026-10-16T04:43:24+03:00",
+          count: 1,
           objects: ["+0s Service/cart"],
           apiVersions: { Service: "" },
+        },
+      ],
+      [
+        {
+          namespace: "shop",
+          first: "2026-10-16T04:43:24+03:00",
+          count: 5,
+          objects: ["+0s Service/cart"],
+        },
+      ],
+      [
+        {
+          namespace: "shop",
+          first: "2026-02-30T04:43:24+03:00",
+          count: 1,
+          objects: ["+0s Service/cart"],
+        },
+      ],
+      [
+        {
+          namespace: "shop",
+          first: "2026-10-16T04:43:24+03:00",
+          count: 1,
+          objects: ["+99999999999999999999s Service/cart"],
         },
       ],
       { namespace: "shop" },

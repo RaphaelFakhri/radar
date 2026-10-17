@@ -269,9 +269,9 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"and are not raised by this flag. This is " +
 			"often faster than reading " +
 			"ReplicaSet histories or audit/log streams, especially when issues " +
-			"are empty or dominated by baseline failures. Pair with since to bound the window; " +
-			"filter by namespace, kind, or name when you know the scope. Runs of 5+ plain creates " +
-			"are listed in `created` as `+<s>s Kind/name` lines, counted in limit. " +
+			"are empty or dominated by baseline failures. Bound the window with since; narrow by " +
+			"namespace, kind or name. Runs of 5+ plain creates are listed " +
+			"in `created` as `+<seconds after first>s Kind/name` lines, counted in limit. " +
 			"Omit namespace when " +
 			"the relevant change may be outside the app namespace. Also includes native Helm " +
 			"history as `source: helm` changes (failed upgrades, rollbacks, current revisions). " +

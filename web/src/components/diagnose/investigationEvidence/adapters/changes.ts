@@ -96,13 +96,14 @@ export function createdChanges(
   for (const raw of payload) {
     const entry = record(raw);
     const objects = stringArray(entry?.objects);
-    const first = entry && nonEmptyString(entry.first) ? entry.first : "";
+    const first = typeof entry?.first === "string" ? entry.first : "";
     const versions = record(entry?.apiVersions);
     if (
       !entry ||
       !nonEmptyString(entry.namespace) ||
       !objects ||
-      !RFC3339_SECONDS.test(first) ||
+      entry.count !== objects.length ||
+      addSeconds(first, 0) !== first ||
       (entry.apiVersions !== undefined && !versions)
     ) {
       return undefined;
@@ -112,7 +113,11 @@ export function createdChanges(
       if (!match) return undefined;
       const [, offset, kind, name, consumers] = match;
       const apiVersion = versions?.[kind];
-      if (apiVersion !== undefined && !nonEmptyString(apiVersion))
+      const timestamp = addSeconds(first, Number(offset));
+      if (
+        (apiVersion !== undefined && !nonEmptyString(apiVersion)) ||
+        timestamp === undefined
+      )
         return undefined;
       out.push({
         ...PLAIN_CREATE,
@@ -120,7 +125,7 @@ export function createdChanges(
         ...(apiVersion ? { apiVersion } : {}),
         namespace: entry.namespace,
         name,
-        timestamp: addSeconds(first, Number(offset)),
+        timestamp,
         ...(consumers ? { consumed_by: consumers.split(", ") } : {}),
       });
     }
@@ -130,13 +135,17 @@ export function createdChanges(
 
 // addSeconds adds whole seconds to an RFC3339 timestamp and keeps its zone
 // designator, so "2026-10-16T04:43:24+03:00" + 41 is "2026-10-16T04:44:05+03:00".
-function addSeconds(timestamp: string, seconds: number): string {
+// Returns undefined for a malformed timestamp or an out-of-range result; a
+// calendar-invalid date (February 30) is caught by callers comparing
+// addSeconds(t, 0) with t.
+function addSeconds(timestamp: string, seconds: number): string | undefined {
   const m = RFC3339_SECONDS.exec(timestamp);
-  if (!m) return timestamp;
+  if (!m || !Number.isSafeInteger(seconds)) return undefined;
   const [, y, mo, d, h, mi, s, zone] = m;
   const wall = new Date(
     Date.UTC(+y, +mo - 1, +d, +h, +mi, +s) + seconds * 1000,
   );
+  if (Number.isNaN(wall.getTime())) return undefined;
   const pad = (n: number, width = 2) => String(n).padStart(width, "0");
   return (
     `${pad(wall.getUTCFullYear(), 4)}-${pad(wall.getUTCMonth() + 1)}-${pad(wall.getUTCDate())}` +
