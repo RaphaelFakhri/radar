@@ -29,7 +29,7 @@ func (e *CacheUnconfirmedError) Error() string {
 	if e.Namespace != "" {
 		where += " in namespace " + e.Namespace
 	}
-	return fmt.Sprintf("%s %q is not in Radar's cache, but Radar's cache for %s %s, and a direct read to confirm failed: %v",
+	return fmt.Sprintf("%s %q is not in Radar's cache, but Radar's cache for %s %s, and a direct read to confirm failed, so Radar can't tell whether it exists: %v",
 		e.Resource, e.Name, where, e.State, e.Err)
 }
 
