@@ -1,6 +1,6 @@
 import { cnpgDimensions } from './ha'
 import { describe, it, expect } from 'vitest'
-import { buildCNPGFleet, cnpgReadyInstances, cnpgRecoveryMatchesCluster, getCNPGRestoreValidation, type CNPGWorkspaceResponse, type CNPGWorkspaceKey, CNPG_WORKSPACE_KEYS } from './workspace'
+import { buildCNPGFleet, cnpgCoverageGap, cnpgReadyInstances, cnpgRecoveryMatchesCluster, getCNPGRestoreValidation, type CNPGWorkspaceResponse, type CNPGWorkspaceKey, CNPG_WORKSPACE_KEYS } from './workspace'
 
 const G = 'postgresql.cnpg.io/v1'
 
@@ -137,7 +137,7 @@ describe('buildCNPGFleet', () => {
 
   it('says "no access" rather than "none" when a kind is not readable', () => {
     const fleet = buildCNPGFleet(
-      resp({ clusters: [cluster('pg-a', 'db')] }, { coverage: { backups: { state: 'denied' }, scheduledBackups: { state: 'partial', deniedNamespaces: ['db'] } } }),
+      resp({ clusters: [cluster('pg-a', 'db')] }, { coverage: { backups: { state: 'denied' }, scheduledBackups: { state: 'partial', deniedNamespaces: ['db'], uncachedNamespaces: [] } } }),
     )
     const p = fleet.rows[0].protection
     expect(p.lastSuccessfulBackup.text).toBe('No access to Backups')
@@ -360,7 +360,7 @@ describe('buildCNPGFleet', () => {
   })
 
   it('names the cause of a partial read only when the server names the namespace', () => {
-    const denied = buildCNPGFleet(resp({ clusters: [cluster('pg-a', 'db')] }, { coverage: { backups: { state: 'partial', allowedNamespaces: ['other'], deniedNamespaces: ['db'] } } }))
+    const denied = buildCNPGFleet(resp({ clusters: [cluster('pg-a', 'db')] }, { coverage: { backups: { state: 'partial', allowedNamespaces: ['other'], deniedNamespaces: ['db'], uncachedNamespaces: [] } } }))
     expect(denied.rows[0].protection.lastSuccessfulBackup.text).toBe('No access to Backups')
     const uncached = buildCNPGFleet(resp({ clusters: [cluster('pg-a', 'db')] }, { coverage: { pods: { state: 'partial', allowedNamespaces: ['other'], uncachedNamespaces: ['db'] } } }))
     expect(uncached.rows[0].replication.text).toBe('Radar does not cache Pods in db')
@@ -653,4 +653,13 @@ it('a single-instance replica cluster does not read its replication as calm', ()
   const solo = (replica?: any) => buildCNPGFleet(resp({ clusters: [cluster('pg', 'db', { spec: { instances: 1, ...(replica ? { replica } : {}) } })] })).rows[0].replication
   expect(solo()).toMatchObject({ text: 'Single instance', tone: 'neutral' })
   expect(solo({ enabled: true, source: 'origin' })).toMatchObject({ text: 'Single instance · upstream feed not assessed', tone: 'unknown' })
+})
+
+describe('cnpgCoverageGap from an older Radar', () => {
+  it("doesn't call a namespace denied when the Radar can't tell it from uncached", () => {
+    const older = { state: 'partial' as const, deniedNamespaces: ['db'], allowedNamespaces: ['other'] }
+    expect(cnpgCoverageGap(older, 'Backups', 'db')).toBe('Backups not read in db')
+    expect(cnpgCoverageGap({ ...older, uncachedNamespaces: [] }, 'Backups', 'db')).toBe('No access to Backups')
+    expect(cnpgCoverageGap({ ...older, uncachedNamespaces: ['db'], deniedNamespaces: [] }, 'Backups', 'db')).toBe('Radar does not cache Backups in db')
+  })
 })

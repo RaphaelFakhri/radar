@@ -20,6 +20,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -124,7 +125,8 @@ type ResourceChange = k8score.ResourceChange
 // status, pod workload lookup, timeline integration).
 type ResourceCache struct {
 	*k8score.ResourceCache
-	secretsEnabled bool // Whether secrets informer is running (requires RBAC)
+	permissionResult *PermissionCheckResult
+	secretsEnabled   bool // Whether secrets informer is running (requires RBAC)
 	// argoDrift tracks how long each manual-sync ArgoCD Application has been
 	// continuously OutOfSync. Lives here so its lifecycle is the cache's:
 	// recreated per cluster, dropped on a kubeconfig context switch.
@@ -378,9 +380,19 @@ func InitResourceCache(ctx context.Context) error {
 		// runs under contextOpMu, so the operation that superseded the probe is
 		// already tearing this cache down, and the ctx.Err() check below drops
 		// out of the boot path that does not hold that lock.
-		permResult, _ := CheckResourcePermissions(rbacCtx)
+		permResult, probeErr := bootstrapResourcePermissions(rbacCtx, func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+			if retry {
+				InvalidateResourcePermissionsCache()
+			}
+			return CheckResourcePermissions(ctx)
+		})
 		cancel()
 		logTiming("    Resource access probes: %v", time.Since(rbacStart))
+
+		if probeErr != nil {
+			initErr = probeErr
+			return
+		}
 
 		if ctx.Err() != nil {
 			initErr = ctx.Err()
@@ -470,6 +482,7 @@ func InitResourceCache(ctx context.Context) error {
 		}
 
 		wrapped := &ResourceCache{
+			permissionResult:            clonePermissionCheckResult(permResult),
 			secretsEnabled:              scopes["secrets"].Enabled,
 			argoDrift:                   newArgoDriftTracker(),
 			cronJobScheduleObservations: cronJobScheduleObservations,
@@ -1506,7 +1519,7 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 		return nil, fmt.Errorf("%w: dynamic cache", ErrDynamicNotReady)
 	}
 
-	if shouldBypassDynamicInformer(gvr) {
+	if ShouldBypassDynamicInformer(gvr) {
 		return dynamicCache.ListDirect(ctx, gvr, namespace)
 	}
 
@@ -1567,7 +1580,7 @@ func builtinGVRFallback(kind, group string) (schema.GroupVersionResource, bool) 
 	return BuiltinGVR(kind, group)
 }
 
-func shouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
+func ShouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
 	return (gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices") ||
 		(gvr.Group == "coordination.k8s.io" && gvr.Resource == "leases") ||
 		(gvr.Group == "" && gvr.Resource == "endpoints")
@@ -1660,7 +1673,7 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	var err error
 	if preserveLastApplied {
 		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
-	} else if shouldBypassDynamicInformer(gvr) {
+	} else if ShouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
@@ -2229,4 +2242,93 @@ func (c *ResourceCache) GetPodsForWorkload(namespace string, selector *metav1.La
 	}
 
 	return matchingPods
+}
+
+func (rc *ResourceCache) AssessKindRead(resource string, requested []string) k8score.KindReadAssessment {
+	var core *k8score.ResourceCache
+	if rc != nil {
+		core = rc.ResourceCache
+	}
+	return core.AssessKindRead(resource, requested)
+}
+
+// ReadableObjects, ReadableObject and ReadableCount are the nil-safe forms of
+// k8score's readiness-gated reads: they serve a namespace whose own informer
+// has synced even while the kind as a whole is still loading.
+func (rc *ResourceCache) ReadableObjects(resource string, namespaces []string) ([]runtime.Object, bool) {
+	if rc == nil {
+		return nil, false
+	}
+	return rc.ResourceCache.ReadableObjects(resource, namespaces)
+}
+
+func (rc *ResourceCache) ReadableObject(resource, namespace, name string) (obj runtime.Object, found, ok bool) {
+	if rc == nil {
+		return nil, false, false
+	}
+	return rc.ResourceCache.ReadableObject(resource, namespace, name)
+}
+
+func (rc *ResourceCache) ReadableCount(resource string, namespaces []string) (int, bool) {
+	if rc == nil {
+		return 0, false
+	}
+	return rc.ResourceCache.ReadableCount(resource, namespaces)
+}
+
+// PermissionResult returns the probes that selected this cache's informer
+// scope. A later global refresh must not re-label rows from this cache.
+func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
+	if rc == nil {
+		return nil
+	}
+	return clonePermissionCheckResult(rc.permissionResult)
+}
+
+// A transient startup 401 must not freeze a narrowed informer set for the
+// lifetime of the connection. Retry once within the existing probe budget;
+// persistent rejection fails initialization into the connection's auth owner.
+// Non-auth probe budget expiry retains established grants; outer cancellation
+// is checked by initialization before any informer is wired.
+func bootstrapResourcePermissions(ctx context.Context, check func(context.Context, bool) (*PermissionCheckResult, bool)) (*PermissionCheckResult, error) {
+	var rejected error
+	for attempt := 0; attempt < 2; attempt++ {
+		result, _ := check(ctx, attempt > 0)
+		if err := permissionUnauthorized(result); err != nil {
+			rejected = err
+			if attempt == 1 || ctx.Err() != nil {
+				return nil, fmt.Errorf("resource access probe rejected credentials: %w", err)
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			if rejected != nil {
+				return nil, fmt.Errorf("resource access probe could not confirm recovered credentials within its budget: %w", rejected)
+			}
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, ctx.Err()
+			}
+		}
+		return result, nil
+	}
+	panic("unreachable")
+}
+
+func permissionUnauthorized(result *PermissionCheckResult) error {
+	if result == nil {
+		return nil
+	}
+	for _, err := range result.ProbeErrors {
+		if apierrors.IsUnauthorized(err) {
+			return err
+		}
+	}
+	for _, byNamespace := range result.NamespaceProbeErrors {
+		for _, err := range byNamespace {
+			if apierrors.IsUnauthorized(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }
