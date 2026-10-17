@@ -658,6 +658,9 @@ type Response struct {
 type UncheckedSource struct {
 	Source UncheckedSourceName `json:"source"`
 	Reason UncheckedReason     `json:"reason"`
+	// Resource is the plural resource the gap is about, for sources that
+	// are checked per kind (missing_ref). Empty otherwise.
+	Resource string `json:"resource,omitempty"`
 }
 
 // UncheckedSourceName names an issue source that can go unchecked. It is not
@@ -668,6 +671,10 @@ const (
 	// UncheckedSourceHelm is Radar's native Helm release read (release
 	// Secrets). Flux HelmReleases are not part of it.
 	UncheckedSourceHelm UncheckedSourceName = "helm"
+	// UncheckedSourceMissingRef is the dangling by-name reference check
+	// (Issue.Source missing_ref) for the kind named in Resource: references
+	// to objects of that kind are not reported missing.
+	UncheckedSourceMissingRef UncheckedSourceName = "missing_ref"
 )
 
 type UncheckedReason string
@@ -676,6 +683,13 @@ const (
 	// UncheckedReasonReadFailed: the read failed, for example an API server
 	// error, rejected credentials, or Radar's own request deadline.
 	UncheckedReasonReadFailed UncheckedReason = "read_failed"
+	// UncheckedReasonListOnly: Radar may list the kind but not watch it, so
+	// its cache is a periodic snapshot and a miss in it is not proof of
+	// absence.
+	UncheckedReasonListOnly UncheckedReason = "list_only"
+	// UncheckedReasonStale: as list_only, and the snapshot has not been
+	// refreshed for several minutes.
+	UncheckedReasonStale UncheckedReason = "stale"
 )
 
 type BindingType string

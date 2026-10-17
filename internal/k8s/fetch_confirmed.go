@@ -65,7 +65,7 @@ func FetchResourceConfirmed(ctx context.Context, cache *ResourceCache, kind, nam
 	if stale {
 		state = fmt.Sprintf("has not refreshed since %s", cache.KindLastListAt(key, namespace).Format(time.RFC3339))
 	}
-	live, liveErr := directTypedGet(ctx, gvr, namespace, name)
+	live, liveErr := directTypedGet(ctx, cache, gvr, namespace, name)
 	switch {
 	case liveErr == nil:
 		return live, "", nil
@@ -78,13 +78,20 @@ func FetchResourceConfirmed(ctx context.Context, cache *ResourceCache, kind, nam
 	}
 }
 
-// directTypedGet reads one built-in object from the API server and returns it
-// in the typed form the cache would hold, with the cache's transform applied
-// so it is stripped the same way.
-func directTypedGet(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string) (runtime.Object, error) {
+// directTypedGet reads one built-in object from the cluster cache belongs to
+// and returns it in the typed form the cache would hold, with the cache's
+// transform applied so it is stripped the same way.
+func directTypedGet(ctx context.Context, cache *ResourceCache, gvr schema.GroupVersionResource, namespace, name string) (runtime.Object, error) {
 	dynamicCache := GetDynamicResourceCache()
 	if dynamicCache == nil {
 		return nil, fmt.Errorf("dynamic resource cache not initialized")
+	}
+	// A context switch replaces both caches; reading through a dynamic cache
+	// taken after it would answer from the other cluster. The dynamic cache
+	// is torn down before the typed generation moves, so a matching
+	// generation checked after taking it proves it is cache's cluster.
+	if !cacheGenerationCurrent(cache.Generation()) {
+		return nil, fmt.Errorf("the cluster connection changed during the read")
 	}
 	u, err := dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	if err != nil {

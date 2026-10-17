@@ -1230,6 +1230,12 @@ func detectServiceBackendProblems(cache *ResourceCache, svc *corev1.Service, pod
 	ageDur := now.Sub(svc.CreationTimestamp.Time)
 	selected := podsMatchingService(svc, pods)
 	if len(selected) == 0 {
+		// An empty selection is only evidence when the Pod cache could have
+		// held the pods: it covers the namespace and is not a list-only
+		// snapshot that may predate them.
+		if !cache.KindAbsenceVerifiable("pods", svc.Namespace) {
+			return nil
+		}
 		reason := SelectorMatchesNoPodsReason
 		message := selectorMessage(svc.Spec.Selector)
 		fingerprint := ""

@@ -762,7 +762,7 @@ export interface IssuesResponse {
   // Issue sources Radar couldn't check, so their issues may be missing: an
   // empty list is not an all-clear. Today only "helm"; a newer Radar may send
   // others. Absent when every source was checked, and from older Radars.
-  unchecked_sources?: { source: string; reason: string }[];
+  unchecked_sources?: { source: string; reason: string; resource?: string }[];
 }
 
 export function useIssues(namespaces: string[] = [], enabled = true) {

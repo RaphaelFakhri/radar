@@ -20,19 +20,21 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
-// newListOnlySecretsCache builds a cache whose Secrets informer may list but
-// not watch, and waits until the cache has noticed.
-func newListOnlySecretsCache(t *testing.T, listOnly bool, objects ...runtime.Object) *ResourceCache {
+// newListOnlyCache builds a cache over Pods, Services, Secrets and ConfigMaps
+// whose informers for listOnly may list but not watch, and waits until the
+// cache has noticed.
+func newListOnlyCache(t *testing.T, listOnly []string, objects ...runtime.Object) *ResourceCache {
 	t.Helper()
 	client := fake.NewClientset(objects...)
-	if listOnly {
-		client.PrependWatchReactor("secrets", func(k8stesting.Action) (bool, watch.Interface, error) {
-			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "", errors.New("watch is not allowed"))
+	for _, resource := range listOnly {
+		gr := schema.GroupResource{Resource: resource}
+		client.PrependWatchReactor(resource, func(k8stesting.Action) (bool, watch.Interface, error) {
+			return true, nil, apierrors.NewForbidden(gr, "", errors.New("watch is not allowed"))
 		})
 	}
 	scopes := map[string]k8score.ResourceScope{}
 	types := map[string]bool{}
-	for _, key := range []string{k8score.Pods, k8score.Secrets, k8score.ConfigMaps} {
+	for _, key := range []string{k8score.Pods, k8score.Services, k8score.Secrets, k8score.ConfigMaps} {
 		scopes[key] = k8score.ResourceScope{Enabled: true}
 		types[key] = true
 	}
@@ -46,16 +48,24 @@ func newListOnlySecretsCache(t *testing.T, listOnly bool, objects ...runtime.Obj
 		t.Fatalf("NewResourceCache: %v", err)
 	}
 	t.Cleanup(core.Stop)
-	if listOnly {
+	for _, resource := range listOnly {
 		deadline := time.Now().Add(10 * time.Second)
-		for !core.KindListOnly(k8score.Secrets, "shop") {
+		for !core.KindListOnly(resource, "shop") {
 			if time.Now().After(deadline) {
-				t.Fatal("Secrets informer never reported list-only")
+				t.Fatalf("%s informer never reported list-only", resource)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
 	return &ResourceCache{ResourceCache: core}
+}
+
+func newListOnlySecretsCache(t *testing.T, listOnly bool, objects ...runtime.Object) *ResourceCache {
+	t.Helper()
+	if listOnly {
+		return newListOnlyCache(t, []string{k8score.Secrets}, objects...)
+	}
+	return newListOnlyCache(t, nil, objects...)
 }
 
 func secretRefPod() *corev1.Pod {
@@ -151,5 +161,23 @@ func TestFetchResourceConfirmed_WatchedKindUsesCache(t *testing.T) {
 	cache := newListOnlySecretsCache(t, false)
 	if _, _, err := FetchResourceConfirmed(context.Background(), cache, "secrets", "shop", "absent"); !apierrors.IsNotFound(err) {
 		t.Fatalf("want the cache's NotFound, got %v", err)
+	}
+}
+
+// A Service whose selector matches nothing in a list-only Pod snapshot is not
+// reported: the pods may have been created since the last LIST.
+func TestServiceSelectorMatchesNoPods_ListOnlyPods(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "shop", CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour))},
+		Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "api"}, Ports: []corev1.ServicePort{{Port: 80}}},
+	}
+	now := time.Now()
+	watched := newListOnlyCache(t, nil, svc)
+	if got := detectServiceBackendProblems(watched, svc, nil, now); len(got) != 1 || got[0].Reason != SelectorMatchesNoPodsReason {
+		t.Fatalf("watched Pods: want %q, got %+v", SelectorMatchesNoPodsReason, got)
+	}
+	listOnly := newListOnlyCache(t, []string{k8score.Pods}, svc)
+	if got := detectServiceBackendProblems(listOnly, svc, nil, now); len(got) != 0 {
+		t.Fatalf("list-only Pods: want no finding, got %+v", got)
 	}
 }

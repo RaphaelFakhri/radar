@@ -111,23 +111,39 @@ func (b *cancelOnCloseBody) Close() error {
 // the /namespaces/{name}/{x} shape with namespaced collections.
 var namespaceSubresources = map[string]bool{"status": true, "finalize": true}
 
+// isAPIVersion matches Kubernetes API version names: v1, v2beta1, v1alpha3.
+func isAPIVersion(s string) bool {
+	if len(s) < 2 || s[0] != 'v' || s[1] < '1' || s[1] > '9' {
+		return false
+	}
+	rest := strings.TrimLeft(s[1:], "0123456789")
+	for _, suffix := range []string{"alpha", "beta"} {
+		if strings.HasPrefix(rest, suffix) {
+			n := strings.TrimPrefix(rest, suffix)
+			return n != "" && strings.Trim(n, "0123456789") == ""
+		}
+	}
+	return rest == ""
+}
+
 // apiPathSubresource reads an apiserver path the way the apiserver's own
 // RequestInfoFactory does — /api/{v}/... or /apis/{group}/{v}/..., an
 // optional legacy watch/ prefix, an optional namespaces/{ns}/, then
 // resource/name/subresource — and returns the subresource and whether the
 // legacy watch prefix was used. Matching by position means a resource or
 // object that happens to be named "log" or "proxy" is not mistaken for the
-// subresource. A prefix before /api (a proxied server URL such as
-// /k8s/clusters/x/api/v1) is skipped.
+// subresource. A prefix before the API root (a proxied server URL such as
+// /k8s/clusters/x/api/v1) is skipped: the root is the first api/{version} or
+// apis/{group}/{version}, so a prefix segment named "api" is not mistaken for it.
 func apiPathSubresource(path string) (subresource string, legacyWatch bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	start := -1
 	for i, s := range parts {
-		if s == "api" && i+1 < len(parts) {
+		if s == "api" && i+1 < len(parts) && isAPIVersion(parts[i+1]) {
 			start = i + 2
 			break
 		}
-		if s == "apis" && i+2 < len(parts) {
+		if s == "apis" && i+2 < len(parts) && isAPIVersion(parts[i+2]) {
 			start = i + 3
 			break
 		}
