@@ -10,7 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -53,7 +55,7 @@ func TestBootstrapResourcePermissionsPersistent401FailsIntoAuthClassification(t 
 // A rejection limited to some probes, while others authenticated, keeps what
 // they granted instead of failing the connection.
 func TestBootstrapResourcePermissionsPartial401KeepsAuthenticatedGrants(t *testing.T) {
-	rejection := apierrors.NewUnauthorized("rejected by a namespace-aware gateway")
+	rejection := apierrors.NewUnauthorized("token expired mid-probe")
 	for name, result := range map[string]*PermissionCheckResult{
 		"one namespace": {Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}}, NamespaceProbeErrors: map[string]map[string]error{"pods": {"alpha": rejection}}},
 		"one kind":      {Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}},
@@ -67,21 +69,6 @@ func TestBootstrapResourcePermissionsPartial401KeepsAuthenticatedGrants(t *testi
 		if err != nil || got != result || calls != 2 {
 			t.Fatalf("%s: result=%+v err=%v calls=%d", name, got, err, calls)
 		}
-	}
-}
-
-func TestCachePermissionEvidenceSurvivesIndependentGlobalRefresh(t *testing.T) {
-	bound := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "alpha"}}, ScopeNamespaces: map[string][]string{"pods": {"alpha", "beta"}}}
-	cache := &ResourceCache{permissionResult: clonePermissionCheckResult(bound)}
-	restore := SetTestPermissionResult(&PermissionCheckResult{Perms: &ResourcePermissions{}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("another generation")}})
-	defer restore()
-	evidence := cache.PermissionResult()
-	if evidence.Scopes["pods"].Namespace != "alpha" || evidence.ProbeErrors["pods"] != nil {
-		t.Fatalf("independent global evidence leaked into captured cache: %+v", evidence)
-	}
-	evidence.ScopeNamespaces["pods"][0] = "mutated"
-	if cache.PermissionResult().ScopeNamespaces["pods"][0] != "alpha" {
-		t.Fatal("caller mutated cache-bound evidence")
 	}
 }
 
@@ -131,7 +118,7 @@ func TestBootstrapProbeBudgetExpiryKeepsNonAuthGrants(t *testing.T) {
 func TestBootstrap401RetryBudgetExpiryDoesNotPublishFalseRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	rejected := &PermissionCheckResult{Perms: &ResourcePermissions{}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("startup credentials rejected")}}
+	rejected := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("startup credentials rejected")}}
 	calls := 0
 	got, err := bootstrapResourcePermissions(ctx, func(context.Context, bool) (*PermissionCheckResult, bool) {
 		calls++
@@ -143,5 +130,53 @@ func TestBootstrap401RetryBudgetExpiryDoesNotPublishFalseRecovery(t *testing.T) 
 	})
 	if got != nil || !apierrors.IsUnauthorized(err) || calls != 2 {
 		t.Fatalf("expired retry implied credentials recovered: got=%+v err=%v calls=%d", got, err, calls)
+	}
+}
+
+// A retry the budget cut short counts unfinished probes as allowed, so the
+// first result stands: its authenticated grants are kept, and only credentials
+// rejected everywhere fail the connection.
+func TestBootstrapCutShortRetryKeepsTheFirstResult(t *testing.T) {
+	rejection := apierrors.NewUnauthorized("token expired mid-probe")
+	partial := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}, NamespaceProbeErrors: map[string]map[string]error{"pods": {"alpha": rejection}}}
+	for name, guess := range map[string]*PermissionCheckResult{
+		"recovered":      {Perms: &ResourcePermissions{Pods: true, Secrets: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}, "secrets": {Enabled: true}}},
+		"still rejected": {Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		calls := 0
+		got, err := bootstrapResourcePermissions(ctx, func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+			calls++
+			if !retry {
+				return partial, true
+			}
+			<-ctx.Done()
+			return guess, true
+		})
+		cancel()
+		if err != nil || got != partial || calls != 2 {
+			t.Fatalf("%s: a cut-short retry replaced the first result: got=%+v err=%v calls=%d", name, got, err, calls)
+		}
+	}
+}
+
+// The startup probe's retry probes again instead of reading back the cached
+// rejection it is retrying.
+func TestFreshResourcePermissionsRetryProbesAgain(t *testing.T) {
+	InvalidateResourcePermissionsCache()
+	t.Cleanup(InvalidateResourcePermissionsCache)
+	prevClient := SetTestClient(kubernetes.NewForConfigOrDie(&rest.Config{Host: "http://127.0.0.1:1"}))
+	t.Cleanup(func() { SetTestClient(prevClient) })
+	lists := 0
+	t.Cleanup(SetTestPermissionProbeClient(func() { lists++ }))
+	cached := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("expired")}}
+	t.Cleanup(SetTestPermissionResult(cached))
+
+	if got, _ := freshResourcePermissions(context.Background(), false); got.ProbeErrors["pods"] == nil || lists != 0 {
+		t.Fatalf("the first probe should read the cached result: %+v lists=%d", got, lists)
+	}
+	got, _ := freshResourcePermissions(context.Background(), true)
+	if lists == 0 || len(got.ProbeErrors) != 0 || !got.Scopes["pods"].Enabled {
+		t.Fatalf("the retry replayed the cached rejection: errors=%v pods=%+v lists=%d", got.ProbeErrors, got.Scopes["pods"], lists)
 	}
 }

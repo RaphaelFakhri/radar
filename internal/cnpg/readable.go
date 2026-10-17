@@ -9,9 +9,9 @@ import (
 
 // readableIn lists resource in namespace from the informer store that holds
 // it, keeping the objects of type T that match selector. ok is false unless
-// that store is complete now. A deferred kind's typed lister stays nil until
-// every namespace of the kind has loaded, so a read of one loaded namespace
-// goes through that namespace's own store.
+// that store is complete now. The typed listers of PVCs, PodDisruptionBudgets
+// and ConfigMaps (among others) are nil until every namespace of the kind has
+// loaded, so a read of one loaded namespace goes through its own store.
 func readableIn[T metav1.Object](cache *k8s.ResourceCache, resource, namespace string, selector labels.Selector) ([]T, bool) {
 	objs, ok := cache.ReadableObjects(resource, []string{namespace})
 	if !ok {

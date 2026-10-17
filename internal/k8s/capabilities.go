@@ -70,11 +70,17 @@ type ResourcePermissions struct {
 //     namespace-scoped on the same cluster, and a namespace-scoped kind may
 //     be readable in several explicitly named namespaces.
 type PermissionCheckResult struct {
-	Perms                    *ResourcePermissions
-	NamespaceScoped          bool   // True if at least one resource type ended up namespace-scoped
-	Namespace                string // The fallback namespace used for namespace-scoped probes
-	NamespaceProbeErrors     map[string]map[string]error
-	ProbeErrors              map[string]error // Retained credential rejection from per-kind list probes
+	Perms           *ResourcePermissions
+	NamespaceScoped bool   // True if at least one resource type ended up namespace-scoped
+	Namespace       string // The fallback namespace used for namespace-scoped probes
+	// NamespaceProbeErrors keeps each credential rejection (401) a kind's
+	// namespace probes hit, by kind and namespace, including kinds another
+	// namespace's probe enabled.
+	NamespaceProbeErrors map[string]map[string]error
+	// ProbeErrors keeps a 401 for each kind that ended disabled because of
+	// one, and nothing else: credentialsRejectedEverywhere counts its entries
+	// against Scopes.
+	ProbeErrors              map[string]error
 	Scopes                   map[string]k8score.ResourceScope
 	ScopeNamespaces          map[string][]string // Per-kind namespace-scoped informer fanout; nil/empty means use Scopes[key].Namespace
 	ScopeCandidates          []string            // The candidate namespaces the probe walked — the dynamic CRD cache probes these per-GVR as its namespace fallbacks
@@ -838,7 +844,8 @@ func SanitizeForLog(s string) string {
 // given dynamic client. Returns:
 //   - allowed=true: list succeeded — informer can run.
 //   - allowed=false, forbidden=true: explicit 403/401 — gate the informer;
-//     401 is also retained in the error result so credentials can be diagnosed.
+//     a 401 is also returned as the error, so startup can tell a credential
+//     rejection from a denial.
 //   - allowed=true, transient!=nil: non-auth error (network, 503, NotFound for
 //     missing CRD, etc.). Treated as "allow optimistically" so a transient API
 //     hiccup doesn't permanently disable the resource for the session — the
@@ -954,7 +961,7 @@ func resolveProbeGVRs(p resourceProbe) []schema.GroupVersionResource {
 
 // CheckResourcePermissions probes list access for every typed resource and
 // returns per-kind scope plus a uniform projection. Results are cached for
-// 60s (5s on transient errors).
+// 60s (5s on transient errors or rejected credentials).
 //
 // The second return reports whether the result describes the cluster and scope
 // still in effect. It is false when the clients were swapped or the cache was
@@ -966,8 +973,9 @@ func resolveProbeGVRs(p resourceProbe) []schema.GroupVersionResource {
 //   - Cluster-wide list?limit=1 first.
 //   - If 403 and the kind is namespaceable AND fallback namespaces are set,
 //     retry scoped to those namespaces.
-//   - A 401 retains credential rejection without a cluster-wide fallback;
-//     namespace-specific rejections are retained even when another namespace grants access.
+//   - A 401 rejects Radar's identity, not one scope, so a cluster-wide 401
+//     skips the namespace walk and keeps the rejection. A 401 from a namespace
+//     probe is kept even when another namespace grants access.
 //   - Anything still 403/401 → that scope is denied.
 //   - Anything that returns a non-auth error → optimistically allowed
 //     cluster-wide, except dynamic-cache probes use NotFound to mean the

@@ -50,6 +50,9 @@ func TestCNPGUncachedReasonSaysWhatIsUnknownAndWhy(t *testing.T) {
 		t.Errorf("syncing = %q", got)
 	}
 	// pg's own informer has synced while another namespace of the kind loads.
+	if got := cnpgUncachedReason("Instance Jobs", "Jobs", "pg", k8score.KindReadAssessment{Readiness: k8score.KindFailed, Requested: []string{"pg"}, Read: []string{}, Failed: []string{"pg"}}); got != "Instance Jobs unknown: Radar failed to load Jobs" {
+		t.Fatalf("failed reason = %q", got)
+	}
 	if got := cnpgUncachedReason("Instance Jobs", "Jobs", "pg", k8score.KindReadAssessment{Readiness: k8score.KindPending, Requested: []string{"pg"}, Read: []string{"pg"}, Complete: true}); got != "" {
 		t.Errorf("a synced namespace reads while another loads = %q", got)
 	}

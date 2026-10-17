@@ -20,15 +20,13 @@ const (
 // KindCoverage states how much of one kind the caller could see.
 // DeniedNamespaces (the caller may not list there) and UncachedNamespaces
 // (the caller may, but Radar's informer does not hold them) list only
-// Namespaces already in the caller's scope, so either may be empty on a
+// Namespaces already in the caller's scope, so either may be omitted on a
 // partial State; AllowedNamespaces is always set on a partial State and is
-// the authority for which Namespaces were read. UncachedNamespaces is always
-// present, so a reader can tell this Radar from an older one, which listed
-// both causes under DeniedNamespaces.
+// the authority for which Namespaces were read.
 type KindCoverage struct {
 	State              string   `json:"state"`
 	DeniedNamespaces   []string `json:"deniedNamespaces,omitempty"`
-	UncachedNamespaces []string `json:"uncachedNamespaces"`
+	UncachedNamespaces []string `json:"uncachedNamespaces,omitempty"`
 	AllowedNamespaces  []string `json:"allowedNamespaces,omitempty"`
 }
 
@@ -53,9 +51,6 @@ func (a KindAccess) Covers(namespace string) bool {
 
 func (a KindAccess) Coverage() KindCoverage {
 	cov := KindCoverage{State: a.State, DeniedNamespaces: a.Denied, UncachedNamespaces: a.Uncached}
-	if cov.UncachedNamespaces == nil {
-		cov.UncachedNamespaces = []string{}
-	}
 	if a.State == KindCoveragePartial {
 		cov.AllowedNamespaces = make([]string, 0, len(a.Namespaces))
 		for ns := range a.Namespaces {

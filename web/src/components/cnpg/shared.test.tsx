@@ -39,7 +39,7 @@ it('keeps workspace data with its failed-refresh reason and age', () => {
 })
 
 it('scopes unread kinds to the screen and its namespace, with details folded', () => {
-  const data: CNPGWorkspaceResponse = { installed: true, context: 'test', namespaces: null, objects: {}, coverage: { ...Object.fromEntries(CNPG_WORKSPACE_KEYS.map((k) => [k, { state: 'full' as const }])), backups: { state: 'partial', allowedNamespaces: ['prod'], deniedNamespaces: ['staging'], uncachedNamespaces: [] }, clusterImageCatalogs: { state: 'uncached' } }, issues: [], audit: [], backupsOmitted: 0, jobCoverage: { state: 'denied' } }
+  const data: CNPGWorkspaceResponse = { installed: true, context: 'test', namespaces: null, objects: {}, coverage: { ...Object.fromEntries(CNPG_WORKSPACE_KEYS.map((k) => [k, { state: 'full' as const }])), backups: { state: 'partial', allowedNamespaces: ['prod'], deniedNamespaces: ['staging'] }, clusterImageCatalogs: { state: 'uncached' } }, issues: [], audit: [], backupsOmitted: 0, jobCoverage: { state: 'denied' } }
   const fleet = buildCNPGFleet(data)
   const html = renderToStaticMarkup(<CoverageNotice data={data} fleet={fleet} kinds={['backups', 'scheduledBackups', 'objectStores']} />)
   expect(html).toContain('Some data used on this screen was not read.')
