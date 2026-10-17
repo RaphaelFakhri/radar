@@ -29,7 +29,7 @@ function missingRefLine(resources: string[], stale: boolean): string {
   const names = resources.map((r) => RESOURCE_NAMES[r] ?? r);
   const list = names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   const kinds = names.length === 1 ? names[0] : "these kinds";
-  const line = `Missing references to ${list} aren't reported: Radar can list ${kinds} but not watch them, so it can't confirm one is missing. Grant Radar watch access to ${kinds} to restore the check.`;
+  const line = `Missing references to ${list} aren't reported: Radar can list ${kinds} but not watch them, so it can't confirm one is missing. Grant Radar watch access to ${kinds} and restart Radar to restore the check.`;
   return stale ? `${line} Radar's copy has not refreshed for several minutes.` : line;
 }
 

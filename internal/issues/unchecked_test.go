@@ -55,3 +55,37 @@ func TestMissingRefUncheckedSources(t *testing.T) {
 		t.Fatalf("no namespace access: want nothing, got %+v", got)
 	}
 }
+
+// A route in namespace a can reference a Service in namespace b, so a
+// list-only Services informer in b is reported to a caller scoped to a.
+func TestMissingRefUncheckedSources_CrossNamespaceTarget(t *testing.T) {
+	client := fake.NewClientset()
+	client.PrependWatchReactor("services", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		if action.GetNamespace() != "b" {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "services"}, "", errors.New("watch is not allowed"))
+	})
+	core, err := k8score.NewResourceCache(k8score.CacheConfig{
+		Client:                  client,
+		ResourceTypes:           map[string]bool{k8score.Services: true},
+		DeferredTypes:           map[string]bool{},
+		ResourceScopes:          map[string]k8score.ResourceScope{k8score.Services: {Enabled: true, Namespace: "a"}},
+		ResourceScopeNamespaces: map[string][]string{k8score.Services: {"a", "b"}},
+	})
+	if err != nil {
+		t.Fatalf("NewResourceCache: %v", err)
+	}
+	t.Cleanup(core.Stop)
+	deadline := time.Now().Add(10 * time.Second)
+	for !core.KindListOnly(k8score.Services, "b") {
+		if time.Now().After(deadline) {
+			t.Fatal("Services informer in b never reported list-only")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := MissingRefUncheckedSources(&k8s.ResourceCache{ResourceCache: core}, []string{"a"})
+	if len(got) != 1 || got[0].Resource != "services" {
+		t.Fatalf("want services reported to a caller scoped to a, got %+v", got)
+	}
+}

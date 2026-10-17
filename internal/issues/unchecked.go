@@ -24,25 +24,21 @@ var missingRefTargetResources = []string{
 }
 
 // MissingRefUncheckedSources lists the reference-target kinds whose cache
-// cannot confirm absence in namespaces (nil = every namespace) because Radar
-// may list but not watch them. Missing references to those kinds are not
-// reported, so an answer without them must not read as "no broken
-// references".
+// cannot confirm absence in some namespace because Radar may list but not
+// watch them. Missing references to those kinds are not reported, so an
+// answer without them must not read as "no broken references".
+//
+// The check spans every namespace, not only the requested ones: a subject in
+// one namespace can reference a target in another (Gateway routes,
+// webhooks). An empty non-nil namespaces (no access) yields nothing.
 func MissingRefUncheckedSources(cache *k8s.ResourceCache, namespaces []string) []issuesapi.UncheckedSource {
 	if cache == nil || (namespaces != nil && len(namespaces) == 0) {
 		return nil
 	}
-	scopes := namespaces
-	if len(scopes) == 0 {
-		scopes = []string{""}
-	}
 	var out []issuesapi.UncheckedSource
 	for _, resource := range missingRefTargetResources {
-		listOnly, stale := false, false
-		for _, ns := range scopes {
-			listOnly = listOnly || cache.KindListOnly(resource, ns)
-			stale = stale || cache.KindStale(resource, ns)
-		}
+		listOnly := cache.KindListOnly(resource, "")
+		stale := cache.KindStale(resource, "")
 		if !listOnly {
 			continue
 		}
