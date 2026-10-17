@@ -20,12 +20,16 @@ func TestSearch_NewTypedKindsAndKubectlNames(t *testing.T) {
 		"serviceaccounts": {&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "checkout"}}},
 		"ingresses":       {&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"}}},
 		"networkpolicies": {&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "deny-all"}}},
+		"events":          {&corev1.Event{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "quota-exceeded"}}},
 	}}
 	for query, want := range map[string]string{
 		"kind:ResourceQuota":  "memory-limit-quota",
 		"kind:resourcequotas": "memory-limit-quota",
 		"kind:sa":             "checkout",
 		"kind:ingresses":      "web",
+		"kind:ing":            "web",
+		"kind:quota":          "memory-limit-quota",
+		"kind:ev":             "quota-exceeded",
 		"kind:netpol":         "deny-all",
 	} {
 		res, err := Search(context.Background(), p, Parse(query), Options{Include: IncludeNone})

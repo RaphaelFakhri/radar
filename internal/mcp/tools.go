@@ -3435,7 +3435,7 @@ func searchKindHint(unsearched []search.UnsearchedKind) string {
 	for _, u := range unsearched {
 		switch u.Reason {
 		case search.UnsearchedNotIndexed:
-			hints = append(hints, fmt.Sprintf("kind:%s doesn't name a kind search scans; check the spelling (a Kind or its plural), or use list_resources or get_resource.", u.Kind))
+			hints = append(hints, fmt.Sprintf("kind:%s doesn't name a kind search scans; use the Kind or its plural, or list_resources or get_resource.", u.Kind))
 		case search.UnsearchedUnreadable:
 			hints = append(hints, fmt.Sprintf("Radar couldn't read %s from its cache%s; it may still be loading, or Radar may not be allowed to list it. An empty result for it doesn't mean none exist.", u.Kind, searchHintNamespaces(u.Namespaces)))
 		case search.UnsearchedClusterScoped:
