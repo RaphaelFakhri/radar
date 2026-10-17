@@ -2286,23 +2286,29 @@ func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
 }
 
 // A transient startup 401 must not freeze a narrowed informer set for the
-// lifetime of the connection. Retry once within the existing probe budget;
-// persistent rejection fails initialization into the connection's auth owner.
+// lifetime of the connection. Retry once within the existing probe budget.
+// Credentials rejected by every probe fail initialization into the
+// connection's auth owner. A rejection limited to some probes, while others
+// authenticated, keeps what they granted, as a denial would: the identity
+// works, and failing the whole connection would hide every kind it can read.
 // Non-auth probe budget expiry retains established grants; outer cancellation
 // is checked by initialization before any informer is wired.
 func bootstrapResourcePermissions(ctx context.Context, check func(context.Context, bool) (*PermissionCheckResult, bool)) (*PermissionCheckResult, error) {
 	var rejected error
 	for attempt := 0; attempt < 2; attempt++ {
 		result, _ := check(ctx, attempt > 0)
-		if err := permissionUnauthorized(result); err != nil {
+		err := permissionUnauthorized(result)
+		if err != nil {
 			rejected = err
-			if attempt == 1 || ctx.Err() != nil {
+			if attempt == 0 && ctx.Err() == nil {
+				continue
+			}
+			if credentialsRejectedEverywhere(result) {
 				return nil, fmt.Errorf("resource access probe rejected credentials: %w", err)
 			}
-			continue
 		}
 		if ctx.Err() != nil {
-			if rejected != nil {
+			if rejected != nil && err == nil {
 				return nil, fmt.Errorf("resource access probe could not confirm recovered credentials within its budget: %w", rejected)
 			}
 			if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -2312,6 +2318,14 @@ func bootstrapResourcePermissions(ctx context.Context, check func(context.Contex
 		return result, nil
 	}
 	panic("unreachable")
+}
+
+// credentialsRejectedEverywhere reports a probe in which no kind
+// authenticated: every kind ended disabled by a credential rejection. A kind
+// that was granted, or denied (which needs an authenticated identity), has no
+// entry in ProbeErrors.
+func credentialsRejectedEverywhere(result *PermissionCheckResult) bool {
+	return result != nil && len(result.Scopes) > 0 && len(result.ProbeErrors) == len(result.Scopes)
 }
 
 func permissionUnauthorized(result *PermissionCheckResult) error {

@@ -744,9 +744,9 @@ func (s *Server) loadCapacityPods(r *http.Request, meta *capacityapi.ResponseMet
 		meta.Coverage[capacityapi.CoverageWorkloads] = coverage
 		return nil
 	}
-	if assessment.Readiness != k8s.KindReady {
+	if readiness := assessment.TargetReadiness(); readiness != k8s.KindReady {
 		coverage := unavailableCoverage("pod_cache_unavailable", []string{"scheduledRequests", "aggregateDemand", "workloads", "summary.actions", "demand.summary"})
-		switch assessment.Readiness {
+		switch readiness {
 		case k8s.KindPending:
 			coverage.Status, coverage.ReasonCode = capacityapi.CoverageSyncing, "pod_cache_syncing"
 		case k8s.KindFailed:

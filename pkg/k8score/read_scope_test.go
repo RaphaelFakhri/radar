@@ -133,11 +133,11 @@ func TestAssessKindReadIsPerNamespace(t *testing.T) {
 		}},
 	}
 	got := rc.AssessKindRead(ConfigMaps, []string{"alpha"})
-	if got.Readiness != KindPending || !got.Complete || !slices.Equal(got.Read, []string{"alpha"}) {
+	if got.Readiness != KindPending || !got.Complete || !slices.Equal(got.Read, []string{"alpha"}) || got.TargetReadiness() != KindReady {
 		t.Fatalf("alpha while gamma loads = %+v", got)
 	}
 	all := rc.AssessKindRead(ConfigMaps, nil)
-	if all.Complete || !slices.Equal(all.Read, []string{"alpha"}) || !slices.Equal(all.Loading, []string{"gamma"}) {
+	if all.Complete || !slices.Equal(all.Read, []string{"alpha"}) || !slices.Equal(all.Loading, []string{"gamma"}) || all.TargetReadiness() != KindPending {
 		t.Fatalf("unscoped while gamma loads = %+v", all)
 	}
 
@@ -170,8 +170,15 @@ func TestAssessKindReadIsPerNamespace(t *testing.T) {
 	rc.deferredFailed.Store(true)
 	rc.deferredSynced = map[string]bool{ConfigMaps: false}
 	failed := rc.AssessKindRead(ConfigMaps, []string{"alpha", "gamma"})
-	if failed.Readiness != KindFailed || !slices.Equal(failed.Read, []string{"alpha"}) || !slices.Equal(failed.Failed, []string{"gamma"}) {
+	if failed.Readiness != KindFailed || !slices.Equal(failed.Read, []string{"alpha"}) || !slices.Equal(failed.Failed, []string{"gamma"}) || failed.TargetReadiness() != KindFailed {
 		t.Fatalf("after the deadline = %+v", failed)
+	}
+	if alpha := rc.AssessKindRead(ConfigMaps, []string{"alpha"}); alpha.TargetReadiness() != KindReady {
+		t.Fatalf("a loaded target is ready while another namespace failed: %+v", alpha)
+	}
+	// Without a partition the target is the whole kind.
+	if whole := (KindReadAssessment{Readiness: KindPending, AllNamespaces: true}); whole.TargetReadiness() != KindPending {
+		t.Fatalf("whole-kind target = %v", whole.TargetReadiness())
 	}
 	// Background kinds have no deadline.
 	rc.backgroundKeys = map[string]bool{ConfigMaps: true}

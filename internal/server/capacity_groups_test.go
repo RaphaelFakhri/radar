@@ -14,7 +14,9 @@ import (
 	"github.com/skyhook-io/radar/pkg/karpenter"
 	pkgtimeline "github.com/skyhook-io/radar/pkg/timeline"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
@@ -29,7 +31,19 @@ type capacityConfigMapCache struct {
 func (c capacityConfigMapCache) AssessKindRead(string, []string) k8score.KindReadAssessment {
 	return c.assessment
 }
-func (c capacityConfigMapCache) ConfigMaps() corelisters.ConfigMapLister { return c.lister }
+
+// ReadableObject serves the lister only when the assessment says kube-system
+// is readable, as the cache's own store read does.
+func (c capacityConfigMapCache) ReadableObject(_, namespace, name string) (runtime.Object, bool, bool) {
+	if !c.assessment.Complete || c.lister == nil {
+		return nil, false, false
+	}
+	configMap, err := c.lister.ConfigMaps(namespace).Get(name)
+	if err != nil {
+		return nil, false, apierrors.IsNotFound(err)
+	}
+	return configMap, true, true
+}
 
 func capacityConfigMapLister(t *testing.T, payload *string) corelisters.ConfigMapLister {
 	t.Helper()
@@ -75,6 +89,14 @@ func TestCapacityAutoscalerStatusCoverageVerdictsMatchDetection(t *testing.T) {
 			cache:         withLister(capacityConfigMapCache{assessment: k8score.KindReadAssessment{Readiness: k8score.KindReady, Uncovered: []string{autoscalerStatusNamespace}}}, capacityConfigMapLister(t, nil)),
 			wantStatus:    capacityapi.CoverageUnavailable,
 			wantReason:    "autoscaler_status_cache_scope",
+			wantDetection: capacitymodel.AutoscalerUnavailable,
+		},
+		{
+			name:          "loading",
+			allowed:       true,
+			cache:         withLister(capacityConfigMapCache{assessment: k8score.KindReadAssessment{Readiness: k8score.KindPending, Read: []string{}, Loading: []string{autoscalerStatusNamespace}}}, capacityConfigMapLister(t, nil)),
+			wantStatus:    capacityapi.CoverageUnavailable,
+			wantReason:    "autoscaler_status_cache_unavailable",
 			wantDetection: capacitymodel.AutoscalerUnavailable,
 		},
 		{

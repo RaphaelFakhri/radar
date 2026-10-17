@@ -116,6 +116,25 @@ func (rc *ResourceCache) AssessKindRead(resource string, requested []string) Kin
 	return a
 }
 
+// TargetReadiness is the state of the requested namespaces alone: Pending
+// while any of them loads, Failed when one missed its load deadline and none
+// is loading, Ready otherwise. Other namespaces of the kind don't count, so a
+// target of loaded namespaces is Ready while another namespace still loads.
+// Uncovered namespaces don't count either; Complete covers them. Without a
+// partition (one informer for every namespace and no target), it is Readiness.
+func (a KindReadAssessment) TargetReadiness() KindReadiness {
+	if a.Read == nil {
+		return a.Readiness
+	}
+	switch {
+	case len(a.Loading) > 0:
+		return KindPending
+	case len(a.Failed) > 0:
+		return KindFailed
+	}
+	return KindReady
+}
+
 // namespaceSet indexes namespaces for membership checks: a collector's list
 // and a caller's target can each hold thousands.
 func namespaceSet(namespaces []string) map[string]bool {
