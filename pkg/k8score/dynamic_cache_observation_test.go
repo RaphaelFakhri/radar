@@ -602,3 +602,32 @@ func TestReadServerChangesWhenAClusterWideInformerReplacesNamespaceOnes(t *testi
 		t.Fatalf("after the replacement: same=%v synced=%v; want a different, unsynced server", after.Same(before), synced)
 	}
 }
+
+// A 401 rejects Radar's credentials, not one scope, so scope probing stops on
+// it instead of narrowing the kind to the namespaces that answered.
+func TestProbeScopesStopsOnRejectedCredentials(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	for name, rejected := range map[string]string{"cluster-wide probe": "", "a fallback namespace": "beta"} {
+		t.Run(name, func(t *testing.T) {
+			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+			dyn.PrependReactor("list", "widgets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				switch ns := action.GetNamespace(); {
+				case ns == rejected:
+					return true, nil, apierrors.NewUnauthorized("token rejected")
+				case ns == "":
+					return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("cluster-wide list denied"))
+				}
+				return false, nil, nil
+			})
+			cache, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, NamespaceFallbacks: []string{"alpha", "beta"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(cache.Stop)
+			scopes, _, err := cache.probeScopes(gvr, "")
+			if !apierrors.IsUnauthorized(err) || scopes != nil {
+				t.Fatalf("scopes=%v err=%v, want the credential rejection", scopes, err)
+			}
+		})
+	}
+}
