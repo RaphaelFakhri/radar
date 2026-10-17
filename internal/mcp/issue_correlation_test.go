@@ -29,7 +29,17 @@ func initCorrelationStore(t *testing.T) timeline.EventStore {
 	// Backdate observation past the full window: a fresh store has watched
 	// for ~0s and correlation correctly refuses to claim anything.
 	timeline.SetObservationStartForTest(time.Now().Add(-2 * time.Hour))
+	// The timeline fills only while connected, and get_changes refuses to
+	// answer otherwise.
+	setConnectedForTest(t)
 	return timeline.GetStore()
+}
+
+func setConnectedForTest(t *testing.T) {
+	t.Helper()
+	prev := k8s.GetConnectionStatus()
+	k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected, Context: prev.Context})
+	t.Cleanup(func() { k8s.SetConnectionStatus(prev) })
 }
 
 // A store that has only just started observing must emit NO markers — in
