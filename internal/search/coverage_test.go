@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -117,13 +116,6 @@ func TestSearch_ReportsKindsItCouldNotAnswerFor(t *testing.T) {
 			t.Fatalf("unsearched = %+v", res.UnsearchedKinds)
 		}
 	})
-	t.Run("informer not synced serves an empty store without error", func(t *testing.T) {
-		p := &fakeProvider{typedUnsynced: map[string]bool{"limitranges": true}}
-		res, _ := Search(context.Background(), p, Parse("kind:LimitRange"), Options{Include: IncludeNone})
-		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Reason != UnsearchedUnavailable {
-			t.Fatalf("unsearched = %+v", res.UnsearchedKinds)
-		}
-	})
 	t.Run("dynamic kind fails in one namespace", func(t *testing.T) {
 		gvr := schema.GroupVersionResource{Group: "cert-manager.io", Version: "v1", Resource: "certificates"}
 		p := &fakeProvider{
@@ -136,38 +128,6 @@ func TestSearch_ReportsKindsItCouldNotAnswerFor(t *testing.T) {
 		want := UnsearchedKind{Kind: "Certificate", Group: "cert-manager.io", Reason: UnsearchedUnreadable, Namespaces: []string{"b"}}
 		if len(res.UnsearchedKinds) != 1 || !reflect.DeepEqual(res.UnsearchedKinds[0], want) {
 			t.Fatalf("unsearched = %+v, want %+v", res.UnsearchedKinds, want)
-		}
-	})
-	t.Run("typed informer does not watch a requested namespace", func(t *testing.T) {
-		p := &fakeProvider{typedUnwatched: map[string]bool{"b": true}}
-		res, _ := Search(context.Background(), p, Parse("kind:ResourceQuota"), Options{Include: IncludeNone, Namespaces: []string{"a", "b"}})
-		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Reason != UnsearchedUnreadable || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
-			t.Fatalf("unsearched = %+v", res.UnsearchedKinds)
-		}
-	})
-	t.Run("dynamic kind not synced only where it was read", func(t *testing.T) {
-		gvr := schema.GroupVersionResource{Group: "cert-manager.io", Version: "v1", Resource: "certificates"}
-		newProvider := func(unsynced ...string) *fakeProvider {
-			p := &fakeProvider{
-				dynamic:         map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: nil},
-				kinds:           map[schema.GroupVersionResource]string{gvr: "Certificate"},
-				namespaced:      map[schema.GroupVersionResource]bool{gvr: true},
-				dynamicUnsynced: map[string]bool{},
-			}
-			for _, ns := range unsynced {
-				p.dynamicUnsynced[ns] = true
-			}
-			return p
-		}
-		res, _ := Search(context.Background(), newProvider("b"), Parse("kind:Certificate"), Options{Include: IncludeNone, Namespaces: []string{"a", "b"}})
-		if len(res.UnsearchedKinds) != 1 || res.UnsearchedKinds[0].Reason != UnsearchedUnavailable || strings.Join(res.UnsearchedKinds[0].Namespaces, ",") != "b" {
-			t.Fatalf("unsynced b: unsearched = %+v", res.UnsearchedKinds)
-		}
-		if res, _ := Search(context.Background(), newProvider("b"), Parse("kind:Certificate"), Options{Include: IncludeNone, Namespaces: []string{"a"}}); len(res.UnsearchedKinds) != 0 {
-			t.Fatalf("a namespace outside the read must not be reported: %+v", res.UnsearchedKinds)
-		}
-		if res, _ := Search(context.Background(), newProvider(""), Parse("kind:Certificate"), Options{Include: IncludeNone}); len(res.UnsearchedKinds) != 1 {
-			t.Fatalf("cluster-wide read not synced: unsearched = %+v", res.UnsearchedKinds)
 		}
 	})
 	t.Run("kinds the caller may not list stay silent", func(t *testing.T) {

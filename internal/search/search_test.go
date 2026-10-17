@@ -17,11 +17,8 @@ import (
 type fakeProvider struct {
 	typed                 map[string][]runtime.Object
 	typedErr              map[string]error
-	typedUnsynced         map[string]bool
-	typedUnwatched        map[string]bool // namespaces the typed informers don't watch
 	dynamic               map[schema.GroupVersionResource][]*unstructured.Unstructured
 	dynamicErrNamespaces  map[string]bool
-	dynamicUnsynced       map[string]bool // namespaces ("" = cluster-wide) whose dynamic informers haven't synced
 	kinds                 map[schema.GroupVersionResource]string
 	namespaced            map[schema.GroupVersionResource]bool
 	dynamicListNamespaces []string
@@ -40,16 +37,6 @@ func (f *fakeProvider) ListDynamic(_ context.Context, gvr schema.GroupVersionRes
 		return nil, fmt.Errorf("list %s in %s: forbidden", gvr.Resource, namespace)
 	}
 	return f.dynamic[gvr], nil
-}
-
-func (f *fakeProvider) TypedSynced(plural string) bool { return !f.typedUnsynced[plural] }
-
-func (f *fakeProvider) TypedCoversNamespace(_, namespace string) bool {
-	return !f.typedUnwatched[namespace]
-}
-
-func (f *fakeProvider) DynamicSynced(_ schema.GroupVersionResource, namespace string) bool {
-	return !f.dynamicUnsynced[namespace]
 }
 
 func (f *fakeProvider) WatchedDynamic() []schema.GroupVersionResource {

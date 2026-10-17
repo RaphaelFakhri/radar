@@ -104,23 +104,20 @@ type Result struct {
 type UnsearchedKind struct {
 	Kind  string `json:"kind"`
 	Group string `json:"group,omitempty"`
-	// Reason is UnsearchedNotIndexed, UnsearchedUnavailable,
-	// UnsearchedUnreadable or UnsearchedClusterScoped.
+	// Reason is UnsearchedNotIndexed, UnsearchedUnreadable or
+	// UnsearchedClusterScoped.
 	Reason string `json:"reason"`
-	// Namespaces are the namespaces that could not be read, when only some
-	// failed.
+	// Namespaces are the namespaces whose read failed, when only some did.
 	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 const (
 	// UnsearchedNotIndexed: no kind search scans matches the term.
 	UnsearchedNotIndexed = "not_indexed"
-	// UnsearchedUnavailable: the kind is scanned, but Radar's cache for it
-	// has not synced yet. Retrying later can help.
-	UnsearchedUnavailable = "unavailable"
-	// UnsearchedUnreadable: Radar's cache can't serve the kind, or doesn't
-	// watch the requested namespaces, for example because Radar itself may
-	// not list it there. Retrying won't help.
+	// UnsearchedUnreadable: reading the kind from Radar's cache failed. The
+	// cache may still be loading, or Radar itself may not be allowed to list
+	// the kind; the error doesn't say which. An informer that serves an empty
+	// store while it loads is not detected.
 	UnsearchedUnreadable = "unreadable"
 	// UnsearchedClusterScoped: the kind is cluster-scoped and the search was
 	// limited to namespaces, so none of its objects could match.

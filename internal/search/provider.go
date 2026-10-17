@@ -59,18 +59,6 @@ func (p *CacheProvider) KindForGVR(gvr schema.GroupVersionResource) string {
 	return p.discovery.GetKindForGVR(gvr)
 }
 
-func (p *CacheProvider) TypedSynced(plural string) bool {
-	return p.cache.IsKindReady(k8s.CanonicalBuiltinKind(plural))
-}
-
-func (p *CacheProvider) TypedCoversNamespace(plural, namespace string) bool {
-	return p.cache.KindCoversNamespace(k8s.CanonicalBuiltinKind(plural), namespace)
-}
-
-func (p *CacheProvider) DynamicSynced(gvr schema.GroupVersionResource, namespace string) bool {
-	return p.dynamic != nil && p.dynamic.IsNamespaceSynced(gvr, namespace)
-}
-
 func (p *CacheProvider) NamespacedForGVR(gvr schema.GroupVersionResource) (bool, bool) {
 	if p.discovery == nil {
 		return false, false

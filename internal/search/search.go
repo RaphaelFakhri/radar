@@ -52,18 +52,6 @@ type dynamicScopeProvider interface {
 	NamespacedForGVR(gvr schema.GroupVersionResource) (bool, bool)
 }
 
-// cacheStateProvider reports whether the cache behind a read is complete, so a
-// search can tell "no object matched" from "not loaded" or "not watched". An
-// enabled typed informer serves an empty store before it syncs, and one scoped
-// to some namespaces serves an empty list for the others, neither as an error.
-type cacheStateProvider interface {
-	TypedSynced(plural string) bool
-	TypedCoversNamespace(plural, namespace string) bool
-	// DynamicSynced reports whether the informers serving gvr in namespace
-	// ("" for a cluster-wide read) have synced.
-	DynamicSynced(gvr schema.GroupVersionResource, namespace string) bool
-}
-
 // typedKinds is the set of typed kinds we walk for unfiltered queries.
 // Order is intentional: we scan workloads first (they're what users
 // usually ask about) so partial-result truncation favors them.
@@ -188,7 +176,6 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	var firstFilterErr error
 	filterErrCount := 0
 	coverage := newKindCoverage(q)
-	cacheState, _ := p.(cacheStateProvider)
 
 	// Typed kinds.
 	for _, tk := range typedKinds {
@@ -230,21 +217,6 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if err != nil {
 			coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnreadable})
 			continue
-		}
-		if coverage != nil && cacheState != nil {
-			if !cacheState.TypedSynced(tk.Plural) {
-				coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnavailable})
-			} else {
-				var unwatched []string
-				for _, ns := range listNs {
-					if !cacheState.TypedCoversNamespace(tk.Plural, ns) {
-						unwatched = append(unwatched, ns)
-					}
-				}
-				if len(unwatched) > 0 {
-					coverage.add(UnsearchedKind{Kind: tk.Kind, Group: tk.Group, Reason: UnsearchedUnreadable, Namespaces: unwatched})
-				}
-			}
 		}
 		res.Searched += len(objs)
 		for _, obj := range objs {
@@ -318,29 +290,19 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnreadable})
 				continue
 			}
-			// Checked after the list, which may have started the informer.
-			if coverage != nil && cacheState != nil && !cacheState.DynamicSynced(gvr, "") {
-				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnavailable})
-			}
 			items = its
 		} else {
-			var unreadable, unsynced []string
+			var unreadable []string
 			for _, ns := range opts.Namespaces {
 				its, err := p.ListDynamic(ctx, gvr, ns)
 				if err != nil {
 					unreadable = append(unreadable, ns)
 					continue
 				}
-				if coverage != nil && cacheState != nil && !cacheState.DynamicSynced(gvr, ns) {
-					unsynced = append(unsynced, ns)
-				}
 				items = append(items, its...)
 			}
 			if len(unreadable) > 0 {
 				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnreadable, Namespaces: unreadable})
-			}
-			if len(unsynced) > 0 {
-				coverage.add(UnsearchedKind{Kind: kind, Group: gvr.Group, Reason: UnsearchedUnavailable, Namespaces: unsynced})
 			}
 		}
 		res.Searched += len(items)
