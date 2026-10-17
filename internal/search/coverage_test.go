@@ -28,6 +28,9 @@ func TestSearch_NewTypedKindsAndKubectlNames(t *testing.T) {
 		"kind:LimitRange":     "defaults",
 		"kind:sa":             "checkout",
 		"kind:ingresses":      "web",
+		"kind:ing":            "web",
+		"kind:quota":          "memory-limit-quota",
+		"kind:limits":         "defaults",
 		"kind:netpol":         "deny-all",
 	} {
 		res, err := Search(context.Background(), p, Parse(query), Options{Include: IncludeNone})
