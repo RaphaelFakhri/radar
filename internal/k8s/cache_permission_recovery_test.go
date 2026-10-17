@@ -20,15 +20,15 @@ func TestBootstrapResourcePermissionsRetriesNamespace401BeforeWiring(t *testing.
 	rejected := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}}, NamespaceProbeErrors: map[string]map[string]error{"pods": {"alpha": apierrors.NewUnauthorized("expired startup token")}}}
 	recovered := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}}, ScopeCandidates: []string{"alpha", "beta"}}
 	calls := 0
-	result, err := bootstrapResourcePermissions(context.Background(), func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+	result, err := bootstrapResult(context.Background(), func(ctx context.Context, retry bool) *PermissionCheckResult {
 		calls++
 		if retry != (calls == 2) {
 			t.Fatalf("retry=%v at call %d", retry, calls)
 		}
 		if calls == 1 {
-			return rejected, true
+			return rejected
 		}
-		return recovered, true
+		return recovered
 	})
 	if err != nil || result != recovered || calls != 2 {
 		t.Fatalf("result=%+v error=%v calls=%d", result, err, calls)
@@ -45,7 +45,7 @@ func TestBootstrapResourcePermissionsPersistent401FailsIntoAuthClassification(t 
 			result.NamespaceProbeErrors = map[string]map[string]error{"pods": {"alpha": rejection}}
 		}
 		calls := 0
-		got, err := bootstrapResourcePermissions(context.Background(), func(context.Context, bool) (*PermissionCheckResult, bool) { calls++; return result, true })
+		got, err := bootstrapResult(context.Background(), func(context.Context, bool) *PermissionCheckResult { calls++; return result })
 		if got != nil || !apierrors.IsUnauthorized(err) || !isAuthClassification(ClassifyError(err)) || calls != 2 {
 			t.Fatalf("namespace=%v result=%+v err=%v classification=%q calls=%d", namespaceFailure, got, err, ClassifyError(err), calls)
 		}
@@ -62,9 +62,9 @@ func TestBootstrapResourcePermissionsPartial401KeepsAuthenticatedGrants(t *testi
 		"beside denial": {Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}},
 	} {
 		calls := 0
-		got, err := bootstrapResourcePermissions(context.Background(), func(_ context.Context, retry bool) (*PermissionCheckResult, bool) {
+		got, err := bootstrapResult(context.Background(), func(_ context.Context, retry bool) *PermissionCheckResult {
 			calls++
-			return result, true
+			return result
 		})
 		if err != nil || got != result || calls != 2 {
 			t.Fatalf("%s: result=%+v err=%v calls=%d", name, got, err, calls)
@@ -83,13 +83,13 @@ func TestBootstrapNamespace401RecoveryWiresRecoveredInformerCoverage(t *testing.
 		return false, nil, nil
 	})
 	calls := 0
-	recovered, err := bootstrapResourcePermissions(context.Background(), func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+	recovered, err := bootstrapResult(context.Background(), func(ctx context.Context, retry bool) *PermissionCheckResult {
 		calls++
 		result, _ := probeResourceAccess(ctx, dyn, []string{"alpha", "beta"}, false)
 		if calls == 1 && (!apierrors.IsUnauthorized(result.NamespaceProbeErrors["pods"]["alpha"]) || result.Scopes["pods"].Namespace != "beta") {
 			t.Fatalf("failed to reproduce narrowed startup scope: %+v", result)
 		}
-		return result, true
+		return result
 	})
 	if err != nil || calls != 2 {
 		t.Fatalf("recovery err=%v calls=%d", err, calls)
@@ -109,7 +109,7 @@ func TestBootstrapProbeBudgetExpiryKeepsNonAuthGrants(t *testing.T) {
 	defer cancel()
 	grants := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "alpha"}}, ScopeCandidatesTruncated: true}
 	calls := 0
-	got, err := bootstrapResourcePermissions(ctx, func(context.Context, bool) (*PermissionCheckResult, bool) { calls++; return grants, true })
+	got, err := bootstrapResult(ctx, func(context.Context, bool) *PermissionCheckResult { calls++; return grants })
 	if err != nil || got != grants || calls != 1 {
 		t.Fatalf("probe budget discarded completed grants: got=%+v err=%v calls=%d", got, err, calls)
 	}
@@ -120,13 +120,13 @@ func TestBootstrap401RetryBudgetExpiryDoesNotPublishFalseRecovery(t *testing.T) 
 	defer cancel()
 	rejected := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("startup credentials rejected")}}
 	calls := 0
-	got, err := bootstrapResourcePermissions(ctx, func(context.Context, bool) (*PermissionCheckResult, bool) {
+	got, err := bootstrapResult(ctx, func(context.Context, bool) *PermissionCheckResult {
 		calls++
 		if calls == 1 {
-			return rejected, true
+			return rejected
 		}
 		<-ctx.Done()
-		return &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{}}, true
+		return &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{}}
 	})
 	if got != nil || !apierrors.IsUnauthorized(err) || calls != 2 {
 		t.Fatalf("expired retry implied credentials recovered: got=%+v err=%v calls=%d", got, err, calls)
@@ -145,18 +145,61 @@ func TestBootstrapCutShortRetryKeepsTheFirstResult(t *testing.T) {
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		calls := 0
-		got, err := bootstrapResourcePermissions(ctx, func(ctx context.Context, retry bool) (*PermissionCheckResult, bool) {
+		got, err := bootstrapResult(ctx, func(ctx context.Context, retry bool) *PermissionCheckResult {
 			calls++
 			if !retry {
-				return partial, true
+				return partial
 			}
 			<-ctx.Done()
-			return guess, true
+			return guess
 		})
 		cancel()
 		if err != nil || got != partial || calls != 2 {
 			t.Fatalf("%s: a cut-short retry replaced the first result: got=%+v err=%v calls=%d", name, got, err, calls)
 		}
+	}
+}
+
+// Startup publishes only the result its informers are built from. Probing
+// publishes nothing, so a retry the budget cut short never becomes the
+// process-wide result that capabilities, visibility and CRD scoping read.
+func TestBootstrapPublishesOnlyTheChosenResult(t *testing.T) {
+	InvalidateResourcePermissionsCache()
+	t.Cleanup(InvalidateResourcePermissionsCache)
+	prevClient := SetTestClient(kubernetes.NewForConfigOrDie(&rest.Config{Host: "http://127.0.0.1:1"}))
+	t.Cleanup(func() { SetTestClient(prevClient) })
+	t.Cleanup(SetTestPermissionProbeClient(func() {}))
+	if probe := freshResourcePermissions(context.Background(), false); probe.result == nil || GetCachedPermissionResult() != nil {
+		t.Fatalf("probing published its result: %+v", GetCachedPermissionResult())
+	}
+
+	rejection := apierrors.NewUnauthorized("token expired mid-probe")
+	partial := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}, "secrets": {}}, ProbeErrors: map[string]error{"secrets": rejection}}
+	guess := &PermissionCheckResult{Perms: &ResourcePermissions{Pods: true, Secrets: true}, Scopes: map[string]k8score.ResourceScope{"pods": {Enabled: true}, "secrets": {Enabled: true}}}
+	resourcePermsMu.RLock()
+	gen := resourcePermsGen
+	resourcePermsMu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	chosen, err := bootstrapResourcePermissions(ctx, func(ctx context.Context, retry bool) permissionProbe {
+		if !retry {
+			return permissionProbe{result: partial, hadErrors: true, gen: gen, unpublished: true}
+		}
+		<-ctx.Done()
+		return permissionProbe{result: guess, gen: gen, unpublished: true}
+	})
+	if err != nil || chosen.result != partial {
+		t.Fatalf("a cut-short retry replaced the first result: got=%+v err=%v", chosen.result, err)
+	}
+	if GetCachedPermissionResult() != nil {
+		t.Fatalf("bootstrap published before startup chose: %+v", GetCachedPermissionResult())
+	}
+	if !publishResourcePermissions(chosen) {
+		t.Fatal("the chosen result was not current")
+	}
+	got := GetCachedPermissionResult()
+	if got == nil || got.Perms.Secrets || got.Scopes["pods"].Namespace != "beta" {
+		t.Fatalf("the cache differs from the informers' result: %+v", got)
 	}
 }
 
@@ -172,11 +215,20 @@ func TestFreshResourcePermissionsRetryProbesAgain(t *testing.T) {
 	cached := &PermissionCheckResult{Perms: &ResourcePermissions{}, Scopes: map[string]k8score.ResourceScope{"pods": {}}, ProbeErrors: map[string]error{"pods": apierrors.NewUnauthorized("expired")}}
 	t.Cleanup(SetTestPermissionResult(cached))
 
-	if got, _ := freshResourcePermissions(context.Background(), false); got.ProbeErrors["pods"] == nil || lists != 0 {
+	if got := freshResourcePermissions(context.Background(), false).result; got.ProbeErrors["pods"] == nil || lists != 0 {
 		t.Fatalf("the first probe should read the cached result: %+v lists=%d", got, lists)
 	}
-	got, _ := freshResourcePermissions(context.Background(), true)
+	got := freshResourcePermissions(context.Background(), true).result
 	if lists == 0 || len(got.ProbeErrors) != 0 || !got.Scopes["pods"].Enabled {
 		t.Fatalf("the retry replayed the cached rejection: errors=%v pods=%+v lists=%d", got.ProbeErrors, got.Scopes["pods"], lists)
 	}
+}
+
+// bootstrapResult runs bootstrapResourcePermissions over probes that return
+// plain results, as most of these tests write them.
+func bootstrapResult(ctx context.Context, check func(context.Context, bool) *PermissionCheckResult) (*PermissionCheckResult, error) {
+	probe, err := bootstrapResourcePermissions(ctx, func(ctx context.Context, retry bool) permissionProbe {
+		return permissionProbe{result: check(ctx, retry)}
+	})
+	return probe.result, err
 }
