@@ -396,7 +396,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
 			"`unchecked_sources` lists sources Radar couldn't check, so their issues may be " +
 			"missing; don't call them healthy. `helm` means failed or stuck Helm releases; " +
-			"`missing_ref` + `resource`: references to that kind aren't checked. " +
+			"`absence` + `resource`: Radar can't confirm that kind is missing. " +
 			"`diagnostic_context.role` marks roots, rollups, symptoms, or context; " +
 			"`related_issues[].count` is the root's affected subset, not the linked issue total. " +
 			"Confidence: `high` declared edge, `medium` lead to verify, `low` heuristic. " +
@@ -3134,7 +3134,7 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		resp.UncheckedSources = []issuesapi.UncheckedSource{{Source: issuesapi.UncheckedSourceHelm, Reason: issuesapi.UncheckedReasonReadFailed}}
 	}
 	issueCache, _, _ := provider.CacheIdentity()
-	resp.UncheckedSources = append(resp.UncheckedSources, issues.MissingRefUncheckedSources(issueCache, allowedNamespaces)...)
+	resp.UncheckedSources = append(resp.UncheckedSources, issues.AbsenceUncheckedSources(issueCache, allowedNamespaces)...)
 	resp.ClusterContext = provider.ClusterContextForIssues(allowedNamespaces, func(group, resource string) bool {
 		return canReadInNamespace(ctx, group, resource, "kube-system", "list")
 	})

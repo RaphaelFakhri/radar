@@ -659,7 +659,7 @@ type UncheckedSource struct {
 	Source UncheckedSourceName `json:"source"`
 	Reason UncheckedReason     `json:"reason"`
 	// Resource is the plural resource the gap is about, for sources that
-	// are checked per kind (missing_ref). Empty otherwise.
+	// are checked per kind (absence). Empty otherwise.
 	Resource string `json:"resource,omitempty"`
 }
 
@@ -671,10 +671,11 @@ const (
 	// UncheckedSourceHelm is Radar's native Helm release read (release
 	// Secrets). Flux HelmReleases are not part of it.
 	UncheckedSourceHelm UncheckedSourceName = "helm"
-	// UncheckedSourceMissingRef is the dangling by-name reference check
-	// (Issue.Source missing_ref) for the kind named in Resource: references
-	// to objects of that kind are not reported missing.
-	UncheckedSourceMissingRef UncheckedSourceName = "missing_ref"
+	// UncheckedSourceAbsence covers every check that concludes an object of
+	// the kind named in Resource does not exist: missing references to it, a
+	// Service whose selector matches no Pods, no NetworkPolicy allowing
+	// traffic. Those conclusions are skipped for that kind.
+	UncheckedSourceAbsence UncheckedSourceName = "absence"
 )
 
 type UncheckedReason string

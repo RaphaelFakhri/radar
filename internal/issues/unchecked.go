@@ -6,9 +6,12 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
-// missingRefTargetResources are the kinds the missing-reference detectors
-// look objects up in.
-var missingRefTargetResources = []string{
+// absenceCheckedResources are the kinds whose absence an issue detector can
+// conclude: reference targets, the Pods a Service selects, and the
+// NetworkPolicies that could allow traffic.
+var absenceCheckedResources = []string{
+	k8score.Pods,
+	k8score.NetworkPolicies,
 	k8score.Secrets,
 	k8score.ConfigMaps,
 	k8score.PersistentVolumeClaims,
@@ -23,20 +26,20 @@ var missingRefTargetResources = []string{
 	k8score.ClusterRoles,
 }
 
-// MissingRefUncheckedSources lists the reference-target kinds whose cache
-// cannot confirm absence in some namespace because Radar may list but not
-// watch them. Missing references to those kinds are not reported, so an
-// answer without them must not read as "no broken references".
+// AbsenceUncheckedSources lists the kinds whose cache cannot confirm absence
+// in some namespace because Radar may list but not watch them. Findings that
+// conclude such an object is missing are not reported, so an answer without
+// them must not read as an all-clear.
 //
 // The check spans every namespace, not only the requested ones: a subject in
 // one namespace can reference a target in another (Gateway routes,
 // webhooks). An empty non-nil namespaces (no access) yields nothing.
-func MissingRefUncheckedSources(cache *k8s.ResourceCache, namespaces []string) []issuesapi.UncheckedSource {
+func AbsenceUncheckedSources(cache *k8s.ResourceCache, namespaces []string) []issuesapi.UncheckedSource {
 	if cache == nil || (namespaces != nil && len(namespaces) == 0) {
 		return nil
 	}
 	var out []issuesapi.UncheckedSource
-	for _, resource := range missingRefTargetResources {
+	for _, resource := range absenceCheckedResources {
 		listOnly := cache.KindListOnly(resource, "")
 		stale := cache.KindStale(resource, "")
 		if !listOnly {
@@ -46,7 +49,7 @@ func MissingRefUncheckedSources(cache *k8s.ResourceCache, namespaces []string) [
 		if stale {
 			reason = issuesapi.UncheckedReasonStale
 		}
-		out = append(out, issuesapi.UncheckedSource{Source: issuesapi.UncheckedSourceMissingRef, Reason: reason, Resource: resource})
+		out = append(out, issuesapi.UncheckedSource{Source: issuesapi.UncheckedSourceAbsence, Reason: reason, Resource: resource})
 	}
 	return out
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
-func TestMissingRefUncheckedSources(t *testing.T) {
+func TestAbsenceUncheckedSources(t *testing.T) {
 	client := fake.NewClientset()
 	client.PrependWatchReactor("secrets", func(k8stesting.Action) (bool, watch.Interface, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "", errors.New("watch is not allowed"))
@@ -44,21 +44,21 @@ func TestMissingRefUncheckedSources(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	want := issuesapi.UncheckedSource{Source: issuesapi.UncheckedSourceMissingRef, Reason: issuesapi.UncheckedReasonListOnly, Resource: "secrets"}
+	want := issuesapi.UncheckedSource{Source: issuesapi.UncheckedSourceAbsence, Reason: issuesapi.UncheckedReasonListOnly, Resource: "secrets"}
 	for _, namespaces := range [][]string{nil, {"shop"}} {
-		got := MissingRefUncheckedSources(cache, namespaces)
+		got := AbsenceUncheckedSources(cache, namespaces)
 		if len(got) != 1 || got[0] != want {
 			t.Fatalf("namespaces %v: got %+v, want only %+v", namespaces, got, want)
 		}
 	}
-	if got := MissingRefUncheckedSources(cache, []string{}); got != nil {
+	if got := AbsenceUncheckedSources(cache, []string{}); got != nil {
 		t.Fatalf("no namespace access: want nothing, got %+v", got)
 	}
 }
 
 // A route in namespace a can reference a Service in namespace b, so a
 // list-only Services informer in b is reported to a caller scoped to a.
-func TestMissingRefUncheckedSources_CrossNamespaceTarget(t *testing.T) {
+func TestAbsenceUncheckedSources_CrossNamespaceTarget(t *testing.T) {
 	client := fake.NewClientset()
 	client.PrependWatchReactor("services", func(action k8stesting.Action) (bool, watch.Interface, error) {
 		if action.GetNamespace() != "b" {
@@ -84,7 +84,7 @@ func TestMissingRefUncheckedSources_CrossNamespaceTarget(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	got := MissingRefUncheckedSources(&k8s.ResourceCache{ResourceCache: core}, []string{"a"})
+	got := AbsenceUncheckedSources(&k8s.ResourceCache{ResourceCache: core}, []string{"a"})
 	if len(got) != 1 || got[0].Resource != "services" {
 		t.Fatalf("want services reported to a caller scoped to a, got %+v", got)
 	}
