@@ -227,7 +227,7 @@ func TestHandleListResources_CommonAliases(t *testing.T) {
 
 	denyClusterRead(t, "alice", "/nodes")
 	_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "no"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("node alias must report caller denial, got %v", err)
 	}
 }
@@ -238,7 +238,7 @@ func TestHandleListResources_DeniedNamespace(t *testing.T) {
 
 	// A denied scope must be distinguishable from an empty namespace.
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "pods", Namespace: "beta"})
-	if err == nil || !strings.Contains(err.Error(), "namespace_not_visible:") {
+	if err == nil || !strings.Contains(err.Error(), "caller_namespace_not_visible:") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -251,7 +251,7 @@ func TestHandleListResources_ClusterOnlyKindBlockedForRestricted(t *testing.T) {
 	denyClusterRead(t, "alice", "/nodes")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "nodes"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestHandleListResources_ClusterWidePodsButNoNodes(t *testing.T) {
 	denyClusterRead(t, "broad-pod-reader", "/nodes")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "nodes"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -348,10 +348,10 @@ func TestHandleGetResource_DeniedNamespace(t *testing.T) {
 
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "pods", Namespace: "beta", Name: "beta-pod"})
 	if err == nil {
-		t.Fatal("expected namespace_not_visible error for denied namespace, got nil")
+		t.Fatal("expected caller_namespace_not_visible error for denied namespace, got nil")
 	}
-	if !strings.Contains(err.Error(), "namespace_not_visible") {
-		t.Errorf("expected 'namespace_not_visible' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "caller_namespace_not_visible") {
+		t.Errorf("expected 'caller_namespace_not_visible' in error, got: %v", err)
 	}
 }
 
@@ -364,7 +364,7 @@ func TestHandleGetResource_ClusterOnlyForbiddenForRestricted(t *testing.T) {
 	// read RBAC; this user has neither namespace access nor seeded SAR allow.
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "nodes", Namespace: "", Name: "node-1"})
 	if err == nil {
-		t.Fatal("expected rbac_denied error for cluster-scoped read, got nil")
+		t.Fatal("expected caller_forbidden error for cluster-scoped read, got nil")
 	}
 }
 
@@ -378,7 +378,7 @@ func TestHandleListResources_NamespacesRequiresListNamespacesSAR(t *testing.T) {
 	denyClusterRead(t, "alice", "/namespaces")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "namespaces"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -393,10 +393,10 @@ func TestHandleGetResource_NamespacesRequiresGetNamespacesSAR(t *testing.T) {
 
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "namespaces", Name: "alpha"})
 	if err == nil {
-		t.Fatal("expected rbac_denied error without get-namespaces SAR, got nil")
+		t.Fatal("expected caller_forbidden error without get-namespaces SAR, got nil")
 	}
-	if !strings.HasPrefix(err.Error(), "rbac_denied: ") {
-		t.Errorf("expected rbac_denied, got: %v", err)
+	if !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
+		t.Errorf("expected caller_forbidden, got: %v", err)
 	}
 }
 
@@ -551,7 +551,7 @@ func TestHandleListResources_Secrets_DeniedInAllNamespaces(t *testing.T) {
 	seedSecretListCanI(t, "alice", nil, []string{"alpha"})
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "secrets"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -578,7 +578,7 @@ func TestHandleListResources_Secrets_PartialNamespaceAccess(t *testing.T) {
 	// beta is alice's namespace but not her Secrets: the list must say so
 	// instead of reading as every Secret she can see.
 	_, coverage := partialListBody(t, result)
-	if !slices.Equal(coverage.GapNamespaces["rbac_denied"], []string{"beta"}) || !slices.Equal(coverage.Read, []string{"alpha"}) {
+	if !slices.Equal(coverage.GapNamespaces["caller_forbidden"], []string{"beta"}) || !slices.Equal(coverage.Read, []string{"alpha"}) {
 		t.Errorf("withheld Secrets must be a gap: %+v", coverage)
 	}
 }
@@ -600,8 +600,8 @@ func TestHandleListResources_Secrets_UncheckedNamespaceIsAGap(t *testing.T) {
 		t.Fatalf("expected only alpha-secret: %s", body)
 	}
 	_, coverage := partialListBody(t, result)
-	if !slices.Equal(coverage.GapNamespaces["permission_check_failed"], []string{"beta"}) || len(coverage.GapNamespaces["rbac_denied"]) != 0 {
-		t.Errorf("an unchecked namespace must be a permission_check_failed gap: %+v", coverage)
+	if !slices.Equal(coverage.GapNamespaces["caller_permission_check_failed"], []string{"beta"}) || len(coverage.GapNamespaces["caller_forbidden"]) != 0 {
+		t.Errorf("an unchecked namespace must be a caller_permission_check_failed gap: %+v", coverage)
 	}
 }
 
@@ -620,10 +620,10 @@ func TestLimitRangesNeedExactAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleListResources: %v", err)
 	}
-	if _, coverage := partialListBody(t, result); !slices.Equal(coverage.GapNamespaces["rbac_denied"], []string{"beta"}) || !slices.Equal(coverage.Read, []string{"alpha"}) {
+	if _, coverage := partialListBody(t, result); !slices.Equal(coverage.GapNamespaces["caller_forbidden"], []string{"beta"}) || !slices.Equal(coverage.Read, []string{"alpha"}) {
 		t.Errorf("a namespace without LimitRange access must be a gap: %+v", coverage)
 	}
-	if _, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "limitranges", Namespace: "beta", Name: "limits"}); err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if _, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "limitranges", Namespace: "beta", Name: "limits"}); err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Errorf("get without LimitRange access: %v", err)
 	}
 }
@@ -643,7 +643,7 @@ func TestHandleListResources_Secrets_ClusterWideShape_NoSecretRBAC(t *testing.T)
 	perms.SetCanI("list", "", "secrets", "", false)
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "secrets"})
-	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -699,10 +699,10 @@ func TestHandleGetResource_Secret_DeniedInNamespace(t *testing.T) {
 
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "secrets", Namespace: "alpha", Name: "alpha-secret"})
 	if err == nil {
-		t.Fatal("expected rbac_denied error for secret in denied-secret namespace, got nil")
+		t.Fatal("expected caller_forbidden error for secret in denied-secret namespace, got nil")
 	}
-	if !strings.HasPrefix(err.Error(), "rbac_denied: ") {
-		t.Errorf("expected rbac_denied, got: %v", err)
+	if !strings.HasPrefix(err.Error(), "caller_forbidden: ") {
+		t.Errorf("expected caller_forbidden, got: %v", err)
 	}
 }
 

@@ -184,10 +184,11 @@ type Coverage struct {
 
 // ReadError is the body of a failed resource read on every surface: REST
 // responses, and MCP results (structuredContent and the text block). A read
-// fails when Radar read nothing in its scope, when the answer would be too
-// large, or when its connection changed mid-read. Coverage is present when
-// Radar assessed the scope; it keeps every reason, including the ones
-// ErrorCode does not name.
+// fails when it returns no usable inventory: Radar read nothing in its scope,
+// the answer would be too large, or its connection changed mid-read. On REST,
+// Coverage is present when Radar assessed the scope and keeps every reason,
+// including the ones ErrorCode does not name. MCP leaves it out: models act on
+// Error, which names every cause in words.
 type ReadError struct {
 	Error     string          `json:"error"`
 	ErrorCode readreason.Code `json:"error_code"`

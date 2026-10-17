@@ -11,30 +11,30 @@ import (
 // The codes are wire values clients branch on; a rename here must fail.
 func TestCodeWireValues(t *testing.T) {
 	want := map[Code]string{
-		RBACDenied:                   "rbac_denied",
-		NoNamespaceAccess:            "no_namespace_access",
-		PermissionCheckFailed:        "permission_check_failed",
-		CollectorForbidden:           "collector_forbidden",
-		CollectorCredentialsRejected: "collector_credentials_rejected",
-		CollectorScopeLimited:        "collector_scope_limited",
-		KindSyncPending:              "kind_sync_pending",
-		KindSyncFailed:               "kind_sync_failed",
-		KindWatchFailed:              "kind_watch_failed",
-		KindNotWatched:               "kind_not_watched",
-		KindUnknown:                  "kind_unknown",
-		KindNotWatchable:             "kind_not_watchable",
-		OutsideNamespaceScope:        "outside_namespace_scope",
-		OutsideNamespaceSelection:    "outside_namespace_selection",
-		NamespaceNotVisible:          "namespace_not_visible",
-		NamespaceNotFound:            "namespace_not_found",
-		NamespaceRequired:            "namespace_required",
-		ObjectNotFound:               "object_not_found",
-		ListTooLarge:                 "list_too_large",
-		FilterEvalFailed:             "filter_eval_failed",
-		ClusterConnecting:            "cluster_connecting",
-		ClusterDisconnected:          "cluster_disconnected",
-		ConnectionChanged:            "connection_changed",
-		ReadError:                    "read_error",
+		CallerForbidden:                "caller_forbidden",
+		CallerNoNamespaceAccess:        "caller_no_namespace_access",
+		CallerPermissionCheckFailed:    "caller_permission_check_failed",
+		CollectorForbidden:             "collector_forbidden",
+		CollectorCredentialsRejected:   "collector_credentials_rejected",
+		CollectorNamespaceNotCollected: "collector_namespace_not_collected",
+		KindSyncPending:                "kind_sync_pending",
+		KindSyncTimedOut:               "kind_sync_timed_out",
+		KindWatchStartFailed:           "kind_watch_start_failed",
+		CollectorKindNotWatched:        "collector_kind_not_watched",
+		KindUnknown:                    "kind_unknown",
+		KindNotWatchable:               "kind_not_watchable",
+		OutsideNamespacePin:            "outside_namespace_pin",
+		OutsideNamespaceSelection:      "outside_namespace_selection",
+		CallerNamespaceNotVisible:      "caller_namespace_not_visible",
+		NamespaceNotFound:              "namespace_not_found",
+		NamespaceRequired:              "namespace_required",
+		ObjectNotFound:                 "object_not_found",
+		ListTooLarge:                   "list_too_large",
+		FilterEvalFailed:               "filter_eval_failed",
+		ClusterConnecting:              "cluster_connecting",
+		ClusterDisconnected:            "cluster_disconnected",
+		ConnectionChanged:              "connection_changed",
+		ReadError:                      "read_error",
 	}
 	for code, spelling := range want {
 		if string(code) != spelling {
@@ -76,13 +76,13 @@ func TestPrimaryIgnoresOrder(t *testing.T) {
 // loading: a retry returns at least that part. Otherwise the caller's own
 // access comes before Radar's limits.
 func TestPrimaryPrefersWhatAResolvesFirst(t *testing.T) {
-	if got := Primary([]Code{CollectorScopeLimited, RBACDenied, KindSyncPending}); got != KindSyncPending {
+	if got := Primary([]Code{CollectorNamespaceNotCollected, CallerForbidden, KindSyncPending}); got != KindSyncPending {
 		t.Fatalf("Primary = %s", got)
 	}
-	if got := Primary([]Code{CollectorScopeLimited, RBACDenied}); got != RBACDenied {
+	if got := Primary([]Code{CollectorNamespaceNotCollected, CallerForbidden}); got != CallerForbidden {
 		t.Fatalf("Primary = %s", got)
 	}
-	if got := Primary([]Code{KindSyncFailed, CollectorForbidden}); got != CollectorForbidden {
+	if got := Primary([]Code{KindSyncTimedOut, CollectorForbidden}); got != CollectorForbidden {
 		t.Fatalf("Primary = %s", got)
 	}
 	if got := Primary([]Code{KindSyncPending, KindUnknown}); got != KindUnknown {

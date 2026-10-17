@@ -423,7 +423,7 @@ A partial response carries a `reason`, and `guidance` names the causes that are 
 | Reason | Cause |
 |--------|-------|
 | `row_evidence_incomplete` | Row-level gaps: rows short of history, failed usage queries, or a recommendation withheld for missing HPA/OOM evidence. Cluster coverage is complete. |
-| `requested_namespaces_excluded` | A `namespaces` list included names that were not scanned. `excludedNamespaces` lists each with `access_denied`, `outside_namespace_scope`, or `not_cached` (Radar's informer cache does not hold that namespace); report only `effectiveNamespaces`. |
+| `requested_namespaces_excluded` | A `namespaces` list included names that were not scanned. `excludedNamespaces` lists each with `access_denied`, `outside_namespace_pin`, or `not_cached` (Radar's informer cache does not hold that namespace); report only `effectiveNamespaces`. |
 | `namespace_scope_limited` | The scan reached only the namespaces in `effectiveNamespaces` — scope was resolved from this identity's per-namespace access rather than a cluster-wide grant, or radar is pinned with `--namespace-scope`. `remediation` says which. |
 | `limited_scope_no_workloads` | No workloads found, and the scan did not cover everything requested. An empty result here is **not** evidence the cluster has no workloads. |
 
@@ -433,7 +433,7 @@ A partial response carries a `reason`, and `guidance` names the causes that are 
 
 ### The `--namespace-scope` pin is not an access denial
 
-A pin and an RBAC restriction produce the same namespace list. A request the pin excludes returns `reason: outside_namespace_scope` and a `remediation` naming the flag — never `access_denied`, which would tell a cluster-admin their permissions are the problem.
+A pin and an RBAC restriction produce the same namespace list. A request the pin excludes returns `reason: outside_namespace_pin` and a `remediation` naming the flag — never `access_denied`, which would tell a cluster-admin their permissions are the problem.
 
 ### Trend responses are pre-summarized
 
@@ -481,7 +481,7 @@ agent's next move:
 | The answer counts namespaces it can't name, so the agent can't tell whether the one it cares about was read | "To check one namespace, call list_resources again with namespace set to it." |
 | The request can't be answered as asked: a get with no namespace, a kind Radar doesn't know, a namespace you can't see, an object that isn't there | The narrower or different call: set `namespace`; `search` for `kind:<kind> <name>` (naming the kind reaches kinds a broad search skips); `list_resources kind=customresourcedefinitions`; `list_namespaces`, when Radar can list namespaces; or the same name under another kind or namespace |
 
-A denial (`rbac_denied`), and anything Radar's own identity or configuration
+A denial (`caller_forbidden`), and anything Radar's own identity or configuration
 blocks, has no `next`: retrying won't change it, and its `error` names who can.
 Codes and coverage stay for code to branch on and never change spelling; the
 sentences may be reworded.
@@ -543,31 +543,27 @@ on an unscoped request those namespaces narrow it (`collection`) instead.
 
 Secrets and LimitRanges need your exact permission, not just namespace
 visibility: namespaces you can see but can't list them in are an
-`rbac_denied` gap (or `permission_check_failed` when the check didn't
+`caller_forbidden` gap (or `caller_permission_check_failed` when the check didn't
 complete). A caller whose access reaches every namespace is checked once,
-cluster-wide: an unscoped Secret or LimitRange list fails with `rbac_denied`
+cluster-wide: an unscoped Secret or LimitRange list fails with `caller_forbidden`
 unless they can list them everywhere, and the error says to name a namespace
 they can list them in. Cluster-scoped kinds keep exact per-kind permission
-checks and fail with `rbac_denied`. Namespace lists use the full collector list
+checks and fail with `caller_forbidden`. Namespace lists use the full collector list
 after the list-namespaces permission check.
 
 The browser namespace picker does not scope MCP requests.
 
 ### Errors
 
-A list fails only when Radar read nothing in its scope, or when its cluster
-connection changed mid-read. A failed read's `structuredContent` and its only
-text block are the same body:
+A list fails only when it returns no usable inventory: Radar read nothing in
+its scope, its cluster connection changed mid-read, or the answer was over its
+size budget. A failed read's `structuredContent` and its only text block are
+the same body, `{error, error_code, next?}`:
 
 ```json
 {
   "error": "Radar doesn't collect services in namespace \"beta\", so it can't say what exists there. It collects services in namespaces \"alpha,gamma\". Whoever runs Radar can add namespaces with --namespaces, if its kubeconfig identity can list services there.",
-  "error_code": "collector_scope_limited",
-  "coverage": {
-    "status": "partial",
-    "scope": {"type": "namespaces", "namespaces": {"count": 1, "names": ["beta"]}},
-    "gaps": [{"code": "collector_scope_limited", "namespaces": {"count": 1, "names": ["beta"]}}]
-  }
+  "error_code": "collector_namespace_not_collected"
 }
 ```
 
@@ -576,29 +572,30 @@ as on lists (`namespace_required`: set `namespace`, or `search` for
 `kind:<kind> <name>`; `object_not_found`: the same name under another kind or
 namespace, else that `search`). A list that read nothing takes its `next` from
 every gap, so a retry that would recover one namespace is offered even when
-the code names a denial. A list error carries `coverage` when Radar assessed the
-scope; it has no `read`, because the error returns no rows, and its gaps keep every
-cause when namespaces failed for different reasons. `error_code` is then the
-most actionable of them. A get of an object that isn't there is
+the code names a denial. An MCP error carries no `coverage`; its sentence says
+what coverage would: when namespaces failed for different reasons it names every
+cause and the namespaces each affects, with `error_code` the most actionable of
+them, and when something other than your own access narrowed an unscoped
+request (what Radar collects, or its pin) it says that too. A get of an object that isn't there is
 `object_not_found`, and only once Radar has confirmed it read that namespace;
 otherwise the code says why it couldn't look.
 
 | Code | Meaning | What resolves it |
 |---|---|---|
-| `rbac_denied` | Your own RBAC denies the exact operation. | Your access |
-| `no_namespace_access` | Your access reaches no namespace in the request's scope (Radar checks list Pods or Deployments there). | Your access |
-| `namespace_not_visible` | A namespace you named is not among those you can see, or does not exist; the code doesn't say which. | Check the name, or your access |
-| `permission_check_failed` | Radar could not complete your permission check. | Retry |
+| `caller_forbidden` | Your own RBAC denies the exact operation. | Your access |
+| `caller_no_namespace_access` | Your access reaches no namespace in the request's scope (Radar checks list Pods or Deployments there). | Your access |
+| `caller_namespace_not_visible` | A namespace you named is not among those you can see, or does not exist; the code doesn't say which. | Check the name, or your access |
+| `caller_permission_check_failed` | Radar could not complete your permission check. | Retry |
 | `collector_forbidden` | Kubernetes refused Radar's service account or kubeconfig identity. | Radar's access — granting yours does not help |
 | `collector_credentials_rejected` | Kubernetes rejected Radar's credentials. | Refresh Radar's credentials |
-| `collector_scope_limited` | The namespace is outside what Radar collects. | Radar's collection (`--namespaces`, `--max-scope-candidates`, or its RBAC) |
+| `collector_namespace_not_collected` | The namespace is outside what Radar collects. | Radar's collection (`--namespaces`, `--max-scope-candidates`, or its RBAC) |
 | `kind_sync_pending` | The kind is still loading. | Retry shortly |
-| `kind_sync_failed` | The kind's initial load missed its deadline; Radar keeps trying. | Retry later; if it persists, Radar's connection or list/watch access |
-| `kind_watch_failed` | The kind's watch failed to start. | Retry — a read naming the kind starts it again |
-| `kind_not_watched` | Radar has no watch for the kind. | Radar's collection configuration |
+| `kind_sync_timed_out` | The kind's initial load missed its deadline; Radar keeps trying. | Retry later; if it persists, Radar's connection or list/watch access |
+| `kind_watch_start_failed` | The kind's watch failed to start. | Retry — a read naming the kind starts it again |
+| `collector_kind_not_watched` | Radar has no watch for the kind. | Radar's collection configuration |
 | `kind_not_watchable` | The API can't be list/watched. | Use another tool; retrying won't help |
 | `kind_unknown` | The kind isn't in the catalog or discovery. | Check spelling, `group`, and installation |
-| `outside_namespace_scope` | The namespace is outside Radar's `--namespace-scope` pin. | Use the pinned namespace |
+| `outside_namespace_pin` | The namespace is outside Radar's `--namespace-scope` pin. | Use the pinned namespace |
 | `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace` |
 | `object_not_found` | The object is absent from a namespace Radar read in full. | — it is an answer |
 | `cluster_connecting` | Radar is still connecting. | Retry shortly |

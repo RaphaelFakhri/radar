@@ -121,7 +121,7 @@ describe("a list Radar read only in some of the namespaces it collects", () => {
         type: "namespaces",
         namespaces: { count: 40 },
       },
-      gaps: [{ code: "collector_scope_limited" }],
+      gaps: [{ code: "collector_namespace_not_collected" }],
     };
     const summary =
       "These are the services in 40 namespaces only. Not read: part of the scope, because Radar doesn't collect services there. Services may exist there that this list doesn't show.";

@@ -30,7 +30,9 @@ type readError struct {
 	code   readreason.Code
 	err    error
 	unread *gapSet
-	// coverage is attached by a list, which knows the read's scope.
+	// coverage is attached by a list, which knows the read's scope. An MCP
+	// error doesn't send it: the error sentence says the same in words, and
+	// next is computed from its gaps.
 	coverage *resourceapi.Coverage
 	// next is what the agent can do itself to get an answer, when it depends
 	// on the request; otherwise the code decides (errorNext).
@@ -63,7 +65,7 @@ func readErrorResult(err error) (*mcp.CallToolResult, bool) {
 	if next == "" {
 		next = errorNext(re.code)
 	}
-	body := mcpReadError{ReadError: resourceapi.ReadError{Error: re.err.Error(), ErrorCode: re.code, Coverage: re.coverage}, Next: next}
+	body := mcpReadError{ReadError: resourceapi.ReadError{Error: re.err.Error(), ErrorCode: re.code}, Next: next}
 	text, marshalErr := json.Marshal(body)
 	if marshalErr != nil {
 		return nil, false
@@ -91,7 +93,7 @@ func errorNext(code readreason.Code) string {
 		return "" // its message already says to retry shortly
 	case readreason.ReadError:
 		return "Retry in a few seconds; if it keeps failing, report the error to whoever runs Radar."
-	case readreason.KindWatchFailed:
+	case readreason.KindWatchStartFailed:
 		return "Retry: the retry starts the watch again."
 	case readreason.KindUnknown:
 		return "Check the spelling, or pass group for a custom resource; list_resources with kind=customresourcedefinitions lists the custom kinds installed here."
@@ -158,11 +160,11 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 	target := readTarget{explicit: requested != nil}
 	clamped, ok := clampToNamespacePin(requested)
 	if !ok {
-		return target, readErrorf(readreason.OutsideNamespaceScope, "Radar is limited to other namespaces by its --namespace-scope setting, so it can't read namespace %q. Whoever runs Radar sets --namespace-scope.", namespaceForError(requested))
+		return target, readErrorf(readreason.OutsideNamespacePin, "Radar is limited to other namespaces by its --namespace-scope setting, so it can't read namespace %q. Whoever runs Radar sets --namespace-scope.", namespaceForError(requested))
 	}
 	user, perms, checked := resolveUserPermsDecision(ctx)
 	if !checked {
-		return target, readErrorf(readreason.PermissionCheckFailed, "Radar couldn't check which namespaces you can access, so it read nothing.")
+		return target, readErrorf(readreason.CallerPermissionCheckFailed, "Radar couldn't check which namespaces you can access, so it read nothing.")
 	}
 	allowed := pkgauth.FilterNamespacesForUser(clamped, user, perms)
 	if allowed != nil && len(allowed) == 0 {
@@ -175,7 +177,7 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 			if len(clamped) > 1 {
 				scope = fmt.Sprintf("Namespaces %q don't exist or you can't access them", namespaceForError(clamped))
 			}
-			err := &readError{code: readreason.NamespaceNotVisible, err: fmt.Errorf("%s, so Radar can't say what's in it. If the name is right, %s %s", scope, withCloudRole(ctx, "a cluster admin can grant access"), namespaceAccessRule)}
+			err := &readError{code: readreason.CallerNamespaceNotVisible, err: fmt.Errorf("%s, so Radar can't say what's in it. If the name is right, %s %s", scope, withCloudRole(ctx, "a cluster admin can grant access"), namespaceAccessRule)}
 			// list_namespaces needs Radar to list Namespaces, which an identity
 			// limited to some namespaces may not be allowed to.
 			if cache := k8s.GetResourceCache(); cache != nil && cache.Namespaces() != nil {
@@ -183,7 +185,7 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 			}
 			return target, err
 		}
-		return target, readErrorf(readreason.NoNamespaceAccess, "You can't access any namespace in this request's scope, so Radar read nothing. %s %s", withCloudRole(ctx, "A cluster admin can grant access"), namespaceAccessRule)
+		return target, readErrorf(readreason.CallerNoNamespaceAccess, "You can't access any namespace in this request's scope, so Radar read nothing. %s %s", withCloudRole(ctx, "A cluster admin can grant access"), namespaceAccessRule)
 	}
 	// Every narrowing that applied to a request that named no namespace, as
 	// REST and search report it: the caller's access when it is restricted,
@@ -276,9 +278,9 @@ func resourcePermissionErrorNext(ctx context.Context, checked bool, verb, group,
 	}
 	name := qualifiedResource(group, resource)
 	if !checked {
-		return readErrorf(readreason.PermissionCheckFailed, "Radar couldn't check whether you can %s %s %s, so it read nothing.", verb, name, scope)
+		return readErrorf(readreason.CallerPermissionCheckFailed, "Radar couldn't check whether you can %s %s %s, so it read nothing.", verb, name, scope)
 	}
-	return &readError{code: readreason.RBACDenied, err: fmt.Errorf("Your Kubernetes access doesn't allow you to %s %s %s, so Radar can't say what exists there. %s.", verb, name, scope, withCloudRole(ctx, "A cluster admin can grant that permission")), next: next}
+	return &readError{code: readreason.CallerForbidden, err: fmt.Errorf("Your Kubernetes access doesn't allow you to %s %s %s, so Radar can't say what exists there. %s.", verb, name, scope, withCloudRole(ctx, "A cluster admin can grant that permission")), next: next}
 }
 
 // gapSet collects the namespaces a read could not serve, by code. A code
@@ -413,8 +415,12 @@ func listCoverageFor(clusterScoped bool, target readTarget, read []string, readA
 }
 
 // withListCoverage attaches a failed list's coverage: its scope and every gap,
-// with no read scope because the error returns no rows.
-func withListCoverage(ctx context.Context, err error, target readTarget, clusterScoped bool) error {
+// with no read scope because the error returns no rows. An MCP error doesn't
+// send coverage, so the sentence has to say it: every cause when namespaces
+// failed for different reasons (one cause keeps its own explanation), and how
+// an unscoped request was narrowed when something other than the caller's own
+// access narrowed it.
+func withListCoverage(ctx context.Context, err error, resource string, target readTarget, clusterScoped bool) error {
 	var re *readError
 	if !errors.As(err, &re) || re.unread == nil {
 		return err
@@ -423,7 +429,43 @@ func withListCoverage(ctx context.Context, err error, target readTarget, cluster
 	if !clusterScoped {
 		cov.NarrowedBy = target.narrowedBy
 	}
-	return &readError{code: re.code, err: re.err, unread: re.unread, coverage: cov}
+	s := []string{re.err.Error()}
+	if len(cov.Gaps) > 1 {
+		s = []string{fmt.Sprintf("Radar couldn't read any %s, so it can't say what exists.", resource)}
+		for _, gap := range cov.Gaps {
+			s = append(s, gapSentence(ctx, resource, gap))
+		}
+	}
+	if beyondCallerAccess(cov.NarrowedBy) && cov.Scope.Namespaces != nil {
+		s = append(s, fmt.Sprintf("Other namespaces weren't read either: %s%s.", narrowingCause(resource, cov.NarrowedBy, namespacePhrase(cov.Scope.Namespaces)), narrowingRemedy(resource, cov.NarrowedBy)))
+	}
+	explanation := re.err
+	if len(s) > 1 || s[0] != re.err.Error() {
+		explanation = &explainedError{msg: strings.Join(s, " "), cause: re.err}
+	}
+	return &readError{code: re.code, err: explanation, unread: re.unread, coverage: cov}
+}
+
+// explainedError is a cause reworded for the caller. It still unwraps to the
+// cause, so the API server's response stays available to logs.
+type explainedError struct {
+	msg   string
+	cause error
+}
+
+func (e *explainedError) Error() string { return e.msg }
+func (e *explainedError) Unwrap() error { return e.cause }
+
+// beyondCallerAccess reports a narrowing the caller's own access doesn't
+// explain: what Radar collects, its namespace pin, or a saved selection. A
+// denial already names the caller's namespaces.
+func beyondCallerAccess(by []resourceapi.Narrowing) bool {
+	for _, n := range by {
+		if n != resourceapi.NarrowedByCallerAccess {
+			return true
+		}
+	}
+	return false
 }
 
 // listSummary is what a model reads first: in words, what the rows cover, what
@@ -546,19 +588,19 @@ func gapSentence(ctx context.Context, resource string, gap resourceapi.Gap) stri
 // agent can change that ("" when retrying is enough), as clauses.
 func gapReason(ctx context.Context, resource string, code readreason.Code) (why, who string) {
 	switch code {
-	case readreason.CollectorScopeLimited:
+	case readreason.CollectorNamespaceNotCollected:
 		return fmt.Sprintf("Radar doesn't collect %s there", resource), collectionRemedy(resource) + notYourAccessClause(ctx)
 	case readreason.CollectorForbidden:
 		return "Kubernetes refuses Radar's own identity there", identityRemedy(resource, " there", "list/watch") + notYourAccessClause(ctx)
 	case readreason.KindSyncPending:
 		return fmt.Sprintf("Radar is still loading %s there", resource), ""
-	case readreason.KindSyncFailed:
+	case readreason.KindSyncTimedOut:
 		return fmt.Sprintf("Radar's load of %s there didn't finish in time", resource), "if it keeps failing, whoever runs Radar should check its cluster connection and list/watch permissions"
-	case readreason.KindWatchFailed:
+	case readreason.KindWatchStartFailed:
 		return fmt.Sprintf("Radar's watch of %s there failed to start", resource), ""
-	case readreason.RBACDenied:
+	case readreason.CallerForbidden:
 		return fmt.Sprintf("your Kubernetes access doesn't allow listing %s there", resource), withCloudRole(ctx, "a cluster admin can grant it")
-	case readreason.PermissionCheckFailed:
+	case readreason.CallerPermissionCheckFailed:
 		return "Radar couldn't check your access there", ""
 	}
 	why = fmt.Sprintf("Radar couldn't read %s there (%s)", resource, code)
@@ -799,7 +841,7 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 			plan.all = true
 			return cache, plan, nil
 		case k8s.KindFailed:
-			plan.gaps.add(readreason.KindSyncFailed, failed)
+			plan.gaps.add(readreason.KindSyncTimedOut, failed)
 		default:
 			plan.gaps.add(readreason.KindSyncPending, pending)
 		}
@@ -809,20 +851,20 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 	uncovered := len(a.Uncovered) > 0 || (namespaces == nil && !a.AllNamespaces)
 	switch {
 	case explicit && len(a.Uncovered) > 0:
-		plan.gaps.add(readreason.CollectorScopeLimited, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil), a.Uncovered...)
+		plan.gaps.add(readreason.CollectorNamespaceNotCollected, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil), a.Uncovered...)
 	case uncovered:
 		plan.collected = slices.Concat(a.Read, a.Loading, a.Failed)
 		slices.Sort(plan.collected)
 		plan.uncovered = a.Uncovered
 		if len(plan.collected) == 0 {
-			plan.gaps.add(readreason.CollectorScopeLimited, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil))
+			plan.gaps.add(readreason.CollectorNamespaceNotCollected, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil))
 		}
 	}
 	if len(a.Loading) > 0 {
 		plan.gaps.add(readreason.KindSyncPending, pending, a.Loading...)
 	}
 	if len(a.Failed) > 0 {
-		plan.gaps.add(readreason.KindSyncFailed, failed, a.Failed...)
+		plan.gaps.add(readreason.KindSyncTimedOut, failed, a.Failed...)
 	}
 	if len(a.Read) == 0 {
 		return nil, plan, plan.gaps.failure()
@@ -863,18 +905,18 @@ func errKindLoading(resource string) error {
 }
 
 func errKindLoadFailed(resource string) error {
-	return readErrorf(readreason.KindSyncFailed, "Radar's load of %s didn't finish in time, so it can't answer yet. It keeps trying; if this persists, whoever runs Radar should check its cluster connection and list/watch permissions.", resource)
+	return readErrorf(readreason.KindSyncTimedOut, "Radar's load of %s didn't finish in time, so it can't answer yet. It keeps trying; if this persists, whoever runs Radar should check its cluster connection and list/watch permissions.", resource)
 }
 
 func errKindNotWatched(resource string) error {
-	return readErrorf(readreason.KindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist. Whoever runs Radar must check that its identity can list/watch %s and that Radar is set to collect them.", resource, resource)
+	return readErrorf(readreason.CollectorKindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist. Whoever runs Radar must check that its identity can list/watch %s and that Radar is set to collect them.", resource, resource)
 }
 
 // coverageError reports requested namespaces Radar's collector could not
 // serve. With a refusal — Radar read them for this request and the API server
 // denied its identity — the code is collector_forbidden; without one they lie
 // outside the coverage the collector established, Radar did not read them,
-// and the code is collector_scope_limited. No uncovered namespaces means the
+// and the code is collector_namespace_not_collected. No uncovered namespaces means the
 // collector covers only some namespaces of an all-namespaces read. Only
 // namespaces the caller may read are named, and coverage in namespaces the
 // caller cannot read never changes the wording, so the error discloses
@@ -916,9 +958,9 @@ func coverageError(ctx context.Context, target collectorTarget, uncovered, cover
 	}
 	remedy := upperFirst(collectionRemedy(target.resource)) + "." + notYourAccess(ctx)
 	if where == "" {
-		return readErrorf(readreason.CollectorScopeLimited, "Radar collects %s only in some namespaces, so it can't answer for the whole cluster.%s %s", target.resource, coverage, remedy)
+		return readErrorf(readreason.CollectorNamespaceNotCollected, "Radar collects %s only in some namespaces, so it can't answer for the whole cluster.%s %s", target.resource, coverage, remedy)
 	}
-	return readErrorf(readreason.CollectorScopeLimited, "Radar doesn't collect %s %s, so it can't say what exists there.%s %s", target.resource, where, coverage, remedy)
+	return readErrorf(readreason.CollectorNamespaceNotCollected, "Radar doesn't collect %s %s, so it can't say what exists there.%s %s", target.resource, where, coverage, remedy)
 }
 
 // namespacesForError names namespaces in an error sentence, abbreviated as
@@ -1023,10 +1065,10 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 		}
 		if ok && dynamicCache != nil {
 			if observation := dynamicCache.Observation(gvr); observation.State == k8score.DynamicObservationDeferred && observation.ReasonCode == "watch_start_failed" {
-				return false, readErrorf(readreason.KindWatchFailed, "Radar's watch for %s failed to start, so it can't answer.", kind)
+				return false, readErrorf(readreason.KindWatchStartFailed, "Radar's watch for %s failed to start, so it can't answer.", kind)
 			}
 		}
-		return false, readErrorf(readreason.KindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist (%w). Whoever runs Radar must check that its identity can list/watch %s.", kind, readErr, kind)
+		return false, readErrorf(readreason.CollectorKindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist (%w). Whoever runs Radar must check that its identity can list/watch %s.", kind, readErr, kind)
 	}
 	direct := ok && directRead(gvr, verb)
 	if apierrors.IsForbidden(readErr) && ok && dynamicCache != nil && !direct && namespace != "" {
@@ -1071,7 +1113,7 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 		}
 	case k8score.DynamicObservationSynced:
 		if namespace != "" && !dynamicCache.IsNamespaceSynced(gvr, namespace) {
-			return false, readErrorf(readreason.CollectorScopeLimited, "Radar doesn't collect %s in namespace %q, so it can't say what exists there. %s.%s", kind, namespace, upperFirst(collectionRemedy(kind)), notYourAccess(ctx))
+			return false, readErrorf(readreason.CollectorNamespaceNotCollected, "Radar doesn't collect %s in namespace %q, so it can't say what exists there. %s.%s", kind, namespace, upperFirst(collectionRemedy(kind)), notYourAccess(ctx))
 		}
 	case k8score.DynamicObservationUnsupported:
 		return false, readErrorf(readreason.KindNotWatchable, "Radar can't collect %s: its API doesn't support both list and watch, which Radar needs. Retrying won't help; read it directly from the Kubernetes API instead.", kind)
@@ -1187,10 +1229,10 @@ func narrowByExactAccess(ctx context.Context, target []string, resource, verb st
 	}
 	allowed, denied, unchecked := partitionNamespacesByCanRead(ctx, "", resource, verb, target)
 	if len(denied) > 0 {
-		gaps.add(readreason.RBACDenied, resourcePermissionError(ctx, true, verb, "", resource, namespaceForError(denied)), denied...)
+		gaps.add(readreason.CallerForbidden, resourcePermissionError(ctx, true, verb, "", resource, namespaceForError(denied)), denied...)
 	}
 	if len(unchecked) > 0 {
-		gaps.add(readreason.PermissionCheckFailed, resourcePermissionError(ctx, false, verb, "", resource, namespaceForError(unchecked)), unchecked...)
+		gaps.add(readreason.CallerPermissionCheckFailed, resourcePermissionError(ctx, false, verb, "", resource, namespaceForError(unchecked)), unchecked...)
 	}
 	if len(allowed) == 0 {
 		if gaps.empty() {

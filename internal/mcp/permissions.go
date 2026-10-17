@@ -193,14 +193,14 @@ func namespaceWithinPin(namespace string) bool {
 // and "radar was started with --namespace-scope" need different answers.
 func deniedScopeReason(requested []string) string {
 	if _, ok := clampToNamespacePin(requested); !ok {
-		return ReasonOutsideNamespaceScope
+		return ReasonOutsideNamespacePin
 	}
 	return pkgopencost.ReasonAccessDenied
 }
 
-// ReasonOutsideNamespaceScope marks a request the --namespace pin excluded,
+// ReasonOutsideNamespacePin marks a request the --namespace pin excluded,
 // rather than one this identity lacks permission for.
-const ReasonOutsideNamespaceScope = "outside_namespace_scope"
+const ReasonOutsideNamespacePin = "outside_namespace_pin"
 
 // NamespacePinned reports whether informer caches are pinned to one namespace,
 // and which. Callers use it to attribute a narrowed scope: a pin and an RBAC

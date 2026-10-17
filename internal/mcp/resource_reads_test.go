@@ -59,7 +59,7 @@ func TestResourceReadsReportCallerDenial(t *testing.T) {
 				} else {
 					_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Name: "hidden"})
 				}
-				for _, want := range []string{"rbac_denied: Your Kubernetes access doesn't allow you to " + verb + " " + qualifiedResource(group, resource) + " across the cluster"} {
+				for _, want := range []string{"caller_forbidden: Your Kubernetes access doesn't allow you to " + verb + " " + qualifiedResource(group, resource) + " across the cluster"} {
 					if err == nil || !strings.Contains(err.Error(), want) {
 						t.Errorf("want %q in caller error, got %v", want, err)
 					}
@@ -213,9 +213,9 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 			} else {
 				_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: ns, Name: "hidden"})
 			}
-			want := "namespace_not_visible:"
+			want := "caller_namespace_not_visible:"
 			if kind == "secrets" {
-				want = "rbac_denied:"
+				want = "caller_forbidden:"
 			}
 			if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), ns) || (kind == "secrets" && !strings.Contains(err.Error(), verb)) {
 				t.Fatalf("%s/%s: expected namespace caller denial, got %v", kind, verb, err)
@@ -235,7 +235,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 			} else {
 				_, _, err = handleGetResource(unchecked, nil, getResourceInput{Kind: kind, Namespace: "alpha", Name: "hidden"})
 			}
-			if err == nil || !strings.Contains(err.Error(), "permission_check_failed") {
+			if err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
 				t.Fatalf("%s/%s: expected failed SAR, got %v", kind, verb, err)
 			}
 		}
@@ -243,7 +243,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 
 	discoveryFailed := pkgauth.ContextWithUser(context.Background(), &pkgauth.User{Username: "uncached"})
 	_, _, err = handleListResources(discoveryFailed, nil, listResourcesInput{Kind: "pods"})
-	if err == nil || !strings.Contains(err.Error(), "permission_check_failed") {
+	if err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
 		t.Fatalf("expected failed namespace discovery, got %v", err)
 	}
 	oldPin, oldTarget := k8s.ForceNamespaceScope, k8s.GetNamespaceScopeTarget()
@@ -256,7 +256,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "pods", Namespace: "beta", Name: "hidden"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "outside_namespace_scope: ") || strings.Contains(err.Error(), "rbac_denied") {
+		if err == nil || !strings.HasPrefix(err.Error(), "outside_namespace_pin: ") || strings.Contains(err.Error(), "caller_forbidden") {
 			t.Fatalf("scope exclusion must not claim denial, got %v", err)
 		}
 	}
@@ -279,7 +279,7 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "nodes", Name: "unseen"})
 		}
-		if err == nil || !strings.Contains(err.Error(), "kind_sync_failed") {
+		if err == nil || !strings.Contains(err.Error(), "kind_sync_timed_out") {
 			t.Fatalf("expected failed sync, got %v", err)
 		}
 	}
@@ -291,8 +291,8 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 		input listResourcesInput
 		want  string
 	}{
-		{listResourcesInput{Kind: "nodes"}, "kind_not_watched: "},
-		{listResourcesInput{Kind: "services", Namespace: "beta"}, "collector_scope_limited: "},
+		{listResourcesInput{Kind: "nodes"}, "collector_kind_not_watched: "},
+		{listResourcesInput{Kind: "services", Namespace: "beta"}, "collector_namespace_not_collected: "},
 	} {
 		_, _, err := handleListResources(context.Background(), nil, tc.input)
 		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -428,8 +428,8 @@ func TestResourceReadToolErrorTransport(t *testing.T) {
 		next      string
 	}{
 		// Only a cluster admin can change a denial, so it carries no next.
-		{"list_resources", map[string]any{"kind": "nodes"}, "rbac_denied", "Your Kubernetes access doesn't allow you to list nodes across the cluster", ""},
-		{"get_resource", map[string]any{"kind": "nodes", "name": "hidden"}, "rbac_denied", "Your Kubernetes access doesn't allow you to get nodes across the cluster", ""},
+		{"list_resources", map[string]any{"kind": "nodes"}, "caller_forbidden", "Your Kubernetes access doesn't allow you to list nodes across the cluster", ""},
+		{"get_resource", map[string]any{"kind": "nodes", "name": "hidden"}, "caller_forbidden", "Your Kubernetes access doesn't allow you to get nodes across the cluster", ""},
 		{"get_resource", map[string]any{"kind": "pods", "name": "hidden"}, "namespace_required", "Pods live in namespaces, so get_resource needs one.",
 			`Call get_resource again with namespace set. If you don't know it, call search with query "kind:pods hidden" to find it.`},
 	} {
@@ -502,10 +502,10 @@ func TestResourceReadsFailedSARCanRecover(t *testing.T) {
 				_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: "alpha", Name: "hidden"})
 				return err
 			}
-			if err := call(); err == nil || !strings.Contains(err.Error(), "permission_check_failed") {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "caller_permission_check_failed") {
 				t.Fatalf("%s/%s first check: %v", kind, verb, err)
 			}
-			if err := call(); err == nil || !strings.Contains(err.Error(), "rbac_denied: Your Kubernetes access") {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "caller_forbidden: Your Kubernetes access") {
 				t.Fatalf("%s/%s retry must establish denial: %v", kind, verb, err)
 			}
 			if calls != 2 {
@@ -746,12 +746,12 @@ func setupCoverageRuleFixture(t *testing.T, class coverageClass) (kind string, p
 }
 
 // Typed kinds never read outside the coverage the startup probe fixed, so an
-// uncovered namespace is collector_scope_limited. Custom resources and direct
+// uncovered namespace is collector_namespace_not_collected. Custom resources and direct
 // kinds read every requested namespace, so the same namespace is
 // collector_forbidden: Radar tried and was refused.
 func coverageReason(class coverageClass) string {
 	if class == coverageTyped {
-		return "collector_scope_limited"
+		return "collector_namespace_not_collected"
 	}
 	return "collector_forbidden"
 }
@@ -764,7 +764,7 @@ func partialCoverageReason(class coverageClass) string {
 	if class == coverageDirect {
 		return "collector_forbidden"
 	}
-	return "collector_scope_limited"
+	return "collector_namespace_not_collected"
 }
 
 func TestResourceReadsCollectorCoverageRule(t *testing.T) {
@@ -840,8 +840,8 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 					rendered, ok := readErrorResult(err)
 					mcpBody, _ := rendered.StructuredContent.(mcpReadError)
 					body := mcpBody.ReadError
-					if !ok || string(body.ErrorCode) != coverageReason(class) || body.Coverage == nil || body.Coverage.Read != nil || len(body.Coverage.Gaps) == 0 {
-						t.Fatalf("a failed list must carry its coverage, with nothing read: %+v", body)
+					if !ok || string(body.ErrorCode) != coverageReason(class) || body.Coverage != nil {
+						t.Fatalf("an MCP read error says what wasn't read in words, without coverage: %+v", body)
 					}
 					return
 				}
@@ -909,7 +909,7 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		t.Cleanup(func() { k8s.ForceNamespaceScope = oldPin; k8s.SetNamespaceScopeOverride(oldTarget) })
 		ctx := withRestrictedUser(t, "pin-outsider", []string{"beta"})
 		_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "pods"})
-		if err == nil || !strings.HasPrefix(err.Error(), "no_namespace_access:") || strings.Contains(err.Error(), "alpha") {
+		if err == nil || !strings.HasPrefix(err.Error(), "caller_no_namespace_access:") || strings.Contains(err.Error(), "alpha") {
 			t.Fatalf("unscoped denial must not name the pinned namespace: %v", err)
 		}
 	})
@@ -1012,7 +1012,7 @@ func TestListSummaryBoundsNamespaceProse(t *testing.T) {
 				read[i] = fmt.Sprintf("team-%04d", count-i)
 			}
 			original := slices.Clone(read)
-			gaps := []resourceapi.Gap{{Code: readreason.CollectorScopeLimited}}
+			gaps := []resourceapi.Gap{{Code: readreason.CollectorNamespaceNotCollected}}
 			coverage := listCoverageFor(false, readTarget{}, read, false, gaps)
 			expected := slices.Clone(read)
 			slices.Sort(expected)
@@ -1271,7 +1271,7 @@ func TestResourceReadsDynamicStallIsPerNamespace(t *testing.T) {
 	time.Sleep(stallAfter)
 	for _, tc := range []struct{ namespace, want string }{
 		{"alpha", "kind_sync_pending:"},
-		{"beta", "kind_sync_failed:"},
+		{"beta", "kind_sync_timed_out:"},
 	} {
 		_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "Widget", Group: gvr.Group, Namespace: tc.namespace, Context: "none"})
 		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -1385,7 +1385,7 @@ func TestResourceReadsNamespaceDenialAttribution(t *testing.T) {
 	ctx := withRestrictedUser(t, "attribution-reader", []string{"alpha"})
 	for _, kind := range []string{"pods", "widgets"} {
 		_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Namespace: "beta"})
-		for _, text := range []string{"namespace_not_visible:", "doesn't exist or you can't access it", "beta", "list pods or deployments", "about every 2 minutes"} {
+		for _, text := range []string{"caller_namespace_not_visible:", "doesn't exist or you can't access it", "beta", "list pods or deployments", "about every 2 minutes"} {
 			if err == nil || !strings.Contains(err.Error(), text) {
 				t.Fatalf("missing %s: %v", text, err)
 			}
@@ -1898,7 +1898,7 @@ func TestDiagnoseRejectsUnobservedTypedTargets(t *testing.T) {
 		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
 			client := fake.NewClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "present", Namespace: "alpha"}})
 			var err error
-			want := "collector_scope_limited:"
+			want := "collector_namespace_not_collected:"
 			if pending {
 				err = k8s.InitTestPromotedSyncingCache(client, 5*time.Second, time.Minute, map[string]time.Duration{"pods": time.Hour})
 				want = "kind_sync_pending:"
@@ -2029,10 +2029,8 @@ func TestResourceReadErrorDetails(t *testing.T) {
 	if !ok {
 		t.Fatal(err)
 	}
-	cov := result.StructuredContent.(mcpReadError).Coverage
-	if cov == nil || !slices.Equal(cov.NarrowedBy, []resourceapi.Narrowing{resourceapi.NarrowedByCallerAccess}) || cov.Scope.Namespaces == nil || cov.Scope.Namespaces.Count != 15 ||
-		len(cov.Gaps) != 1 || cov.Gaps[0].Code != readreason.RBACDenied || cov.Gaps[0].Namespaces == nil || cov.Gaps[0].Namespaces.Count != 15 {
-		t.Fatalf("an exact-access failure carries its coverage, got %+v", cov)
+	if body := result.StructuredContent.(mcpReadError); body.ErrorCode != readreason.CallerForbidden || body.Coverage != nil {
+		t.Fatalf("an exact-access failure says where in words, without coverage: %+v", body)
 	}
 }
 
@@ -2061,11 +2059,9 @@ func TestFailedListKeepsCollectionScope(t *testing.T) {
 		t.Fatalf("want a read failure, got %v", err)
 	}
 	body := result.StructuredContent.(mcpReadError)
-	cov := body.Coverage
-	if body.ErrorCode != readreason.KindSyncPending || cov == nil || !slices.Equal(cov.NarrowedBy, []resourceapi.Narrowing{resourceapi.NarrowedByCollection}) ||
-		cov.Scope.Namespaces == nil || !slices.Equal(cov.Scope.Namespaces.Names, []string{"alpha", "gamma"}) ||
-		len(cov.Gaps) != 1 || cov.Gaps[0].Namespaces == nil || !slices.Equal(cov.Gaps[0].Namespaces.Names, []string{"alpha", "gamma"}) {
-		t.Fatalf("coverage = %+v", cov)
+	if body.ErrorCode != readreason.KindSyncPending || body.Coverage != nil ||
+		!strings.Contains(body.Error, `Other namespaces weren't read either: Radar collects services only in namespaces "alpha", "gamma"`) {
+		t.Fatalf("the error must say the list was narrowed to what Radar collects: %+v", body)
 	}
 	if body.Next != `Retry in a few seconds to read namespaces "alpha", "gamma".` {
 		t.Fatalf("next = %q", body.Next)
@@ -2302,13 +2298,39 @@ func readErrorNext(t *testing.T, err error) string {
 // A list that read nothing can fail for several reasons at once; the code
 // names the most actionable, and next still offers the retry that can recover
 // another part.
+// A list whose namespaces failed for different reasons names every cause in
+// its error, since an MCP error carries no coverage; its code is the most
+// actionable one and next still covers the cause that clears by itself.
+func TestFailedListNamesEveryCause(t *testing.T) {
+	var gaps gapSet
+	gaps.add(readreason.CallerForbidden, errors.New("denied"), "alpha")
+	gaps.add(readreason.KindSyncTimedOut, errors.New("slow"), "beta")
+	err := withListCoverage(context.Background(), gaps.failure(), "secrets", readTarget{namespaces: []string{"alpha", "beta"}, explicit: true}, false)
+	result, ok := readErrorResult(err)
+	if !ok {
+		t.Fatal(err)
+	}
+	body := result.StructuredContent.(mcpReadError)
+	for _, want := range []string{
+		`Not read: namespace "alpha", because your Kubernetes access doesn't allow listing secrets there`,
+		`Not read: namespace "beta", because Radar's load of secrets there didn't finish in time`,
+	} {
+		if !strings.Contains(body.Error, want) {
+			t.Fatalf("missing %q in %q", want, body.Error)
+		}
+	}
+	if body.ErrorCode != readreason.CallerForbidden || body.Coverage != nil || body.Next != `Retry in a minute to read namespace "beta".` {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestFailedListNextComesFromEveryGap(t *testing.T) {
 	cov := &resourceapi.Coverage{Status: resourceapi.CoveragePartial, Scope: resourceapi.Scope{Type: resourceapi.ScopeNamespaces, Namespaces: resourceapi.Names([]string{"alpha", "beta"}, resourceapi.MCPSetLimit)},
 		Gaps: []resourceapi.Gap{
-			{Code: readreason.RBACDenied, Namespaces: resourceapi.Names([]string{"alpha"}, resourceapi.MCPSetLimit)},
-			{Code: readreason.KindSyncFailed, Namespaces: resourceapi.Names([]string{"beta"}, resourceapi.MCPSetLimit)},
+			{Code: readreason.CallerForbidden, Namespaces: resourceapi.Names([]string{"alpha"}, resourceapi.MCPSetLimit)},
+			{Code: readreason.KindSyncTimedOut, Namespaces: resourceapi.Names([]string{"beta"}, resourceapi.MCPSetLimit)},
 		}}
-	err := &readError{code: readreason.RBACDenied, err: errors.New("denied"), coverage: cov}
+	err := &readError{code: readreason.CallerForbidden, err: errors.New("denied"), coverage: cov}
 	if next := readErrorNext(t, err); next != `Retry in a minute to read namespace "beta".` {
 		t.Fatalf("next = %q", next)
 	}
@@ -2335,7 +2357,7 @@ func TestDenialNamesRadarCloudOwner(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("RADAR_CLOUD_MODE", tc.cloud)
 			msg := resourcePermissionError(tc.ctx, true, "list", "", "secrets", "beta").Error()
-			_, who := gapReason(tc.ctx, "secrets", readreason.RBACDenied)
+			_, who := gapReason(tc.ctx, "secrets", readreason.CallerForbidden)
 			for _, got := range []string{msg, who} {
 				if tc.want == "" {
 					if strings.Contains(got, "Radar Cloud") {
@@ -2389,10 +2411,10 @@ func TestListNamesRadarCloudOwnerOnlyForDenials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body := extractText(t, result); strings.Contains(body, "Radar Cloud") || !strings.Contains(body, "permission_check_failed") {
+	if body := extractText(t, result); strings.Contains(body, "Radar Cloud") || !strings.Contains(body, "caller_permission_check_failed") {
 		t.Fatalf("a failed permission check is retried, not escalated to an owner: %s", body)
 	}
-	for _, code := range []readreason.Code{readreason.CollectorScopeLimited, readreason.CollectorForbidden, readreason.KindSyncPending} {
+	for _, code := range []readreason.Code{readreason.CollectorNamespaceNotCollected, readreason.CollectorForbidden, readreason.KindSyncPending} {
 		if why, who := gapReason(denied, "secrets", code); strings.Contains(why+who, "Radar Cloud") {
 			t.Fatalf("%s isn't the caller's access to widen: %q / %q", code, why, who)
 		}

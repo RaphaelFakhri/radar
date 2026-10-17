@@ -881,7 +881,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		var secretGaps gapSet
 		var err error
 		if readable, secretGaps, err = narrowByExactAccess(ctx, readable, resource, "list"); err != nil {
-			return nil, nil, withListCoverage(ctx, err, target, clusterScoped)
+			return nil, nil, withListCoverage(ctx, err, kind, target, clusterScoped)
 		}
 		gaps.merge(secretGaps)
 	}
@@ -899,7 +899,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		if !gaps.empty() && gaps.absorb(err) {
 			err = gaps.failure()
 		}
-		return nil, nil, withListCoverage(ctx, err, target, clusterScoped)
+		return nil, nil, withListCoverage(ctx, err, kind, target, clusterScoped)
 	}
 
 	// When a group is specified, route to the dynamic cache so CRDs whose
@@ -1078,7 +1078,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				}
 				// A namespace Radar doesn't collect or is refused in narrows a
 				// read the caller didn't scope; one they named is a gap.
-				if (code == readreason.CollectorScopeLimited || code == readreason.CollectorForbidden) && !target.explicit && !clusterScoped {
+				if (code == readreason.CollectorNamespaceNotCollected || code == readreason.CollectorForbidden) && !target.explicit && !clusterScoped {
 					uncollected[code] = append(uncollected[code], ns)
 					if uncollectedErr[code] == nil {
 						uncollectedErr[code] = err
@@ -1093,7 +1093,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 		if len(uncollected) > 0 {
 			if len(read) > 0 {
-				target = target.narrowedByCollection(nil, slices.Concat(uncollected[readreason.CollectorScopeLimited], uncollected[readreason.CollectorForbidden]))
+				target = target.narrowedByCollection(nil, slices.Concat(uncollected[readreason.CollectorNamespaceNotCollected], uncollected[readreason.CollectorForbidden]))
 			} else {
 				for code, namespaces := range uncollected {
 					gaps.add(code, uncollectedErr[code], namespaces...)
@@ -1112,7 +1112,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				}
 				gaps.firstErr[readreason.CollectorForbidden] = coverageError(ctx, collector, refused, covered, refusal)
 			}
-			return nil, nil, withListCoverage(ctx, gaps.failure(), target, clusterScoped)
+			return nil, nil, withListCoverage(ctx, gaps.failure(), collector.resource, target, clusterScoped)
 		}
 	default:
 		items, err := readDynamicScope(ctx, kind, group, "", "list", listAt(""))
@@ -1120,7 +1120,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 			if !gaps.empty() && gaps.absorb(err) {
 				err = gaps.failure()
 			}
-			return nil, nil, withListCoverage(ctx, err, target, clusterScoped)
+			return nil, nil, withListCoverage(ctx, err, collector.resource, target, clusterScoped)
 		}
 		rawItems, readAll = items, true
 	}

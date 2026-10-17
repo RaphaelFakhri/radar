@@ -2,14 +2,16 @@
 // resource read or a search, and what resolves each reason. The values are
 // wire contracts: resource-read errors carry one as error_code (REST bodies,
 // MCP structuredContent and text), and coverage gaps as gaps[].code. Clients
-// branch on them, so a value never changes its spelling once shipped.
+// branch on them, so a spelling changes only deliberately, and a newer UI
+// maps a renamed code it can still receive from an older Radar.
 //
-// A prefix says whose problem it is. collector_: Radar's own Kubernetes
-// identity. kind_: the kind's collection state. Namespace codes: how the
-// request's namespaces were targeted. cluster_ and connection_: Radar's
-// cluster connection. rbac_denied, no_namespace_access and
-// permission_check_failed are the caller's own access; the other unprefixed
-// codes describe the request or the answer itself.
+// A code names its subject and condition. Where whose limit it is changes the
+// remedy, the prefix names that identity: caller_ for the caller's own access,
+// collector_ for Radar's own Kubernetes identity and what it collects. kind_
+// codes are a kind's loading lifecycle; namespace_ and outside_ codes are how
+// the request targeted namespaces; cluster_ and connection_ are Radar's
+// cluster connection; the rest describe the request or the answer itself.
+// Each code's Action says what resolves it.
 package readreason
 
 import "slices"
@@ -18,16 +20,16 @@ import "slices"
 type Code string
 
 const (
-	// RBACDenied: the caller's own RBAC denies the exact operation requested.
-	RBACDenied Code = "rbac_denied"
-	// NoNamespaceAccess: the caller's access reaches no namespace in the
+	// CallerForbidden: the caller's own RBAC denies the exact operation requested.
+	CallerForbidden Code = "caller_forbidden"
+	// CallerNoNamespaceAccess: the caller's access reaches no namespace in the
 	// request's scope (Radar's membership check: the caller can list pods or
 	// deployments there). A namespace the caller named and can't see is
-	// NamespaceNotVisible.
-	NoNamespaceAccess Code = "no_namespace_access"
-	// PermissionCheckFailed: Radar could not complete the caller's permission
+	// CallerNamespaceNotVisible.
+	CallerNoNamespaceAccess Code = "caller_no_namespace_access"
+	// CallerPermissionCheckFailed: Radar could not complete the caller's permission
 	// check. It is not a denial, and a retry can succeed.
-	PermissionCheckFailed Code = "permission_check_failed"
+	CallerPermissionCheckFailed Code = "caller_permission_check_failed"
 
 	// CollectorForbidden: Kubernetes refused Radar's own identity (its service
 	// account or kubeconfig user). Granting the caller access does not help.
@@ -35,37 +37,37 @@ const (
 	// CollectorCredentialsRejected: Kubernetes rejected Radar's own
 	// credentials (HTTP 401).
 	CollectorCredentialsRejected Code = "collector_credentials_rejected"
-	// CollectorScopeLimited: the target reaches namespaces Radar's collector
+	// CollectorNamespaceNotCollected: the target reaches namespaces Radar's collector
 	// does not collect.
-	CollectorScopeLimited Code = "collector_scope_limited"
+	CollectorNamespaceNotCollected Code = "collector_namespace_not_collected"
 
 	// KindSyncPending: the kind is still loading.
 	KindSyncPending Code = "kind_sync_pending"
-	// KindSyncFailed: the kind's initial load did not finish by its deadline.
+	// KindSyncTimedOut: the kind's initial load did not finish by its deadline.
 	// Radar keeps trying and it may still finish, but repeating the request
 	// does not restart it; if it persists, Radar's collector connection or
 	// list/watch permissions need attention.
-	KindSyncFailed Code = "kind_sync_failed"
-	// KindWatchFailed: the kind's watch failed to start. A request that names
+	KindSyncTimedOut Code = "kind_sync_timed_out"
+	// KindWatchStartFailed: the kind's watch failed to start. A request that names
 	// the kind starts it again.
-	KindWatchFailed Code = "kind_watch_failed"
-	// KindNotWatched: Radar has no watch for the kind, and nothing more precise
+	KindWatchStartFailed Code = "kind_watch_start_failed"
+	// CollectorKindNotWatched: Radar has no watch for the kind, and nothing more precise
 	// is known.
-	KindNotWatched Code = "kind_not_watched"
+	CollectorKindNotWatched Code = "collector_kind_not_watched"
 	// KindUnknown: neither the built-in catalog nor discovery resolves the kind.
 	KindUnknown Code = "kind_unknown"
 	// KindNotWatchable: the API cannot be list/watched, so Radar cannot collect
 	// it; warming a watch will not help.
 	KindNotWatchable Code = "kind_not_watchable"
 
-	// OutsideNamespaceScope: the target is outside Radar's --namespace-scope pin.
-	OutsideNamespaceScope Code = "outside_namespace_scope"
+	// OutsideNamespacePin: the target is outside Radar's --namespace-scope pin.
+	OutsideNamespacePin Code = "outside_namespace_pin"
 	// OutsideNamespaceSelection: the target is outside the caller's saved
 	// namespace selection.
 	OutsideNamespaceSelection Code = "outside_namespace_selection"
-	// NamespaceNotVisible: the namespace is not among those the caller can
+	// CallerNamespaceNotVisible: the namespace is not among those the caller can
 	// see, or does not exist; the code does not say which.
-	NamespaceNotVisible Code = "namespace_not_visible"
+	CallerNamespaceNotVisible Code = "caller_namespace_not_visible"
 	// NamespaceNotFound: the namespace does not exist. Only a caller who can
 	// see every namespace is told this.
 	NamespaceNotFound Code = "namespace_not_found"
@@ -123,30 +125,30 @@ const (
 )
 
 var actions = map[Code]Action{
-	RBACDenied:                   ActionCallerAccess,
-	NoNamespaceAccess:            ActionCallerAccess,
-	PermissionCheckFailed:        ActionRetry,
-	CollectorForbidden:           ActionCollectorConfig,
-	CollectorCredentialsRejected: ActionCollectorConfig,
-	CollectorScopeLimited:        ActionCollectorConfig,
-	KindSyncPending:              ActionRetry,
-	KindSyncFailed:               ActionWait,
-	KindWatchFailed:              ActionRequestKind,
-	KindNotWatched:               ActionCollectorConfig,
-	KindUnknown:                  ActionChangeRequest,
-	KindNotWatchable:             ActionChangeRequest,
-	OutsideNamespaceScope:        ActionChangeRequest,
-	OutsideNamespaceSelection:    ActionChangeRequest,
-	NamespaceNotVisible:          ActionChangeRequest,
-	NamespaceNotFound:            ActionChangeRequest,
-	NamespaceRequired:            ActionChangeRequest,
-	ObjectNotFound:               ActionNone,
-	ListTooLarge:                 ActionChangeRequest,
-	FilterEvalFailed:             ActionChangeRequest,
-	ClusterConnecting:            ActionRetry,
-	ClusterDisconnected:          ActionCollectorConfig,
-	ConnectionChanged:            ActionCheckTarget,
-	ReadError:                    ActionRetry,
+	CallerForbidden:                ActionCallerAccess,
+	CallerNoNamespaceAccess:        ActionCallerAccess,
+	CallerPermissionCheckFailed:    ActionRetry,
+	CollectorForbidden:             ActionCollectorConfig,
+	CollectorCredentialsRejected:   ActionCollectorConfig,
+	CollectorNamespaceNotCollected: ActionCollectorConfig,
+	KindSyncPending:                ActionRetry,
+	KindSyncTimedOut:               ActionWait,
+	KindWatchStartFailed:           ActionRequestKind,
+	CollectorKindNotWatched:        ActionCollectorConfig,
+	KindUnknown:                    ActionChangeRequest,
+	KindNotWatchable:               ActionChangeRequest,
+	OutsideNamespacePin:            ActionChangeRequest,
+	OutsideNamespaceSelection:      ActionChangeRequest,
+	CallerNamespaceNotVisible:      ActionChangeRequest,
+	NamespaceNotFound:              ActionChangeRequest,
+	NamespaceRequired:              ActionChangeRequest,
+	ObjectNotFound:                 ActionNone,
+	ListTooLarge:                   ActionChangeRequest,
+	FilterEvalFailed:               ActionChangeRequest,
+	ClusterConnecting:              ActionRetry,
+	ClusterDisconnected:            ActionCollectorConfig,
+	ConnectionChanged:              ActionCheckTarget,
+	ReadError:                      ActionRetry,
 }
 
 // ActionFor reports what resolves c, and false for an undeclared code.
@@ -185,11 +187,11 @@ func AffectsWholeCluster(c Code) bool {
 var precedence = []Code{
 	NamespaceRequired, KindUnknown, KindNotWatchable, ListTooLarge,
 	ClusterDisconnected, ClusterConnecting, ConnectionChanged,
-	KindSyncPending, PermissionCheckFailed, KindWatchFailed,
-	RBACDenied, NoNamespaceAccess, NamespaceNotVisible, NamespaceNotFound,
-	OutsideNamespaceScope, OutsideNamespaceSelection,
-	CollectorCredentialsRejected, CollectorForbidden, KindNotWatched,
-	KindSyncFailed, CollectorScopeLimited, FilterEvalFailed, ReadError,
+	KindSyncPending, CallerPermissionCheckFailed, KindWatchStartFailed,
+	CallerForbidden, CallerNoNamespaceAccess, CallerNamespaceNotVisible, NamespaceNotFound,
+	OutsideNamespacePin, OutsideNamespaceSelection,
+	CollectorCredentialsRejected, CollectorForbidden, CollectorKindNotWatched,
+	KindSyncTimedOut, CollectorNamespaceNotCollected, FilterEvalFailed, ReadError,
 	ObjectNotFound,
 }
 
