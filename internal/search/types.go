@@ -121,7 +121,8 @@ const (
 	// store while it loads is not detected.
 	UnsearchedUnreadable = "unreadable"
 	// UnsearchedClusterScoped: the kind is cluster-scoped and the search was
-	// limited to namespaces, so none of its objects could match.
+	// limited to namespaces (by the request or the caller's namespace scope),
+	// so none of its objects could match.
 	UnsearchedClusterScoped = "cluster_scoped"
 )
 

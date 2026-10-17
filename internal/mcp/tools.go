@@ -3439,7 +3439,7 @@ func searchKindHint(unsearched []search.UnsearchedKind) string {
 		case search.UnsearchedUnreadable:
 			hints = append(hints, fmt.Sprintf("Radar couldn't read %s from its cache%s; it may still be loading, or Radar may not be allowed to list it. An empty result for it doesn't mean none exist.", u.Kind, searchHintNamespaces(u.Namespaces)))
 		case search.UnsearchedClusterScoped:
-			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces; use list_resources kind=%s.", u.Kind, u.Kind))
+			hints = append(hints, fmt.Sprintf("%s is cluster-scoped and this search was limited to namespaces (by the request or your namespace scope); use list_resources kind=%s.", u.Kind, u.Kind))
 		}
 	}
 	return strings.Join(hints, " ")
