@@ -5,6 +5,7 @@ package resourceapi
 
 import (
 	"cmp"
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -40,11 +41,11 @@ const (
 type Narrowing string
 
 const (
-	// NarrowedByCallerAccess: the namespaces the caller may read.
-	NarrowedByCallerAccess Narrowing = "caller_access"
+	// NarrowedByUserAccess: the namespaces the user may read.
+	NarrowedByUserAccess Narrowing = "user_access"
 	// NarrowedByNamespacePin: Radar's --namespace-scope pin.
 	NarrowedByNamespacePin Narrowing = "namespace_pin"
-	// NarrowedByNamespaceSelection: the caller's saved namespace selection.
+	// NarrowedByNamespaceSelection: the user's saved namespace selection.
 	NarrowedByNamespaceSelection Narrowing = "namespace_selection"
 	// NarrowedByCollection: what Radar collects — the namespaces it can list a
 	// kind in when its identity can't list it cluster-wide, and on a broad
@@ -186,6 +187,17 @@ type Coverage struct {
 	NarrowedBy []Narrowing    `json:"narrowedBy,omitempty"`
 	Read       *Scope         `json:"read,omitempty"`
 	Gaps       []Gap          `json:"gaps"`
+}
+
+// MarshalJSON writes no gaps as [], never null: consumers can rely on gaps
+// being an array whichever producer built the coverage.
+func (c Coverage) MarshalJSON() ([]byte, error) {
+	type wire Coverage
+	w := wire(c)
+	if w.Gaps == nil {
+		w.Gaps = []Gap{}
+	}
+	return json.Marshal(w)
 }
 
 // ReadError is the body of a failed resource read on every surface: REST

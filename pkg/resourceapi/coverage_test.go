@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,14 @@ func TestObjectsSortAndDeduplicate(t *testing.T) {
 	set := Objects([]ObjectRef{b, a, b}, 2, 8)
 	if set.Count != 2 || len(set.Names) != 2 || set.Names[0] != a || set.Names[1] != b {
 		t.Fatalf("set = %+v, want alpha/web then beta/web", set)
+	}
+}
+
+func TestCoverageGapsMarshalAsAnArray(t *testing.T) {
+	for name, v := range map[string]any{"value": Coverage{}, "pointer": &Coverage{}, "error body": ReadError{Coverage: &Coverage{}}} {
+		b, err := json.Marshal(v)
+		if err != nil || !strings.Contains(string(b), `"gaps":[]`) {
+			t.Fatalf("%s: %s %v, want gaps as []", name, b, err)
+		}
 	}
 }
