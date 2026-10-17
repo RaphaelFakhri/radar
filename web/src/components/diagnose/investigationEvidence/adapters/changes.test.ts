@@ -46,7 +46,7 @@ describe("get_changes created runs", () => {
     ]);
   });
 
-  it("treats an absent field as no runs, so older results render as before", () => {
+  it("expands an absent created field to no rows", () => {
     expect(createdChanges(undefined)).toEqual([]);
   });
 
