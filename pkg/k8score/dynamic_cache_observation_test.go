@@ -604,7 +604,8 @@ func TestReadServerChangesWhenAClusterWideInformerReplacesNamespaceOnes(t *testi
 }
 
 // A 401 rejects Radar's credentials, not one scope, so scope probing stops on
-// it instead of narrowing the kind to the namespaces that answered.
+// it instead of narrowing the kind to the namespaces that answered, and the
+// observation says credentials were rejected rather than access denied.
 func TestProbeScopesStopsOnRejectedCredentials(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	for name, rejected := range map[string]string{"cluster-wide probe": "", "a fallback namespace": "beta"} {
@@ -627,6 +628,12 @@ func TestProbeScopesStopsOnRejectedCredentials(t *testing.T) {
 			scopes, _, err := cache.probeScopes(gvr, "")
 			if !apierrors.IsUnauthorized(err) || scopes != nil {
 				t.Fatalf("scopes=%v err=%v, want the credential rejection", scopes, err)
+			}
+			if err := cache.EnsureWatching(gvr); !apierrors.IsUnauthorized(err) {
+				t.Fatalf("EnsureWatching err=%v, want the credential rejection", err)
+			}
+			if got := cache.Observation(gvr); got.State != DynamicObservationDenied || got.ReasonCode != "credentials_rejected" {
+				t.Fatalf("observation=%+v, want a credential rejection, not an access denial", got)
 			}
 		})
 	}

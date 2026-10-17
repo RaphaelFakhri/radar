@@ -356,7 +356,11 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 		}
 		scopes, complete, err := d.probeScopes(gvr, preferredNS)
 		if err != nil {
-			if isAuthProbeError(err) {
+			if apierrors.IsUnauthorized(err) {
+				// Radar's credentials were rejected, which no grant on this kind
+				// fixes, so it is recorded apart from an RBAC denial.
+				d.retainObservation(gvr, DynamicObservationDenied, "credentials_rejected", false)
+			} else if isAuthProbeError(err) {
 				d.retainDeniedObservation(gvr, preferredNS, complete)
 			}
 			return nil, fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
