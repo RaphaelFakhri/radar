@@ -353,7 +353,7 @@ func staleEnvFactMessage(fact StaleEnvFact) string {
 	if fact.ReferenceKind == "envFrom" {
 		via = " through envFrom"
 	}
-	return fmt.Sprintf("%s container %s reads %s/%s key %s%s as env %s and started at %s, before Radar observed a write to that key at %s. Env values don't refresh, so it still holds the earlier value until it restarts.",
+	return fmt.Sprintf("%s container %s reads %s/%s key %s%s as env %s and started at %s, before Radar observed a write to that key at %s. Env values don't refresh, so it likely still holds the earlier value until it restarts.",
 		pod, fact.Container, fact.SourceKind, fact.SourceName, fact.Key, via, fact.Env,
 		fact.ContainerStartedAt.UTC().Format(time.RFC3339), fact.ChangedAt.UTC().Format(time.RFC3339))
 }

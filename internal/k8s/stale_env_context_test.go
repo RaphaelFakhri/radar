@@ -34,7 +34,7 @@ func TestFindStaleEnvConsumersOfSecret(t *testing.T) {
 			fact.SourceKind != "Secret" || fact.EvidenceSource != staleSecretEvidenceObservedChange || !fact.ChangedAt.Equal(changedAt) {
 			t.Fatalf("unexpected fact: %+v", fact)
 		}
-		want := fmt.Sprintf("Pod catalog container app reads Secret/db-conn key password as env DB_PASSWORD and started at %s, before Radar observed a write to that key at %s. Env values don't refresh, so it still holds the earlier value until it restarts.",
+		want := fmt.Sprintf("Pod catalog container app reads Secret/db-conn key password as env DB_PASSWORD and started at %s, before Radar observed a write to that key at %s. Env values don't refresh, so it likely still holds the earlier value until it restarts.",
 			startedAt.Format(time.RFC3339), changedAt.Format(time.RFC3339))
 		if fact.Message != want {
 			t.Fatalf("message = %q\nwant      %q", fact.Message, want)
