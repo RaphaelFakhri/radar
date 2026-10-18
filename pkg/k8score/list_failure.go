@@ -254,7 +254,7 @@ func (p *listProgress) logTransition(f ListFailure, failing bool) {
 	if !failing {
 		if p.logged {
 			p.logged = false
-			log.Printf("Informer %s is current again; Radar vouches for its cache again", p.label)
+			log.Printf("Informer %s is current again; Radar treats its cache as current again", p.label)
 		}
 		return
 	}
@@ -266,7 +266,7 @@ func (p *listProgress) logTransition(f ListFailure, failing bool) {
 	if f.Stale {
 		state = "is stale"
 	}
-	log.Printf("WARNING: informer %s %s: its lists have failed since %s (%s); Radar no longer vouches for its cache",
+	log.Printf("WARNING: informer %s %s: its lists have failed since %s (%s); Radar no longer treats its cache as current",
 		p.label, state, f.Since.Format(time.RFC3339), f.Cause)
 }
 
@@ -324,7 +324,7 @@ func (a *APIReachability) logTransition(now time.Time, after time.Duration) {
 	switch unreachable := !a.since.IsZero() && now.Sub(a.since) >= after; {
 	case unreachable && a.loggedEpoch != a.epoch:
 		a.loggedEpoch = a.epoch
-		log.Printf("WARNING: Radar has not reached the Kubernetes API server since %s; it no longer vouches for caches that have not updated since",
+		log.Printf("WARNING: Radar has not reached the Kubernetes API server since %s; it no longer treats caches that have not updated since as current",
 			a.since.Format(time.RFC3339))
 	case a.since.IsZero() && a.loggedEpoch == a.epoch && a.epoch != 0 && !a.recoveryLogged:
 		a.recoveryLogged = true

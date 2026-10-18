@@ -626,7 +626,7 @@ func gapReason(ctx context.Context, resource string, code readreason.Code) (why,
 	case readreason.KindSyncTimedOut:
 		return fmt.Sprintf("Radar's load of %s there didn't finish in time", resource), "if it keeps failing, whoever runs Radar should check its cluster connection and list/watch permissions"
 	case readreason.KindStale:
-		return fmt.Sprintf("Radar's copy of %s there stopped updating, so Radar doesn't use it", resource), "if it keeps failing, whoever runs Radar should check its cluster connection and the API server"
+		return fmt.Sprintf("Radar's copy of %s there stopped updating, so Radar doesn't use it", resource), "if it keeps failing, whoever runs Radar should check its cluster connection, the API server and any webhooks for " + resource
 	case readreason.UserForbidden:
 		return fmt.Sprintf("your Kubernetes access doesn't allow listing %s there", resource), withCloudRole(ctx, "a cluster admin can grant it")
 	case readreason.UserPermissionCheckFailed:
@@ -969,7 +969,7 @@ func failedLoadError(ctx context.Context, target collectorTarget, where string, 
 			lost = fmt.Sprintf("refuses %s permission to list %s%s, so Radar never loaded them and can't say which exist", collectorName(), name, where)
 		}
 		return readreason.RadarForbidden, &readError{code: readreason.RadarForbidden, err: &collectorError{
-			msg:   fmt.Sprintf("Kubernetes %s. %s.%s", lost, upperFirst(identityRemedy(name, there, "list/watch")), notYourAccess(ctx)),
+			msg:   fmt.Sprintf("Kubernetes %s. %s; Radar keeps retrying and reads them again once it may.%s", lost, upperFirst(identityRemedy(name, there, "list/watch")), notYourAccess(ctx)),
 			cause: errListRefused,
 		}}
 	case k8score.ListFailureUnauthorized:
@@ -982,7 +982,7 @@ func failedLoadError(ctx context.Context, target collectorTarget, where string, 
 			lost = fmt.Sprintf("rejects Radar's own %s, so Radar never loaded %s%s and read nothing", credentials, name, where)
 		}
 		return readreason.RadarCredentialsRejected, &readError{code: readreason.RadarCredentialsRejected, err: &collectorError{
-			msg:   fmt.Sprintf("Kubernetes %s. Whoever runs Radar must refresh them, then retry.", lost),
+			msg:   fmt.Sprintf("Kubernetes %s. Whoever runs Radar must refresh them; Radar keeps retrying and reads them again once they work.", lost),
 			cause: errListRefused,
 		}}
 	}
