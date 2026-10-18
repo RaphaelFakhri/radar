@@ -24,7 +24,7 @@ describe('RollbackDialog confirmation', () => {
       <RollbackDialog open appLabel="argocd/demo" revision="abc123" historyId="0" onCancel={() => {}} onConfirm={onConfirm} />,
     ))
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
-    expect(dialog.textContent).toContain('Once it succeeds, the application stays on that revision with auto-sync off until you sync or turn auto-sync back on.')
+    expect(dialog.textContent).toContain('Once it succeeds, the application stays on that revision with auto-sync off until you sync or enable auto-sync.')
     const dryRun = dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]
     await act(async () => dryRun.click())
     expect(dialog.textContent).toContain('Argo will preview syncing this application to a previous revision without applying changes.')

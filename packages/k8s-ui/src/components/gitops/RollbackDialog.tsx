@@ -51,7 +51,7 @@ export function RollbackDialog({ open, appLabel, revision, historyId, pending, o
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
           {dryRun
             ? 'Argo will preview syncing this application to a previous revision without applying changes.'
-            : 'Argo will sync this application to a previous revision. Once it succeeds, the application stays on that revision with auto-sync off until you sync or turn auto-sync back on.'}
+            : 'Argo will sync this application to a previous revision. Once it succeeds, the application stays on that revision with auto-sync off until you sync or enable auto-sync.'}
         </div>
         <dl className="grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
           <dt className="text-theme-text-tertiary">Revision</dt>

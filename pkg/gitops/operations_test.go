@@ -983,24 +983,34 @@ func TestSetArgoAutoSyncResumeRestoresSettings(t *testing.T) {
 // Argo CD 3.x can switch automation off in place with automated.enabled:
 // false. Resume must clear that flag, or Argo stays manual while Radar reports
 // auto-sync resumed, and it keeps the block's own prune/selfHeal settings.
-func TestSetArgoAutoSyncResumeClearsEnabledFalse(t *testing.T) {
-	client := newFakeArgo(argoAppForTest("argocd", "demo", func(obj map[string]any) {
-		spec, _ := obj["spec"].(map[string]any)
-		spec["syncPolicy"] = map[string]any{"automated": map[string]any{"enabled": false, "prune": false, "selfHeal": true}}
-	}))
-	if _, err := SetArgoAutoSync(context.Background(), client, "argocd", "demo", true); err != nil {
-		t.Fatalf("SetArgoAutoSync(resume): %v", err)
-	}
-	app, err := client.Resource(argoAppGVR).Namespace("argocd").Get(context.Background(), "demo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get app: %v", err)
-	}
-	if !ArgoAutoSyncEnabled(app) {
-		t.Fatalf("auto-sync still off after resume: %#v", app.Object["spec"])
-	}
-	automated, _, _ := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "automated")
-	if automated["prune"] != false || automated["selfHeal"] != true {
-		t.Fatalf("resume changed the block's settings: %#v", automated)
+func TestSetArgoAutoSyncResumeKeepsTheBlocksSettings(t *testing.T) {
+	for name, automated := range map[string]map[string]any{
+		"switched off in place": {"enabled": false, "prune": false, "selfHeal": true},
+		"already on":            {"prune": false, "selfHeal": true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeArgo(argoAppForTest("argocd", "demo", func(obj map[string]any) {
+				spec, _ := obj["spec"].(map[string]any)
+				spec["syncPolicy"] = map[string]any{"automated": automated}
+			}))
+			// A retried or duplicated resume must not fall back to the defaults.
+			for call := 1; call <= 2; call++ {
+				if _, err := SetArgoAutoSync(context.Background(), client, "argocd", "demo", true); err != nil {
+					t.Fatalf("SetArgoAutoSync(resume) #%d: %v", call, err)
+				}
+				app, err := client.Resource(argoAppGVR).Namespace("argocd").Get(context.Background(), "demo", metav1.GetOptions{})
+				if err != nil {
+					t.Fatalf("get app: %v", err)
+				}
+				if !ArgoAutoSyncEnabled(app) {
+					t.Fatalf("auto-sync off after resume #%d: %#v", call, app.Object["spec"])
+				}
+				got, _, _ := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "automated")
+				if got["prune"] != false || got["selfHeal"] != true {
+					t.Fatalf("resume #%d changed the block's settings: %#v", call, got)
+				}
+			}
+		})
 	}
 }
 

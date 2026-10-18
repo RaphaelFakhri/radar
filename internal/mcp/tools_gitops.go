@@ -30,7 +30,7 @@ type manageGitOpsInput struct {
 	SyncOptions []string `json:"sync_options,omitempty" jsonschema:"sync only — Argo SyncOption strings, e.g. Replace=true, ServerSideApply=true."`
 
 	// ArgoCD rollback options (rollback only).
-	HistoryID *int64 `json:"history_id,omitempty" jsonschema:"rollback only — history entry ID to roll back to (from get_resource Application status.history; the first entry is 0). Auto-sync must be off."`
+	HistoryID *int64 `json:"history_id,omitempty" jsonschema:"rollback only — status.history[].id from get_resource Application (first is 0); auto-sync must be off."`
 }
 
 // GitOps tool handler
