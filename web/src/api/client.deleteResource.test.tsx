@@ -15,7 +15,7 @@ afterEach(() => {
   toast.mockClear()
 })
 
-async function remove(responses: Response[], bulk: boolean) {
+async function remove(responses: Response[], bulk: boolean, count = 1) {
   const fetchMock = vi.fn<typeof fetch>(async () => responses.shift()!)
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
@@ -23,8 +23,8 @@ async function remove(responses: Response[], bulk: boolean) {
   function Probe() {
     const single = useDeleteResource()
     const many = useBulkDeleteResources()
-    const item = { kind: 'configmaps', namespace: 'shop', name: 'app' }
-    run = () => bulk ? many.mutateAsync({ items: [item] }) : single.mutateAsync(item)
+    const items = Array.from({ length: count }, (_, i) => ({ kind: 'configmaps', namespace: 'shop', name: i ? `app-${i}` : 'app' }))
+    run = () => bulk ? many.mutateAsync({ items }) : single.mutateAsync(items[0])
     return null
   }
   const root = createRoot(document.createElement('div'))
@@ -33,7 +33,7 @@ async function remove(responses: Response[], bulk: boolean) {
   await act(async () => { try { await run!() } catch (err) { failure = err } })
   act(() => root.unmount())
   client.clear()
-  expect(fetchMock).toHaveBeenCalledOnce()
+  expect(fetchMock).toHaveBeenCalledTimes(count)
   expect(fetchMock.mock.calls[0]?.[0]).toContain('/api/resources/configmaps/shop/app')
   return failure
 }
@@ -73,10 +73,19 @@ for (const bulk of [false, true]) {
     expect(JSON.stringify(toast.mock.calls)).toContain('example.com/cleanup')
     expect(toast.mock.calls[0]?.[1].type).toBe('info')
   })
-  it(`${mode}: a failed observation retains deletion success and includes its error`, async () => {
+  it(`${mode}: a failed observation reports the deletion as accepted, not done, with its error`, async () => {
     await remove([new Response(JSON.stringify({ observationError: 'get forbidden' }))], bulk)
-    expect(toast.mock.calls[0]?.[0]).toBe(bulk ? "1 resource deleted; couldn't read the current state of 1" : "Deleted; couldn't read the current state")
-    expect(toast.mock.calls[0]?.[1].type).toBe('success')
+    expect(toast.mock.calls[0]?.[0]).toBe(bulk ? "Deletion accepted for 1 resource; couldn't read the current state of 1" : 'Deletion accepted; current state unavailable')
+    expect(toast.mock.calls[0]?.[1].type).toBe('info')
     expect(toast.mock.calls[0]?.[1].detail).toContain('get forbidden')
   })
 }
+
+it('bulk: finalizers still lead the headline when another item is unreadable', async () => {
+  await remove([
+    new Response(JSON.stringify({ pendingFinalizers: ['example.com/cleanup'], deletionTimestamp: 'now' })),
+    new Response(JSON.stringify({ observationError: 'get forbidden' })),
+  ], true, 2)
+  expect(toast.mock.calls[0]?.[0]).toBe("Deleting — 1 resource waiting on finalizers; couldn't read the current state of 1")
+  expect(toast.mock.calls[0]?.[1].type).toBe('info')
+})

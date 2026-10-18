@@ -323,9 +323,16 @@ resourceVersion, finalizers, propagation, and a `confirm` token valid for five
 minutes. Review the preview, then repeat the same target and propagation with
 `dry_run: false` and that token. Tokens are bound to the caller
 and cluster context through a caller digest. A replaced UID, changed generation,
-or changed finalizer set requires a new preview. For kinds with generation,
-status-only reconciliation does not invalidate confirmation. Kinds without
-generation use resourceVersion instead. Immediately before
+or changed finalizer set requires a new preview, and the refusal names which
+changed (for finalizers, the new set). For kinds whose status is a subresource
+(most built-ins), status-only reconciliation does not invalidate confirmation. A
+custom resource without a status subresource, such as an Argo CD Application,
+bumps generation on every status write, so its confirm can be refused and the
+preview repeated; that fails safe. Kinds without generation use resourceVersion
+instead. Tokens are signed with a per-process key, so a Radar restart
+invalidates them. A preview of an object that is already deleting reports its
+`deletionTimestamp` and says another DELETE won't remove its finalizers.
+Immediately before
 DELETE the object is re-read as the caller and checked against the preview.
 Deletes use a UID precondition and, for kinds without generation, a resourceVersion
 precondition. A spec/finalizer change after that last read can still race DELETE;
@@ -333,7 +340,8 @@ generation/finalizers are not atomic API-server preconditions.
 
 `propagation` accepts `background` (default, like kubectl), `foreground`, or
 `orphan`. Cached topology management edges show **possible relationship impact**, not a
-prediction of garbage collection or controller pruning. The approximation is bounded
+prediction of garbage collection or controller pruning. Pods the topology folds into a group
+are listed one by one under their owner. The approximation is bounded
 to a list of 100 caller-readable dependents. `cascade.dependentCounts` reports
 `byKind` and `total` from **all authorized observed dependents before truncation**,
 with `basis: "observed (not exhaustive)"`; `cascade.truncated` signals a capped

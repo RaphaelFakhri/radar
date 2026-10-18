@@ -4416,7 +4416,7 @@ async function readDeleteResult(response: Response): Promise<DeleteResourceResul
 
 function deleteResourceNotification(result: DeleteResourceResult): { message: string; type: "info" | "success"; detail?: string } {
   if (result.observationError) {
-    return { message: "Deleted; couldn't read the current state", type: "success", detail: result.observationError };
+    return { message: "Deletion accepted; current state unavailable", type: "info", detail: result.observationError };
   }
   if (result.pendingFinalizers?.length) {
     return { message: `Deleting — waiting on finalizers: ${result.pendingFinalizers.join(", ")}`, type: "info" };
@@ -4522,10 +4522,12 @@ export function useBulkDeleteResources() {
       const resources = `${deleted.length} ${deleted.length === 1 ? "resource" : "resources"}`;
       let message = `${resources} deleted`;
       let type: "info" | "success" = "success";
-      if (unobserved.length) {
-        message = `${resources} deleted; couldn't read the current state of ${unobserved.length}`;
-      } else if (pending.length) {
-        message = `Deleting — ${pending.length} ${pending.length === 1 ? "resource" : "resources"} waiting on finalizers`;
+      const unread = `couldn't read the current state of ${unobserved.length}`;
+      if (pending.length) {
+        message = `Deleting — ${pending.length} ${pending.length === 1 ? "resource" : "resources"} waiting on finalizers${unobserved.length ? `; ${unread}` : ""}`;
+        type = "info";
+      } else if (unobserved.length) {
+        message = `Deletion accepted for ${resources}; ${unread}`;
         type = "info";
       } else if (deleting.length) {
         message = `Deleting ${deleting.length} ${deleting.length === 1 ? "resource" : "resources"}…`;
