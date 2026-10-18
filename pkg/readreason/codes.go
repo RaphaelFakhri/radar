@@ -59,7 +59,8 @@ const (
 	// it; warming a watch will not help.
 	KindNotWatchable Code = "kind_not_watchable"
 
-	// OutsideNamespacePin: the target is outside Radar's --namespace-scope pin.
+	// OutsideNamespacePin: a namespace the request names is outside Radar's
+	// --namespace-scope pin, which whoever runs Radar sets.
 	OutsideNamespacePin Code = "outside_namespace_pin"
 	// OutsideNamespaceSelection: the target is outside the user's saved
 	// namespace selection.
@@ -132,7 +133,7 @@ var actions = map[Code]Action{
 	RadarKindNotCollected:      ActionRadarConfig,
 	KindUnknown:                ActionChangeRequest,
 	KindNotWatchable:           ActionChangeRequest,
-	OutsideNamespacePin:        ActionChangeRequest,
+	OutsideNamespacePin:        ActionRadarConfig,
 	OutsideNamespaceSelection:  ActionChangeRequest,
 	UserNamespaceNotVisible:    ActionChangeRequest,
 	NamespaceNotFound:          ActionChangeRequest,
@@ -187,7 +188,7 @@ var precedence = []Code{
 	ClusterDisconnected, ClusterConnecting, ConnectionChanged,
 	KindSyncPending, UserPermissionCheckFailed,
 	UserForbidden, UserNoNamespaceAccess, UserNamespaceNotVisible, NamespaceNotFound,
-	OutsideNamespacePin, OutsideNamespaceSelection,
+	OutsideNamespaceSelection, OutsideNamespacePin,
 	RadarCredentialsRejected, RadarForbidden, RadarKindNotCollected,
 	KindSyncTimedOut, RadarNamespaceNotCollected, FilterEvalFailed, ReadError,
 	ObjectNotFound,

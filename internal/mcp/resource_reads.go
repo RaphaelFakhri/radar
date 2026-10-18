@@ -233,19 +233,19 @@ func missingNamespaces(namespaces []string) []string {
 // finite target keeps the namespaces read elsewhere withheld (such as Secrets
 // the caller can't list); only the ones Radar doesn't collect leave it.
 func (t readTarget) narrowedToCollection(plan *typedRead) readTarget {
-	return t.narrowedByCollection(plan.collected, plan.uncovered)
+	return t.narrowedByNamespaceCollection(plan.collected, plan.uncovered)
 }
 
-// narrowedByCollection narrows t to collected when it is every namespace, or
+// narrowedByNamespaceCollection narrows t to collected when it is every namespace, or
 // else removes uncovered from it.
-func (t readTarget) narrowedByCollection(collected, uncovered []string) readTarget {
+func (t readTarget) narrowedByNamespaceCollection(collected, uncovered []string) readTarget {
 	if t.namespaces == nil {
 		t.namespaces = collected
 	} else {
 		t.namespaces = withoutNamespaces(t.namespaces, uncovered)
 	}
-	if !slices.Contains(t.narrowedBy, resourceapi.NarrowedByCollection) {
-		t.narrowedBy = append(slices.Clone(t.narrowedBy), resourceapi.NarrowedByCollection)
+	if !slices.Contains(t.narrowedBy, resourceapi.NarrowedByNamespaceCollection) {
+		t.narrowedBy = append(slices.Clone(t.narrowedBy), resourceapi.NarrowedByNamespaceCollection)
 	}
 	return t
 }
@@ -557,7 +557,7 @@ func narrowingCause(resource string, by []resourceapi.Narrowing, these string) s
 			return "Radar is set to read only " + these + " (--namespace-scope)"
 		case resourceapi.NarrowedByNamespaceSelection:
 			return "your saved namespace selection covers only " + these
-		case resourceapi.NarrowedByCollection:
+		case resourceapi.NarrowedByNamespaceCollection:
 			return fmt.Sprintf("Radar collects %s only in %s", resource, these)
 		}
 	}
@@ -570,7 +570,7 @@ func narrowingCause(resource string, by []resourceapi.Narrowing, these string) s
 			causes = append(causes, "Radar's --namespace-scope setting")
 		case resourceapi.NarrowedByNamespaceSelection:
 			causes = append(causes, "your saved namespace selection")
-		case resourceapi.NarrowedByCollection:
+		case resourceapi.NarrowedByNamespaceCollection:
 			causes = append(causes, "what Radar collects")
 		}
 	}
@@ -587,7 +587,7 @@ func narrowingRemedy(resource string, by []resourceapi.Narrowing) string {
 	if slices.Contains(by, resourceapi.NarrowedByNamespacePin) {
 		out += "; whoever runs Radar sets --namespace-scope"
 	}
-	if slices.Contains(by, resourceapi.NarrowedByCollection) {
+	if slices.Contains(by, resourceapi.NarrowedByNamespaceCollection) {
 		out += "; " + collectionRemedy(resource)
 	}
 	return out
@@ -1244,6 +1244,11 @@ func readDynamicScope[T any](ctx context.Context, kind, group, namespace, verb s
 			_, err = checkDynamicResourceReadFrom(ctx, kind, group, namespace, verb, err, dynamicCache, gvr, ok)
 		}
 		if !settled && (err == nil || isObjectNotFound(err)) {
+			// A cache stopped by a context switch never settles; say so rather
+			// than that the kind is loading.
+			if !current() {
+				return out, errConnectionChanged()
+			}
 			var none T
 			return none, errKindLoading(kind)
 		}

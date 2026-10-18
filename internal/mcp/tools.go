@@ -1036,7 +1036,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 			rawItems, listed = items, true
 		case isCollectorForbidden(err) && dynamicCache != nil && len(dynamicCache.FallbackNamespaces()) > 0:
 			namespaces = dynamicCache.FallbackNamespaces()
-			target = target.narrowedByCollection(namespaces, nil)
+			target = target.narrowedByNamespaceCollection(namespaces, nil)
 		default:
 			return nil, nil, err
 		}
@@ -1052,7 +1052,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 		if observation := dynamicCache.Observation(gvr); observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces {
 			namespaces = observation.Namespaces
-			target = target.narrowedByCollection(namespaces, nil)
+			target = target.narrowedByNamespaceCollection(namespaces, nil)
 		}
 	}
 
@@ -1100,7 +1100,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 		if len(uncollected) > 0 {
 			if len(read) > 0 {
-				target = target.narrowedByCollection(nil, slices.Concat(uncollected[readreason.RadarNamespaceNotCollected], uncollected[readreason.RadarForbidden]))
+				target = target.narrowedByNamespaceCollection(nil, slices.Concat(uncollected[readreason.RadarNamespaceNotCollected], uncollected[readreason.RadarForbidden]))
 			} else {
 				for code, namespaces := range uncollected {
 					gaps.add(code, uncollectedErr[code], namespaces...)

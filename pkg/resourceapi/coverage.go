@@ -1,6 +1,8 @@
 // Package resourceapi defines the coverage metadata Radar's resource reads
 // share across REST, MCP and search: what an answer is about, what Radar read
-// of it, and why anything in it is missing.
+// of it, and why anything in it is missing. Coverage qualifies a read of one
+// kind, SearchCoverage a search across kinds; both report gaps with the same
+// Gap and narrowing with the same Narrowing.
 package resourceapi
 
 import (
@@ -38,6 +40,11 @@ const (
 )
 
 // Narrowing says why an implicitly broad request covers less than everything.
+// A request that names its namespaces or kinds is never narrowed: what of it
+// Radar could not read is a gap. The values are a separate enum from
+// readreason.Action even where the spelling matches: narrowedBy user_access
+// says the answer covers only what the user may read, the action user_access
+// that the user's access has to change.
 type Narrowing string
 
 const (
@@ -47,12 +54,14 @@ const (
 	NarrowedByNamespacePin Narrowing = "namespace_pin"
 	// NarrowedByNamespaceSelection: the user's saved namespace selection.
 	NarrowedByNamespaceSelection Narrowing = "namespace_selection"
-	// NarrowedByCollection: what Radar collects — the namespaces it can list a
-	// kind in when its identity can't list it cluster-wide, and on a broad
-	// search also the kinds it doesn't watch, which a search skips without
-	// listing each one. A namespace the request names that Radar doesn't
-	// collect is a gap, not a narrowing.
-	NarrowedByCollection Narrowing = "collection"
+	// NarrowedByNamespaceCollection: the namespaces Radar collects a kind in,
+	// when its identity can't list the kind cluster-wide. Whoever runs Radar
+	// widens it.
+	NarrowedByNamespaceCollection Narrowing = "namespace_collection"
+	// NarrowedByKindCollection: the kinds Radar collects. A search that names
+	// no kind skips the kinds Radar isn't watching without listing each one;
+	// naming a kind Radar can watch but hasn't started watching searches it.
+	NarrowedByKindCollection Narrowing = "kind_collection"
 )
 
 // NameSet is a known, finite set of names. Names, when present, is all of
@@ -154,6 +163,11 @@ func listed[T any](items []T, count, limit int) []T {
 	return append([]T{}, items...)
 }
 
+// Scope is what an answer is about. ScopeCluster (a cluster-scoped kind) and
+// ScopeAllNamespaces carry no Namespaces; ScopeNamespaces always does. On a
+// successful answer Scope and Read each name at least one namespace when they
+// carry a set. An error's Scope may be an empty set: the user's access
+// reaches no namespace.
 type Scope struct {
 	Type       ScopeType `json:"type"`
 	Namespaces *NameSet  `json:"namespaces,omitempty"`
@@ -161,8 +175,9 @@ type Scope struct {
 
 // Gap is part of the scope Radar did not read, and why. It covers every
 // combination of its present dimensions: kinds × namespaces, or the objects
-// named. An absent dimension is not narrowed — the gap may reach any kind or
-// namespace of the answer, to an unknown extent — never "none".
+// named. Objects never appears with Kinds or Namespaces. An absent dimension
+// is not narrowed — the gap may reach any kind or namespace of the answer, to
+// an unknown extent — never "none".
 type Gap struct {
 	Code       readreason.Code `json:"code"`
 	Kinds      *KindSet        `json:"kinds,omitempty"`
@@ -211,4 +226,27 @@ type ReadError struct {
 	Error     string          `json:"error"`
 	ErrorCode readreason.Code `json:"error_code"`
 	Coverage  *Coverage       `json:"coverage,omitempty"`
+}
+
+// SearchCoverage qualifies a search. A search reads many kinds across
+// namespaces and cluster scope, so it has no single scope or read set: Status
+// says whether everything the query named was searched with nothing failing,
+// and Gaps what was not. A broad query searches what the user and Radar can
+// read without listing each kind or namespace it skipped for access or
+// collection; NarrowedBy says that happened, so "complete" never stands for
+// an exhaustive negative.
+type SearchCoverage struct {
+	Status     CoverageStatus `json:"status"`
+	NarrowedBy []Narrowing    `json:"narrowedBy,omitempty"`
+	Gaps       []Gap          `json:"gaps"`
+}
+
+// MarshalJSON writes no gaps as [], never null, as Coverage does.
+func (c SearchCoverage) MarshalJSON() ([]byte, error) {
+	type wire SearchCoverage
+	w := wire(c)
+	if w.Gaps == nil {
+		w.Gaps = []Gap{}
+	}
+	return json.Marshal(w)
 }

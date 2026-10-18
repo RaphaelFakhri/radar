@@ -658,7 +658,7 @@ func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]
 func narrowedListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
 	t.Helper()
 	rows, coverage := completeListBody(t, result)
-	if !slices.Contains(coverage.NarrowedBy, "collection") || coverage.ScopeType != "namespaces" || !strings.Contains(coverage.Summary, "Radar collects ") {
+	if !slices.Contains(coverage.NarrowedBy, "namespace_collection") || coverage.ScopeType != "namespaces" || !strings.Contains(coverage.Summary, "Radar collects ") {
 		t.Fatalf("want a list narrowed by collection, got %+v", coverage)
 	}
 	return rows, coverage
@@ -855,13 +855,13 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 				rows, coverage := listBody(t, result)
 				switch {
 				case tc.unrestricted:
-					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"collection"}) || !slices.Equal(coverage.Read, []string{"alpha", "gamma"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
+					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"namespace_collection"}) || !slices.Equal(coverage.Read, []string{"alpha", "gamma"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
 						t.Fatalf("coverage = %+v, want narrowed by collection to alpha and gamma", coverage)
 					}
 				case tc.uncollected:
 					// The caller didn't name beta: Radar not collecting it narrows
 					// the read rather than leaving a gap in it.
-					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"user_access", "collection"}) || !slices.Equal(coverage.Read, tc.read) || !slices.Equal(coverage.Scope, tc.read) {
+					if coverage.Status != "complete" || len(coverage.Codes) != 0 || !slices.Equal(coverage.NarrowedBy, []string{"user_access", "namespace_collection"}) || !slices.Equal(coverage.Read, tc.read) || !slices.Equal(coverage.Scope, tc.read) {
 						t.Fatalf("coverage = %+v, want read and scope %v narrowed by user_access and collection", coverage, tc.read)
 					}
 					assertNoCollectorLeak(t, errors.New(coverage.Summary), tc.hidden...)
@@ -1085,7 +1085,7 @@ func TestListResourcesReportsCollectorCoverage(t *testing.T) {
 					if tc.limited {
 						var coverage wireCoverage
 						rows, coverage = narrowedListBody(t, result)
-						if !slices.Equal(coverage.NarrowedBy, []string{"collection"}) || !slices.Equal(coverage.Read, []string{"alpha", "gamma"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
+						if !slices.Equal(coverage.NarrowedBy, []string{"namespace_collection"}) || !slices.Equal(coverage.Read, []string{"alpha", "gamma"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
 							t.Fatalf("coverage = %+v, want narrowed by collection to alpha and gamma", coverage)
 						}
 						these := fmt.Sprintf(`These are the %s in namespaces "alpha", "gamma" only`, kind)
@@ -2306,7 +2306,7 @@ func TestResourceReadsTypedReadinessIsPerNamespace(t *testing.T) {
 	rows, coverage := partialListBody(t, result)
 	if !slices.Equal(rowNames(rows), []string{"alpha-cm"}) || !slices.Equal(coverage.Read, []string{"alpha"}) ||
 		!slices.Equal(coverage.GapNamespaces["kind_sync_pending"], []string{"gamma"}) || !slices.Equal(coverage.Codes, []string{"kind_sync_pending"}) ||
-		!slices.Equal(coverage.NarrowedBy, []string{"collection"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
+		!slices.Equal(coverage.NarrowedBy, []string{"namespace_collection"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
 		t.Fatalf("unscoped read while gamma loads = %v %+v", rowNames(rows), coverage)
 	}
 

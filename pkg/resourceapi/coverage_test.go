@@ -74,10 +74,20 @@ func TestObjectsSortAndDeduplicate(t *testing.T) {
 }
 
 func TestCoverageGapsMarshalAsAnArray(t *testing.T) {
-	for name, v := range map[string]any{"value": Coverage{}, "pointer": &Coverage{}, "error body": ReadError{Coverage: &Coverage{}}} {
+	for name, v := range map[string]any{"value": Coverage{}, "pointer": &Coverage{}, "error body": ReadError{Coverage: &Coverage{}}, "search": SearchCoverage{}, "search pointer": &SearchCoverage{}} {
 		b, err := json.Marshal(v)
 		if err != nil || !strings.Contains(string(b), `"gaps":[]`) {
 			t.Fatalf("%s: %s %v, want gaps as []", name, b, err)
 		}
+	}
+}
+
+// Narrowing values are wire contracts: a released Radar's values must keep
+// meaning the same thing to every later consumer.
+func TestNarrowingSpellings(t *testing.T) {
+	got := []Narrowing{NarrowedByUserAccess, NarrowedByNamespacePin, NarrowedByNamespaceSelection, NarrowedByNamespaceCollection, NarrowedByKindCollection}
+	want := []Narrowing{"user_access", "namespace_pin", "namespace_selection", "namespace_collection", "kind_collection"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("narrowings = %v, want %v", got, want)
 	}
 }

@@ -522,8 +522,8 @@ truncation that keeps only the head of a long result:
   even when Radar can't read it.
 - **`narrowedBy`** says why an unscoped request covers less than every
   namespace: `user_access` (the namespaces your access allows),
-  `namespace_pin` (Radar's `--namespace-scope`), or `collection` (the
-  namespaces Radar collects the kind in, when its identity can't list it
+  `namespace_pin` (Radar's `--namespace-scope`), or `namespace_collection`
+  (the namespaces Radar collects the kind in, when its identity can't list it
   cluster-wide). It is absent when nothing narrowed the request.
 - **`status`** is relative to `scope`: `complete` means Radar's watch of every
   namespace in it has loaded, so missing rows are absent from what Radar
@@ -545,7 +545,7 @@ becomes a gap, and the other namespaces' rows are still returned. This holds
 for built-in kinds too: when Radar watches a kind namespace by namespace, a
 namespace whose informer has synced is read even while another is loading. A
 namespace you name that Radar doesn't collect, or was refused in, is a gap too;
-on an unscoped request those namespaces narrow it (`collection`) instead.
+on an unscoped request those namespaces narrow it (`namespace_collection`) instead.
 
 Secrets and LimitRanges need your exact permission, not just namespace
 visibility: namespaces you can see but can't list them in are an
@@ -601,7 +601,7 @@ otherwise the code says why it couldn't look.
 | `radar_kind_not_collected` | Radar's setup leaves the kind out. | Radar's collection configuration |
 | `kind_not_watchable` | The API can't be list/watched. | Use another tool; retrying won't help |
 | `kind_unknown` | The kind isn't in the catalog or discovery. Before answering this, Radar refreshes discovery (at most every 30 seconds), so a custom resource installed since the last refresh resolves. When discovery failed for the group the request named, or Radar's last discovery refresh failed outright, the answer is `read_error` instead: the kind may exist behind an API that isn't answering. | Check spelling, `group`, and installation |
-| `outside_namespace_pin` | The namespace is outside Radar's `--namespace-scope` pin. | Use the pinned namespace |
+| `outside_namespace_pin` | The namespace is outside Radar's `--namespace-scope` pin. | Radar's `--namespace-scope` setting |
 | `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace` |
 | `object_not_found` | The object is absent from a namespace Radar read in full. | — it is an answer |
 | `cluster_connecting` | Radar is still connecting. | Retry shortly |
