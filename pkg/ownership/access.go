@@ -1,0 +1,83 @@
+package ownership
+
+import (
+	"sync"
+
+	"github.com/skyhook-io/radar/pkg/resourceid"
+)
+
+// Decision is whether a caller may read something. The zero value denies, so
+// an unset decision never grants.
+type Decision uint8
+
+const (
+	Denied Decision = iota
+	Allowed
+	// Undecided: the permission check could not be made, so neither is
+	// known.
+	Undecided
+)
+
+func (d Decision) String() string {
+	return [...]string{"denied", "allowed", "undecided"}[d]
+}
+
+// Access is what one caller may read. A View names only objects the caller
+// may read, and says nothing of whether there are others.
+type Access interface {
+	// Read decides whether the caller may read objects of kind in namespace.
+	// With namespace "" it decides objects of a cluster-scoped kind, or
+	// whether the caller may read a namespaced kind in at least one of the
+	// namespaces Namespaces reports.
+	Read(kind resourceid.GroupKind, namespace string) Decision
+	// Namespaces are the namespaces in which the caller may read some
+	// namespaced kinds, or every namespace when all is set. Read decides each
+	// kind in them.
+	Namespaces() (namespaces []string, all bool)
+	// Everything reports whether Read allows every kind in every namespace.
+	Everything() bool
+	// AllKindsIn reports whether Read allows every kind in namespace.
+	AllKindsIn(namespace string) bool
+}
+
+// Unrestricted is the access of a caller who may read everything, as anyone
+// may when Radar runs without authentication.
+func Unrestricted() Access { return unrestricted{} }
+
+type unrestricted struct{}
+
+func (unrestricted) Read(resourceid.GroupKind, string) Decision { return Allowed }
+func (unrestricted) Namespaces() ([]string, bool)               { return nil, true }
+func (unrestricted) Everything() bool                           { return true }
+func (unrestricted) AllKindsIn(string) bool                     { return true }
+
+// AnyNamespace decides whether check allows at least one of namespaces:
+// allowed when one does, undecided when none does but one couldn't be
+// decided, denied otherwise, and for none. Each check can be a permission
+// request, so it makes a few at a time.
+func AnyNamespace(namespaces []string, check func(namespace string) Decision) Decision {
+	const batch = 8
+	result := Denied
+	for start := 0; start < len(namespaces); start += batch {
+		group := namespaces[start:min(start+batch, len(namespaces))]
+		decisions := make([]Decision, len(group))
+		var wg sync.WaitGroup
+		for i, namespace := range group {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				decisions[i] = check(namespace)
+			}()
+		}
+		wg.Wait()
+		for _, d := range decisions {
+			switch d {
+			case Allowed:
+				return Allowed
+			case Undecided:
+				result = Undecided
+			}
+		}
+	}
+	return result
+}

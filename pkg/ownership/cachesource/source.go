@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -334,23 +333,7 @@ func observe(ref resourceid.Ref, apiVersion string, obj apiruntime.Object) owner
 	if err != nil {
 		return unavailable(ref, readreason.ReadError)
 	}
-	o := ownership.Observation{
-		Ref:             ref,
-		APIVersion:      apiVersion,
-		UID:             m.GetUID(),
-		ResourceVersion: m.GetResourceVersion(),
-		Finalizers:      slices.Clone(m.GetFinalizers()),
-	}
-	if refs := m.GetOwnerReferences(); len(refs) > 0 {
-		o.OwnerReferences = make([]metav1.OwnerReference, len(refs))
-		for i := range refs {
-			refs[i].DeepCopyInto(&o.OwnerReferences[i])
-		}
-	}
-	if ts := m.GetDeletionTimestamp(); ts != nil {
-		o.DeletionTimestamp = ts.DeepCopy()
-	}
-	return ownership.ObjectRead{State: ownership.Present, Object: o}
+	return ownership.ObjectRead{State: ownership.Present, Object: ownership.Observe(ref, apiVersion, m)}
 }
 
 func mostStable(versions []string) string {

@@ -56,4 +56,8 @@ var (
 	// ErrStoreReplaced: a store the session read was replaced by another
 	// watch, as when a cluster-wide watch takes over from namespace ones.
 	ErrStoreReplaced = errors.New("ownership: a store was replaced during the read")
+	// ErrObjectsChanged: an object a View first read after searching an
+	// owner's dependents names that owner although the search didn't find
+	// it, so the View's answers disagree.
+	ErrObjectsChanged = errors.New("ownership: an object changed between the view's reads")
 )
