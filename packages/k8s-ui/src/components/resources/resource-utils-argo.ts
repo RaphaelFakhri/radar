@@ -83,6 +83,20 @@ export function isArgoAutoSyncSwitchedOff(app: any): boolean {
   return automated != null && typeof automated === 'object' && automated.enabled === false
 }
 
+// argoResumeSettings says what Enable auto-sync turns on for an Application
+// Radar didn't suspend. A block switched off in place keeps its own prune and
+// selfHeal. Without a block it depends on the Radar serving the request: one
+// advertising argoSyncInheritance starts prune off and selfHeal on, an older
+// one turns both on. Null while that isn't known.
+export function argoResumeSettings(app: any, serverStartsPruneOff: boolean | undefined): { prune: boolean; selfHeal: boolean } | null {
+  const automated = app?.spec?.syncPolicy?.automated
+  if (automated != null && typeof automated === 'object') {
+    return { prune: automated.prune === true, selfHeal: automated.selfHeal === true }
+  }
+  if (serverStartsPruneOff === undefined) return null
+  return { prune: !serverStartsPruneOff, selfHeal: true }
+}
+
 // argoApplicationSyncOptions returns spec.syncPolicy.syncOptions: the options
 // Argo CD applies to every sync of the Application unless a sync names its own.
 export function argoApplicationSyncOptions(app: any): string[] {

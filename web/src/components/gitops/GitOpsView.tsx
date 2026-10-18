@@ -25,6 +25,7 @@ import {
   isDestinationRef,
   isArgoAutoSyncEnabled,
   isArgoAutoSyncSwitchedOff,
+  argoResumeSettings,
   isArgoOperationInProgress,
   isArgoSuspendedByRadar,
   gitOpsInsightChangeKey,
@@ -442,6 +443,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
   const argoRollback = useArgoRollback()
   const { upgrade: argoRollbackUpgrade } = useRadarFeature('argoRollback')
   const { upgrade: argoResumeUpgrade } = useRadarFeature('argoAutoSyncEnable')
+  const { support: argoInheritanceSupport } = useRadarFeature('argoSyncInheritance')
   const applyResource = useApplyResource()
   const fluxReconcile = useFluxReconcile()
   const fluxSyncWithSource = useFluxSyncWithSource()
@@ -644,6 +646,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
     isRunning,
     operationInProgress,
     resumeUpgrade: isArgoAutoSyncSwitchedOff(resourceQ.data) ? argoResumeUpgrade : null,
+    resumeSettings: argoResumeSettings(resourceQ.data, argoInheritanceSupport === 'unknown' ? undefined : argoInheritanceSupport === 'supported'),
   } : undefined
 
   const fluxHandlers: FluxActionHandlers | undefined = isFlux ? {

@@ -208,6 +208,9 @@ export function SyncOptionsDialog({ open, appLabel, resource, applicationSyncOpt
           <Toggle label="Force" checked={force} onChange={(value) => updateValidationOption(setForce, value)} disabled={optionsDisabled} hint="Use kubectl --force; required for some immutable-field changes." />
           <Toggle label="Replace" checked={replace} onChange={(value) => updateSyncOption(setReplace, value)} disabled={optionsDisabled} hint={`kubectl replace instead of apply (drops fields not in source).${appReplace ? FROM_APPLICATION : ''}`} />
           <Toggle label="Server-side apply" checked={serverSideApply} onChange={(value) => updateSyncOption(setServerSideApply, value)} disabled={optionsDisabled} hint={`Use the K8s server-side apply mechanism for ownership tracking.${appServerSideApply ? FROM_APPLICATION : ''}`} />
+          {applicationSyncOptions === undefined && (
+            <p className="text-xs text-theme-text-tertiary">The Application's own sync options aren't shown here. Changing Replace or Server-side apply replaces them for this sync.</p>
+          )}
           {otherAppOptions.length > 0 && (
             <Toggle
               label="Keep the Application's other sync options"

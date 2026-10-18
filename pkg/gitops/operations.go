@@ -305,7 +305,7 @@ type ArgoSyncOptions struct {
 	DryRun      *bool              `json:"dryRun,omitempty"`
 	Force       *bool              `json:"force,omitempty"`
 	ApplyOnly   *bool              `json:"applyOnly,omitempty"`
-	SyncOptions []string           `json:"syncOptions,omitempty"`
+	SyncOptions []string           `json:"syncOptions"`
 }
 
 type ArgoResourceValidationResult struct {

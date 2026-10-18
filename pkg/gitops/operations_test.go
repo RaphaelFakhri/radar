@@ -2027,3 +2027,30 @@ func TestSetArgoAutoSyncEnableNeverAutomatedLeavesPruneOff(t *testing.T) {
 		t.Fatalf("resumed automated = %#v, want the saved prune on and selfHeal off", automated)
 	}
 }
+
+// A Go caller encoding ArgoSyncOptions for the HTTP API must keep the
+// difference between "none" ([]) and "the Application's own" (nil).
+func TestArgoSyncOptionsJSONKeepsEmptyList(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in      []string
+		wantNil bool
+	}{
+		"none":     {in: []string{}},
+		"inherit":  {in: nil, wantNil: true},
+		"explicit": {in: []string{"Replace=true"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data, err := json.Marshal(ArgoSyncOptions{SyncOptions: tc.in})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out ArgoSyncOptions
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatal(err)
+			}
+			if (out.SyncOptions == nil) != tc.wantNil || len(out.SyncOptions) != len(tc.in) {
+				t.Fatalf("%s round-tripped to %#v", data, out.SyncOptions)
+			}
+		})
+	}
+}
