@@ -1,11 +1,15 @@
 package cachesource
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/skyhook-io/radar/pkg/ownership"
@@ -246,5 +250,90 @@ func TestRecordersAreCompleteOnlyWithoutDoubt(t *testing.T) {
 				t.Fatalf("Recorders = %+v: complete %v, want %v", got, got.Complete(), tc.complete)
 			}
 		})
+	}
+}
+
+// A manager that changes while Recorders reads the index is in at least one
+// of its lists, so an answer that leaves it out never claims to be complete.
+func TestRecordersNeverMissAManagerChangingMidSearch(t *testing.T) {
+	cfg := resourceid.Ref{Kind: "ConfigMap", Namespace: "alpha", Name: "cfg"}
+	other := resourceid.Ref{Kind: "ConfigMap", Namespace: "alpha", Name: "other"}
+	w1 := resourceid.Ref{Group: "example.io", Kind: "Widget", Namespace: "alpha", Name: "w1"}
+	app := func(state ownership.MembershipState, rv string, members ...resourceid.Ref) ownershiptest.Object {
+		return ownershiptest.Object{
+			Ref:        resourceid.Ref{Group: ownership.ArgoApplication.Group, Kind: ownership.ArgoApplication.Kind, Namespace: "argocd", Name: "shop"},
+			APIVersion: "argoproj.io/v1alpha1", UID: "uid-shop", ResourceVersion: rv,
+			Membership: state, Members: members, Destination: "alpha",
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		ref           resourceid.Ref
+		before, after ownershiptest.Object
+		// filed is the key the changed manager is filed under.
+		filed string
+	}{
+		{"an unreadable list comes to name the object", cfg,
+			app(ownership.MembersUnreadable, "1"), app(ownership.MembersRecorded, "2", cfg),
+			memberKey(meant, "", "ConfigMap", "alpha", "cfg")},
+		// The renderer writes the second entry in the destination namespace
+		// without its namespace, as Argo CD may, and the first with it; each
+		// is filed under its own reading.
+		{"the object's entry comes to record its namespace", w1,
+			app(ownership.MembersRecorded, "1", other, w1), app(ownership.MembersRecorded, "2", w1, other),
+			memberKey(asRecorded, "example.io", "Widget", "alpha", "w1")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := ownershiptest.World{Resources: ownershiptest.Resources(), Collection: map[resourceid.GroupKind]ownershiptest.Collection{}, Objects: []ownershiptest.Object{tc.before}}
+			for _, k := range ownershiptest.Kinds {
+				w.Collection[k.GroupKind] = ownershiptest.Collection{OnDemand: !k.Typed}
+			}
+			r := render(t, w)
+			s := begin(t, r.source()).(*session)
+			// Change the manager right after the first member read, between
+			// it and the reads that follow.
+			changed := false
+			s.recordersRead = func(key string) {
+				if changed || key == unreadableKey {
+					return
+				}
+				changed = true
+				r.update(t, tc.after, tc.filed)
+			}
+			got := s.Recorders(tc.ref)
+			if !changed {
+				t.Fatal("the manager never changed mid-search")
+			}
+			recorder := slices.ContainsFunc(got.Recorders, func(o ownership.Observation) bool { return o.Ref == tc.before.Ref })
+			if !recorder && !slices.Contains(got.Unreadable, tc.before.Ref) {
+				t.Fatalf("Recorders(%v) = %+v, complete %v: %v is in neither list", tc.ref, got, got.Complete(), tc.before.Ref)
+			}
+		})
+	}
+}
+
+// update replaces o's object on the fake API and waits until the dynamic
+// cache files it under key.
+func (r *rendered) update(t *testing.T, o ownershiptest.Object, key string) {
+	t.Helper()
+	obj, typed := apiObject(t, o)
+	if typed {
+		t.Fatalf("update: %v isn't a dynamic kind", o.Ref)
+	}
+	k, _ := ownershiptest.KindOf(o.Ref.GroupKind())
+	gvr := schema.GroupVersionResource{Group: k.Group, Version: k.Version, Resource: k.Resource}
+	if _, err := r.dynamic.Resource(gvr).Namespace(o.Ref.Namespace).Update(context.Background(), obj.(*unstructured.Unstructured), metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	filed := func(u *unstructured.Unstructured) bool {
+		return u.GetNamespace() == o.Ref.Namespace && u.GetName() == o.Ref.Name
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if objs, _, ok := r.caches.Dynamic.ReadableIndexed(gvr, "", membersIndex, key); ok && slices.ContainsFunc(objs, filed) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("update: the cache never filed %v under %q", o.Ref, key)
+		}
 	}
 }

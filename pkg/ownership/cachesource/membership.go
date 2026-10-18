@@ -336,19 +336,28 @@ func (s *session) Recorders(ref resourceid.Ref) ownership.RecorderRead {
 			q.gap(gk, "", readreason.ReadError)
 			continue
 		}
-		for _, key := range keys {
-			s.dynamicIndexed(q, kind, membersIndex, key, func(gvr schema.GroupVersionResource, u *unstructured.Unstructured) {
-				manager := resourceid.Ref{Group: gk.Group, Kind: gk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()}
-				if !appliesHere(gk, u) {
-					elsewhere = append(elsewhere, manager)
-					return
-				}
-				recorders = append(recorders, candidate{ref: manager, apiVersion: gvr.GroupVersion().String(), obj: u})
+		// A manager can change between two of these reads: from an unreadable
+		// list to one naming the object, or from one reading of its entry to
+		// another. Reading the unreadable key and the member keys twice, in
+		// turn, finds a manager that changes once mid-search in at least one
+		// of them; one found in two lists only leaves the answer incomplete.
+		for range 2 {
+			s.dynamicIndexed(q, kind, membersIndex, unreadableKey, func(_ schema.GroupVersionResource, u *unstructured.Unstructured) {
+				unreadable = append(unreadable, resourceid.Ref{Group: gk.Group, Kind: gk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()})
 			})
+			s.afterRecordersRead(unreadableKey)
+			for _, key := range keys {
+				s.dynamicIndexed(q, kind, membersIndex, key, func(gvr schema.GroupVersionResource, u *unstructured.Unstructured) {
+					manager := resourceid.Ref{Group: gk.Group, Kind: gk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()}
+					if !appliesHere(gk, u) {
+						elsewhere = append(elsewhere, manager)
+						return
+					}
+					recorders = append(recorders, candidate{ref: manager, apiVersion: gvr.GroupVersion().String(), obj: u})
+				})
+				s.afterRecordersRead(key)
+			}
 		}
-		s.dynamicIndexed(q, kind, membersIndex, unreadableKey, func(_ schema.GroupVersionResource, u *unstructured.Unstructured) {
-			unreadable = append(unreadable, resourceid.Ref{Group: gk.Group, Kind: gk.Kind, Namespace: u.GetNamespace(), Name: u.GetName()})
-		})
 	}
 	var r ownership.RecorderRead
 	slices.SortFunc(recorders, func(a, b candidate) int { return compareRefs(a.ref, b.ref) })
@@ -367,4 +376,11 @@ func (s *session) Recorders(ref resourceid.Ref) ownership.RecorderRead {
 	slices.SortFunc(q.gaps, compareGaps)
 	r.Gaps = slices.Compact(q.gaps)
 	return r
+}
+
+// afterRecordersRead runs the session's recordersRead hook, if a test set one.
+func (s *session) afterRecordersRead(key string) {
+	if s.recordersRead != nil {
+		s.recordersRead(key)
+	}
 }
