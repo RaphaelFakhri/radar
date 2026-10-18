@@ -207,7 +207,7 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 					out = append(out, newStaleConfigMapEnvFact(pod, container.Name, env.Name, "configMapKeyRef", ref.Name, ref.Key, startedAt, change.changedAt))
 				}
 			}
-			for i, from := range container.EnvFrom {
+			for _, from := range container.EnvFrom {
 				if from.ConfigMapRef == nil {
 					continue
 				}
@@ -219,7 +219,7 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 						continue
 					}
 					variable := from.Prefix + identity.key
-					if len(validation.IsEnvVarName(variable)) != 0 || envFromKeyOverridden(cache, namespace, container, i, variable) {
+					if len(validation.IsEnvVarName(variable)) != 0 || envFromKeyOverridden(container, variable) {
 						continue
 					}
 					out = append(out, newStaleConfigMapEnvFact(pod, container.Name, variable, "envFrom", from.ConfigMapRef.Name, identity.key, startedAt, change.changedAt))
