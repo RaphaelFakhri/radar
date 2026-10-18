@@ -195,6 +195,13 @@ func TestListProgressEpisodes(t *testing.T) {
 		if _, ok := p.failure(t0.Add(after+time.Second), after, reach); ok {
 			t.Fatal("a store still updating read as frozen")
 		}
+		// Once it stops moving, it freezes from its last move.
+		if _, ok := p.failure(t0.Add(2*after), after, reach); ok {
+			t.Fatal("frozen before the threshold from its last move")
+		}
+		if f, ok := p.failure(t0.Add(2*after+time.Second), after, reach); !ok || !f.Since.Equal(t0.Add(after+time.Second)) {
+			t.Fatalf("a store that stopped moving = %+v, %v", f, ok)
+		}
 		// A new episode takes a new snapshot.
 		reach.since, reach.epoch = t0.Add(2*after), 2
 		p.failure(t0.Add(2*after), after, reach)

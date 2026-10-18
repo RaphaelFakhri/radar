@@ -123,12 +123,14 @@ type listProgress struct {
 	probing     bool
 	lastProbe   time.Time
 	logged      bool
-	// reachEpoch and rvAtReach hold the resource version the store had when
-	// it was first looked at during the API server's current unreachable
-	// episode. A store whose version moves after that is still updating,
-	// through a watch that outlived the failure.
-	reachEpoch uint64
-	rvAtReach  string
+	// reachEpoch, rvAtReach and reachMovedAt follow the store through the
+	// API server's current unreachable episode: the version it had when first
+	// looked at, and when that version last moved. A store whose version
+	// moves is still updating, through a watch that outlived the failure,
+	// until it stops moving.
+	reachEpoch   uint64
+	rvAtReach    string
+	reachMovedAt time.Time
 }
 
 func newListProgress(label string, rv func() string, synced func() bool, probe func(context.Context) error) *listProgress {
@@ -186,11 +188,18 @@ func (p *listProgress) failureOf(now time.Time, after time.Duration, reach *APIR
 	// retries inside client-go and never reports, so the store is frozen
 	// unless its resource version moves.
 	if epoch, since, open := reach.episode(); open {
-		if p.reachEpoch != epoch {
-			p.reachEpoch, p.rvAtReach = epoch, rv
+		switch {
+		case p.reachEpoch != epoch:
+			p.reachEpoch, p.rvAtReach, p.reachMovedAt = epoch, rv, time.Time{}
+		case rv != p.rvAtReach:
+			p.rvAtReach, p.reachMovedAt = rv, now
 		}
-		if rv == p.rvAtReach && now.Sub(since) >= after {
-			return ListFailure{Since: since, Cause: ListFailureUnreachable, Stale: synced}, true, true
+		frozenSince := since
+		if p.reachMovedAt.After(frozenSince) {
+			frozenSince = p.reachMovedAt
+		}
+		if now.Sub(frozenSince) >= after {
+			return ListFailure{Since: frozenSince, Cause: ListFailureUnreachable, Stale: synced}, true, true
 		}
 	}
 	return ListFailure{}, false, false
