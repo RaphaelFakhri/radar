@@ -188,3 +188,127 @@ entries:
     source: "internal/server/velero_results.go; https://github.com/vmware-tanzu/velero/blob/v1.16.0/pkg/apis/velero/v1/download_request_types.go"
     actions:
       - "POST /api/velero/{kind}/{namespace}/{name}/messages"
+  - group: "postgresql.cnpg.io"
+    resources: ["clusters"]
+    verbs: ["get", "patch"]
+    scope: Namespaced
+    collection: "cloudnativePg"
+    capability: cnpg
+    decision: withhold
+    reason: "No additional CloudNativePG write grant is introduced; actions keep the caller's existing roles."
+    source: "internal/cnpg/actions.go; internal/cnpg/actions_maintenance.go; internal/cnpg/protection.go; internal/cnpg/recovery.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=backup"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=switchover"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=restart"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=restartInstance"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=reload"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=fence"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=unfence"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=hibernate"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=rehydrate"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=cancelBackend"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=terminateBackend"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=destroyInstance"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=setMaintenance"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=unsetMaintenance"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=configureArchiving"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/restore-validation"
+  - group: "postgresql.cnpg.io"
+    resources: ["clusters/status"]
+    verbs: ["patch"]
+    scope: Namespaced
+    collection: "cloudnativePg"
+    capability: cnpg
+    decision: withhold
+    reason: "Status writes can promote or restart a primary; no additional CloudNativePG write grant is introduced."
+    source: "internal/cnpg/actions.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=switchover"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=restartInstance"
+  - group: "postgresql.cnpg.io"
+    resources: ["backups"]
+    verbs: ["get", "list", "create"]
+    scope: Namespaced
+    collection: "cloudnativePg"
+    capability: cnpg
+    decision: withhold
+    reason: "Backup creation keeps the caller's existing roles; no additional CloudNativePG write grant is introduced."
+    source: "internal/cnpg/actions.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=backup"
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=run"
+  - group: "postgresql.cnpg.io"
+    resources: ["scheduledbackups"]
+    verbs: ["get", "patch"]
+    scope: Namespaced
+    collection: "cloudnativePg"
+    capability: cnpg
+    decision: withhold
+    reason: "Schedule writes keep the caller's existing roles; no additional CloudNativePG write grant is introduced."
+    source: "internal/cnpg/actions.go; internal/cnpg/protection.go"
+    actions:
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=suspend"
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=resume"
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=run"
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=setSchedule"
+      - "POST /api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action} action=repairMethod"
+  - group: "postgresql.cnpg.io"
+    resources: ["poolers"]
+    verbs: ["get", "patch"]
+    scope: Namespaced
+    collection: "cloudnativePg"
+    capability: cnpg
+    decision: withhold
+    reason: "Pooler writes keep the caller's existing roles; no additional CloudNativePG write grant is introduced."
+    source: "internal/cnpg/pooler_actions.go"
+    actions:
+      - "POST /api/cnpg/poolers/{namespace}/{name}/actions/{action} action=pause"
+      - "POST /api/cnpg/poolers/{namespace}/{name}/actions/{action} action=resume"
+  - group: ""
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+    scope: Namespaced
+    collection: ""
+    capability: cnpg
+    decision: existing
+    reason: "Built-in admin and edit already cover the Pod reads and deletes used by instance actions."
+    source: "internal/cnpg/actions.go; internal/cnpg/destroy.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=restartInstance"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=fence"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=destroyInstance"
+  - group: ""
+    resources: ["pods/exec"]
+    verbs: ["create"]
+    scope: Namespaced
+    collection: ""
+    capability: cnpg
+    decision: existing
+    reason: "Built-in admin and edit already cover the exec used to cancel or terminate a PostgreSQL backend."
+    source: "internal/cnpg/sessions.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=cancelBackend"
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=terminateBackend"
+  - group: ""
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "update", "delete"]
+    scope: Namespaced
+    collection: ""
+    capability: cnpg
+    decision: existing
+    reason: "Built-in admin and edit already cover the PVC detach or deletion used by destroy instance."
+    source: "internal/cnpg/destroy.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=destroyInstance"
+  - group: "batch"
+    resources: ["jobs"]
+    verbs: ["list", "delete"]
+    scope: Namespaced
+    collection: ""
+    capability: cnpg
+    decision: existing
+    reason: "Built-in admin and edit already cover the Job reads and deletes used by destroy instance."
+    source: "internal/cnpg/destroy.go"
+    actions:
+      - "POST /api/cnpg/clusters/{namespace}/{name}/actions/{action} action=destroyInstance"

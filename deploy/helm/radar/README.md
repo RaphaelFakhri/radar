@@ -185,7 +185,8 @@ ClusterRole bound to `radar:owner` and `cloud:owner`. Members and viewers get
 nothing from it. The other rows record decisions that add no rule: Flux and
 Argo Rollouts writes are already granted to `admin` and `edit` by the vendors'
 stock aggregated roles, and Velero run messages (`downloadrequests`) are
-withheld pending review.
+withheld pending review. CloudNativePG actions add no write grant; their
+existing caller permissions continue to decide access.
 
 - `auto` (default): on only when `cloud.defaultRbac.ownerClusterRole` is exactly
   `admin` or `cluster-admin`. This compares the name; a modified `admin` role is
@@ -506,8 +507,10 @@ retain their finite grants.
 
 | Option | API Groups |
 |--------|------------|
+| `antrea` | `crd.antrea.io` (`networkpolicies`, `clusternetworkpolicies`) |
 | `apiRegistration` | `apiregistration.k8s.io` |
 | `argo` | `argoproj.io` |
+| `awsNetworkPolicy` | `networking.k8s.aws` (`applicationnetworkpolicies`, `clusternetworkpolicies`) |
 | `awx` | `awx.ansible.com` |
 | `calico` | `projectcalico.org`, `crd.projectcalico.org` |
 | `certManager` | `cert-manager.io`, `acme.cert-manager.io` |

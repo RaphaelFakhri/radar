@@ -1,6 +1,6 @@
 import { canonicalResourceGroup } from '@skyhook-io/k8s-ui/utils/api-resources'
 import { knownKindForPluralWithGroup, pluralToKind } from '@skyhook-io/k8s-ui/utils/navigation'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
 import type { KueueAdmissionResponse } from '@skyhook-io/k8s-ui/types/scheduling'
 import type { GitOpsWriteEvidence } from '@skyhook-io/k8s-ui/utils/gitops-write-guard'
 import type {
@@ -757,6 +757,13 @@ export interface IssuesResponse {
   recent_changes_reason?: string
   recent_changes_guidance?: string
   recent_changes_truncated?: boolean
+  // Present when the recent-changes window starts before the history Radar
+  // holds; complete_since is sent only to callers who can read every namespace.
+  recent_changes_history_coverage?: {
+    incomplete: boolean
+    complete_since?: string
+    reasons: string[]
+  }
   // Present only when RBAC visibility is incomplete (absent = full access).
   // state 'degraded' means core workload reads are denied, so an empty list may
   // mean "can't see" rather than "nothing broken" — the UI must say so.
@@ -1850,13 +1857,14 @@ export function useRadarFeature(feature: RadarFeature) {
   const currentVersion = versionInfo?.currentVersion || radarVersion
   const latestVersion = versionInfo?.latestVersion
   const support = radarFeatureSupport(feature, capabilities, currentVersion)
+  // Stable across renders, so a callback built on guard keeps its identity.
+  const guard = useCallback(
+    <T,>(request: () => Promise<T>): Promise<T> => guardRadarFeature(feature, support, { currentVersion, latestVersion }, request),
+    [feature, support, currentVersion, latestVersion],
+  )
+  const gatedKey = useMemo(() => (support === 'unsupported' ? ['radar-feature-unsupported'] : []), [support])
 
-  return {
-    support,
-    gatedKey: support === 'unsupported' ? ['radar-feature-unsupported'] : [],
-    guard: <T,>(request: () => Promise<T>): Promise<T> =>
-      guardRadarFeature(feature, support, { currentVersion, latestVersion }, request),
-  }
+  return { support, gatedKey, guard }
 }
 
 // ============================================================================
@@ -4351,7 +4359,7 @@ export function useUpdateResource() {
   });
 }
 
-// Cascade delete preview — shows resources that will be garbage-collected
+// Cascade delete preview — visible related resources deletion may affect.
 export interface CascadeDeletePreview {
   root: { kind: string; namespace: string; name: string; group?: string };
   rootResolved: boolean;

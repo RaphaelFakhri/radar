@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"sigs.k8s.io/yaml"
+
+	cnpgsvc "github.com/skyhook-io/radar/internal/cnpg"
 )
 
 // Every /api route family that serves a write method is classified here, so a
@@ -30,7 +32,10 @@ var (
 		"version-check", "whats-new",
 	}
 	// Read-only queries sent as POST inside an integration family.
-	readOnlyIntegrationRoutes = []string{"POST /api/gitops/write-evidence"}
+	readOnlyIntegrationRoutes = []string{
+		"POST /api/gitops/write-evidence",
+		"POST /api/cnpg/clusters/{namespace}/{name}/protection/preview",
+	}
 )
 
 // integrationWriteActions returns the table actions a write route needs.
@@ -51,11 +56,23 @@ func integrationWriteActions(method, route string) ([]string, error) {
 	case slices.Contains(readOnlyIntegrationRoutes, action):
 		return nil, nil
 	case strings.Contains(route, "{action}"):
-		if family != "rollouts" {
+		var names []string
+		switch {
+		case family == "rollouts":
+			for name := range rolloutOperations {
+				names = append(names, name)
+			}
+		case route == "/api/cnpg/clusters/{namespace}/{name}/actions/{action}":
+			names = cnpgsvc.ClusterActions()
+		case route == "/api/cnpg/scheduledbackups/{namespace}/{name}/actions/{action}":
+			names = []string{"suspend", "resume", "run", "setSchedule", "repairMethod"}
+		case route == "/api/cnpg/poolers/{namespace}/{name}/actions/{action}":
+			names = []string{"pause", "resume"}
+		default:
 			return nil, fmt.Errorf("%s dispatches on {action}; enumerate its actions here", action)
 		}
 		var actions []string
-		for name := range rolloutOperations {
+		for _, name := range names {
 			actions = append(actions, action+" action="+name)
 		}
 		return actions, nil

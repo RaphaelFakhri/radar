@@ -82,6 +82,7 @@ interface ResourceActionsBarProps {
   cascadeDependents?: CascadeDependent[]
   cascadeLoading?: boolean
   cascadeRootResolved?: boolean
+  cascadePreviewFailed?: boolean
 
   // Workload restart
   onRestart?: (params: { kind: string; namespace: string; name: string }, callbacks?: { onSuccess?: () => void; onError?: (err: unknown) => void }) => void
@@ -163,7 +164,7 @@ export function ResourceActionsBar({
   canExec, canViewLogs, canPortForward,
   onOpenTerminal, onOpenLogs: openLogs, onOpenWorkloadLogs: openWorkloadLogs, onCopyCommand,
   renderPortForward,
-  onDelete, isDeleting, cascadeDependents, cascadeLoading, cascadeRootResolved,
+  onDelete, isDeleting, cascadeDependents, cascadeLoading, cascadeRootResolved, cascadePreviewFailed,
   onRestart, isRestarting,
   onLoadImages, onSetImages, isSettingImages, imageOwnership,
   revisions: revisionsList, revisionsLoading, revisionsError, onRollback, isRollingBack,
@@ -693,6 +694,7 @@ export function ResourceActionsBar({
         cascadeDependents={cascadeDependents}
         cascadeLoading={cascadeLoading}
         cascadeRootResolved={cascadeRootResolved}
+        cascadePreviewFailed={cascadePreviewFailed}
       />
 
       {onLoadImages && onSetImages && (
