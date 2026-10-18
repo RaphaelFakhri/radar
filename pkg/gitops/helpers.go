@@ -79,12 +79,26 @@ func ArgoSyncPrunesEverything(app *unstructured.Unstructured) bool {
 }
 
 // ArgoEmptyRenderGuardHolds applies the test Argo's auto-sync makes before it
-// refuses with "auto-sync will wipe out all resources": the app is OutOfSync
-// and a sync would prune everything. That condition is not re-evaluated while
-// a sync window blocks auto-sync, so it can outlive the empty render; callers
+// refuses with "auto-sync will wipe out all resources": auto-sync is on with
+// prune and without allowEmpty, the app is OutOfSync, and a sync would prune
+// everything. That condition is not re-evaluated while a sync window blocks
+// auto-sync, so it can outlive the empty render or a policy change; callers
 // confirm it against this instead of trusting its presence.
 func ArgoEmptyRenderGuardHolds(app *unstructured.Unstructured) bool {
 	if app == nil {
+		return false
+	}
+	automated, found, _ := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "automated")
+	if !found {
+		return false
+	}
+	if enabled, ok, _ := unstructured.NestedBool(automated, "enabled"); ok && !enabled {
+		return false
+	}
+	if prune, _, _ := unstructured.NestedBool(automated, "prune"); !prune {
+		return false
+	}
+	if allowEmpty, _, _ := unstructured.NestedBool(automated, "allowEmpty"); allowEmpty {
 		return false
 	}
 	sync, _, _ := unstructured.NestedString(app.Object, "status", "sync", "status")

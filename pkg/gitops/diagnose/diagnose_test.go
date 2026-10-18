@@ -376,12 +376,27 @@ func TestIsArgoFailedAttemptCondition(t *testing.T) {
 func TestSharedResourceWarningAction(t *testing.T) {
 	// One condition row names one resource; generic advice must read right for
 	// one resource or many.
-	if got := ActionForCondition("SharedResourceWarning"); strings.Contains(got, "These resources") || !strings.Contains(got, "each shared resource") {
+	if got := ActionForCondition("SharedResourceWarning"); strings.Contains(got, "These resources") || !strings.Contains(got, "remove it from this Application's source") {
 		t.Fatalf("expected number-neutral ownership guidance: %q", got)
 	}
 	one := ArgoConditionAction("SharedResourceWarning", "argocd/b", []string{"Deployment/guestbook-ui is part of applications argocd/live-shared-b and live-shared-a"})
-	if !strings.HasPrefix(one, "Also tracked by Application live-shared-a. ") || !strings.Contains(one, "each shared resource") {
+	if !strings.HasPrefix(one, "Also tracked by Application live-shared-a. ") {
 		t.Fatalf("expected the other owner named: %q", one)
+	}
+	// Argo names the Application that tracks the resource now. Removing it from
+	// that source first would let its pruning sync delete the resource, so the
+	// advice must say which side to remove it from, and in what order.
+	for _, want := range []string{
+		"To leave it with Application live-shared-a, remove it from this Application's source.",
+		"sync this Application first so it takes over tracking, then remove it from the source of Application live-shared-a",
+		"removing it there first lets a pruning sync of Application live-shared-a delete it",
+	} {
+		if !strings.Contains(one, want) {
+			t.Fatalf("ownership advice missing %q: %q", want, one)
+		}
+	}
+	if strings.Contains(one, "remove it from the others") {
+		t.Fatalf("advice must not leave the side to remove it from ambiguous: %q", one)
 	}
 	many := ArgoConditionAction("SharedResourceWarning", "argocd/b", []string{
 		"Service/a is part of applications argocd/b and owner-2",

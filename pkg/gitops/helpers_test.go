@@ -58,7 +58,17 @@ func TestArgoEmptyRenderPredicates(t *testing.T) {
 		if resources != nil {
 			status["resources"] = resources
 		}
-		return &unstructured.Unstructured{Object: map[string]any{"status": status}}
+		// Argo raises the guard only for auto-sync with prune and without allowEmpty.
+		spec := map[string]any{"syncPolicy": map[string]any{"automated": map[string]any{"prune": true, "selfHeal": true}}}
+		return &unstructured.Unstructured{Object: map[string]any{"spec": spec, "status": status}}
+	}
+	withPolicy := func(u *unstructured.Unstructured, automated map[string]any) *unstructured.Unstructured {
+		if automated == nil {
+			unstructured.RemoveNestedField(u.Object, "spec", "syncPolicy", "automated")
+		} else {
+			_ = unstructured.SetNestedMap(u.Object, automated, "spec", "syncPolicy", "automated")
+		}
+		return u
 	}
 	res := func(kind string, prune any) map[string]any {
 		r := map[string]any{"kind": kind, "name": "guestbook-ui", "status": "OutOfSync"}
@@ -80,6 +90,12 @@ func TestArgoEmptyRenderPredicates(t *testing.T) {
 		// a manual sync with pruning still deletes everything.
 		{"synced, everything extraneous", app("Synced", res("Service", true)), true, false},
 		{"nil", nil, false, false},
+		// A deny window keeps the old condition after the policy changes; the
+		// guard no longer holds once auto-sync can't prune everything.
+		{"allowEmpty set", withPolicy(app("OutOfSync", res("Service", true)), map[string]any{"prune": true, "allowEmpty": true}), true, false},
+		{"prune off", withPolicy(app("OutOfSync", res("Service", true)), map[string]any{"selfHeal": true}), true, false},
+		{"auto-sync disabled in place", withPolicy(app("OutOfSync", res("Service", true)), map[string]any{"prune": true, "enabled": false}), true, false},
+		{"manual", withPolicy(app("OutOfSync", res("Service", true)), nil), true, false},
 	} {
 		if got := ArgoSyncPrunesEverything(tc.app); got != tc.prunes {
 			t.Errorf("%s: ArgoSyncPrunesEverything = %v, want %v", tc.name, got, tc.prunes)

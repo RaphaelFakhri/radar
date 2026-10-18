@@ -1855,7 +1855,7 @@ func TestBuildIssuesArgoEmptyAutoSyncAdvice(t *testing.T) {
 	for _, phase := range []string{"", "Failed", "Error"} {
 		for _, opMessage := range []string{"admission webhook denied the request", ""} {
 			root := argoApp(map[string]any{"sync": map[string]any{"status": "OutOfSync"}, "resources": prunedResources(), "conditions": []any{map[string]any{"type": "SyncError", "message": message, "lastTransitionTime": "2026-10-09T23:58:00Z"}}})
-			_ = unstructured.SetNestedMap(root.Object, map[string]any{"selfHeal": true}, "spec", "syncPolicy", "automated")
+			_ = unstructured.SetNestedMap(root.Object, map[string]any{"prune": true, "selfHeal": true}, "spec", "syncPolicy", "automated")
 			if phase != "" {
 				_ = unstructured.SetNestedMap(root.Object, map[string]any{"phase": phase, "message": opMessage}, "status", "operationState")
 			}
@@ -1890,6 +1890,7 @@ func TestBuildIssuesArgoFailedAttemptConditionDedup(t *testing.T) {
 	for _, phase := range []string{"Failed", "Error"} {
 		for _, message := range []string{"Failed sync attempt to [old]: failed to apply", "Failed last sync attempt to [old]: failed to apply", "Skipping sync attempt to [new]: auto-sync will wipe out all resources", "a different sync error"} {
 			root := argoApp(map[string]any{"sync": map[string]any{"status": "OutOfSync"}, "resources": prunedResources(), "operationState": map[string]any{"phase": phase, "message": "failed to apply"}, "conditions": []any{map[string]any{"type": "SyncError", "message": message, "lastTransitionTime": "2026-10-09T23:58:00Z"}}})
+			_ = unstructured.SetNestedMap(root.Object, map[string]any{"prune": true, "selfHeal": true}, "spec", "syncPolicy", "automated")
 			got := buildIssues(root, nil, "argocd", nil)
 			want := 2
 			if strings.HasPrefix(message, "Failed") {

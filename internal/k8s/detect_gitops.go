@@ -247,9 +247,10 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, tracker *argoDrift
 			continue
 		}
 
-		if !strings.EqualFold(health, "Suspended") {
-			out = append(out, argoResourceWarningProblems(app, now)...)
-		}
+		// Ownership warnings hold regardless of health: one paused Rollout step
+		// makes a whole Application Suspended without resolving a shared
+		// resource.
+		out = append(out, argoResourceWarningProblems(app, now)...)
 
 		operationFailed := strings.EqualFold(phase, "Failed") || strings.EqualFold(phase, "Error")
 		ct, cmsg, rawCondition, transitionAt, hasTransition, hasCondition := argoErrorCondition(app, now)
@@ -306,7 +307,9 @@ func detectArgoAppProblems(apps []*unstructured.Unstructured, tracker *argoDrift
 			}
 			out = append(out, d)
 		}
-		if operationFailed && !hasCondition {
+		// A failed sync is the root cause; Degraded health after it is a
+		// downstream symptom the managed resources already report.
+		if operationFailed {
 			continue
 		}
 		if strings.EqualFold(health, "Progressing") {

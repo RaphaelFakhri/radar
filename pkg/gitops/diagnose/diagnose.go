@@ -286,7 +286,8 @@ func ArgoConditionAction(condType, appName string, messages []string) string {
 	switch condType {
 	case "SharedResourceWarning":
 		if owners := ArgoSharedResourceOwners(messages); len(owners) > 0 {
-			return "Also tracked by " + applicationList(owners) + ". " + sharedResourceAdvice
+			owner := applicationList(owners)
+			return "Also tracked by " + owner + ". " + sharedResourceAdvice(owner)
 		}
 	case "OrphanedResourceWarning":
 		if appName != "" {
@@ -310,13 +311,15 @@ func ArgoSyncHazardAction(prunesEverything bool, sharedResourceMessages []string
 	if owners := ArgoSharedResourceOwners(sharedResourceMessages); len(owners) > 0 {
 		owner = applicationList(owners)
 	}
-	return "Resolve shared ownership before syncing: some resources are also tracked by " + owner + ", and a sync would take them over. " + keepOneOwner + "."
+	return "Resolve shared ownership before syncing: some resources are also tracked by " + owner + ", and a sync would take them over. If they should stay with " + owner + ", remove them from this Application's source before syncing."
 }
 
-const (
-	keepOneOwner         = "Keep each shared resource in exactly one Application's source and remove it from the others"
-	sharedResourceAdvice = keepOneOwner + "; until then, a sync of either Application takes the resource over from the other."
-)
+// sharedResourceAdvice orders the steps so neither Application deletes the
+// resource. Argo names the Application that tracks it now; removing it from
+// that one's source first lets its next pruning sync delete it.
+func sharedResourceAdvice(owner string) string {
+	return "To leave it with " + owner + ", remove it from this Application's source. To move it here, sync this Application first so it takes over tracking, then remove it from the source of " + owner + "; removing it there first lets a pruning sync of " + owner + " delete it."
+}
 
 func orphanedResourceAction(cliHint string) string {
 	return "Resources exist in the destination namespace that aren't part of any application, and Argo CD reports only how many. To see which, " + cliHint + "open the Application in the Argo CD UI and show orphaned resources. Add them to an Application if they should be managed, or configure spec.orphanedResources.ignore on the AppProject; spec.orphanedResources.warn controls whether warnings are emitted."
@@ -366,7 +369,7 @@ func ActionForCondition(condType string) string {
 	case "ExcludedResourceWarning":
 		return "A managed resource is excluded by the Argo controller's resource.exclusions. Adjust controller config or remove the resource."
 	case "SharedResourceWarning":
-		return sharedResourceAdvice
+		return sharedResourceAdvice("the Application that tracks it now")
 	default:
 		return ""
 	}

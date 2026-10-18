@@ -364,11 +364,13 @@ export function IssueRow({
         </div>
       </div>
 
-      {!open && issue.action_primary && (
-        <div className="px-4 pb-3 pl-6 text-xs">
-          {issue.cause && <p className="mb-1 text-theme-text-primary">{issue.cause}</p>}
-          <IssueGuidance action={issue.action} primary={issue.action_primary} secondaryTitle={issue.action_secondary_title} secondary={issue.action_secondary} className="text-theme-text-tertiary" />
-        </div>
+      {issue.action_primary && (
+        <Collapse open={!open}>
+          <div className="px-4 pb-3 pl-6 text-xs">
+            {issue.cause && <p className="mb-1 text-theme-text-primary">{issue.cause}</p>}
+            <IssueGuidance action={issue.action} primary={issue.action_primary} secondaryTitle={issue.action_secondary_title} secondary={issue.action_secondary} className="text-theme-text-tertiary" />
+          </div>
+        </Collapse>
       )}
 
       {/* Details unmount after the close transition: a list can hold hundreds

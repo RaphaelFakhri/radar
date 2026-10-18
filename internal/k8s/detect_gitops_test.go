@@ -923,6 +923,8 @@ func TestDetectArgoAppProblems_EmptyAutoSyncCondition(t *testing.T) {
 				map[string]any{"type": "SyncError", "message": message, "lastTransitionTime": now.Add(-2 * time.Minute).Format(time.RFC3339)},
 			})
 			_ = unstructured.SetNestedSlice(app.Object, argoPrunedResources(), "status", "resources")
+			// Argo raises the guard only for auto-sync with prune enabled.
+			_ = unstructured.SetNestedField(app.Object, true, "spec", "syncPolicy", "automated", "prune")
 			if tc.opMessage != "" {
 				_ = unstructured.SetNestedField(app.Object, tc.opMessage, "status", "operationState", "message")
 			}
@@ -934,7 +936,9 @@ func TestDetectArgoAppProblems_EmptyAutoSyncCondition(t *testing.T) {
 				return
 			}
 			wantCount := 1
-			if tc.health == "Degraded" {
+			// A failed sync outranks Degraded health whether or not Argo wrote
+			// an operation message.
+			if tc.health == "Degraded" && tc.phase != "Failed" && tc.phase != "Error" {
 				wantCount++
 			}
 			if tc.opMessage != "" {
@@ -986,7 +990,7 @@ func TestDetectArgoAppProblems_ResourceWarnings(t *testing.T) {
 		{"Degraded", "OutOfSync", "", "HealthDegraded", 3},
 		{"Healthy", "OutOfSync", "", "OutOfSync", 3},
 		{"Healthy", "OutOfSync", "Failed", "OperationFailed", 3},
-		{"Suspended", "OutOfSync", "", "", 0},
+		{"Suspended", "OutOfSync", "", "", 3},
 		{"Degraded", "OutOfSync", "Running", "", 0},
 	} {
 		t.Run(tc.health+"/"+tc.sync+"/"+tc.phase, func(t *testing.T) {
