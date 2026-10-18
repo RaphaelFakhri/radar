@@ -692,3 +692,53 @@ func TestReadServerSameIgnoresOrder(t *testing.T) {
 		}
 	}
 }
+
+// Stop keeps the informers, which go on reporting synced; nothing that vouches
+// for an answer may do so once the cache has stopped.
+func TestStoppedCacheVouchesForNothing(t *testing.T) {
+	widgets := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	gizmos := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "gizmos"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{widgets: "WidgetList", gizmos: "GizmoList"})
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	if err := d.startWatching(widgets, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.startWatching(gizmos, ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !(d.IsNamespaceSynced(widgets, "alpha") && d.IsClusterWideSynced(gizmos)) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, synced := d.ReadServer(widgets, "alpha"); !synced {
+		t.Fatal("alpha's informer did not sync")
+	}
+	if _, synced := d.ReadServer(gizmos, ""); !synced {
+		t.Fatal("the cluster-wide informer did not sync")
+	}
+
+	d.Stop()
+
+	if _, synced := d.ReadServer(widgets, "alpha"); synced {
+		t.Error("ReadServer vouches for a namespace informer of a stopped cache")
+	}
+	if _, synced := d.ReadServer(gizmos, ""); synced {
+		t.Error("ReadServer vouches for a cluster-wide informer of a stopped cache")
+	}
+	if d.IsNamespaceSynced(widgets, "alpha") || d.IsClusterWideSynced(gizmos) || d.IsSynced(gizmos) {
+		t.Error("a stopped cache reports synced")
+	}
+	if _, ok := d.WatchedSince(gizmos); ok {
+		t.Error("WatchedSince vouches for a stopped cache")
+	}
+	if _, err := d.Count(gizmos, nil); err == nil {
+		t.Error("Count answers for a stopped cache")
+	}
+	if counts := d.CountWatched(nil); counts != nil {
+		t.Errorf("CountWatched answers for a stopped cache: %v", counts)
+	}
+}

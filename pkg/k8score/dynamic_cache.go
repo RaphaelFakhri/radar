@@ -1121,6 +1121,20 @@ func entriesSynced(entries []*informerEntry) bool {
 	return len(entries) > 0
 }
 
+// servedSynced is entriesSynced for an answer the cache vouches for. Stop
+// keeps the informers, and they go on reporting synced while their stores no
+// longer change, so a stopped cache vouches for nothing. stopped never resets,
+// so checking it after the informers keeps a true answer from describing a
+// cache that had already stopped.
+func (d *DynamicResourceCache) servedSynced(entries []*informerEntry) bool {
+	if !entriesSynced(entries) {
+		return false
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return !d.stopped
+}
+
 // Count returns the number of resources for a given GVR, optionally filtered by namespaces.
 // Unlike List(), this avoids allocating a result slice and skips StripUnstructuredFields.
 // Count reads only what is already watched and synced; it does not start informers.
@@ -1137,6 +1151,9 @@ func (d *DynamicResourceCache) Count(gvr schema.GroupVersionResource, namespaces
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	if d.stopped {
+		return 0, fmt.Errorf("dynamic cache stopped")
+	}
 	if e, ok := d.informers[informerKey{gvr: gvr}]; ok {
 		if !e.informer.HasSynced() {
 			return 0, fmt.Errorf("informer not found or not synced for %v", gvr)
@@ -1203,6 +1220,9 @@ func (d *DynamicResourceCache) CountWatched(namespaces []string) map[schema.Grou
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	if d.stopped {
+		return nil
+	}
 	type watchedSet struct {
 		clusterWide *informerEntry
 		byNamespace map[string]*informerEntry
@@ -2056,7 +2076,7 @@ func (d *DynamicResourceCache) WaitForSync(gvr schema.GroupVersionResource, time
 // synced-but-partial. Callers asserting completeness or absence must use
 // IsClusterWideSynced (or Count, which refuses unsettled fanouts) instead.
 func (d *DynamicResourceCache) IsSynced(gvr schema.GroupVersionResource) bool {
-	return entriesSynced(d.entriesForGVR(gvr))
+	return d.servedSynced(d.entriesForGVR(gvr))
 }
 
 // WatchedSince returns when the cache started watching gvr: the latest start
@@ -2064,7 +2084,7 @@ func (d *DynamicResourceCache) IsSynced(gvr schema.GroupVersionResource) bool {
 // when gvr isn't watched or an informer hasn't synced yet.
 func (d *DynamicResourceCache) WatchedSince(gvr schema.GroupVersionResource) (since time.Time, ok bool) {
 	entries := d.entriesForGVR(gvr)
-	if len(entries) == 0 || !entriesSynced(entries) {
+	if !d.servedSynced(entries) {
 		return time.Time{}, false
 	}
 	for _, e := range entries {
@@ -2120,7 +2140,7 @@ func (d *DynamicResourceCache) IsNamespaceSynced(gvr schema.GroupVersionResource
 	// neither does. entriesSynced then asks each informer directly rather than
 	// reading the bookkeeping flag, which the watch goroutine sets a moment later
 	// and which therefore reports a synced informer as unsynced.
-	return entriesSynced(d.readEntries(gvr, namespace))
+	return d.servedSynced(d.readEntries(gvr, namespace))
 }
 
 // DynamicReadServer identifies the informers serving reads of one GVR and
@@ -2156,14 +2176,15 @@ func (d *DynamicResourceCache) ReadServer(gvr schema.GroupVersionResource, names
 	clusterWide, ok := d.informers[informerKey{gvr: gvr}]
 	d.mu.RUnlock()
 	if ok {
-		return DynamicReadServer{entries: []*informerEntry{clusterWide}}, clusterWide.informer.HasSynced()
+		entries := []*informerEntry{clusterWide}
+		return DynamicReadServer{entries: entries}, d.servedSynced(entries)
 	}
 	entries := d.readEntries(gvr, namespace)
 	if namespace == "" {
 		// Only the cluster-wide informer answers a cluster-wide read.
 		return DynamicReadServer{entries: entries}, false
 	}
-	return DynamicReadServer{entries: entries}, entriesSynced(entries)
+	return DynamicReadServer{entries: entries}, d.servedSynced(entries)
 }
 
 // ---------------------------------------------------------------------------
