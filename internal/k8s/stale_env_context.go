@@ -346,7 +346,7 @@ func staleEnvFactMessage(fact StaleEnvFact) string {
 		pod = fmt.Sprintf("Pod %s (and %d other Pods)", fact.Pod, fact.AffectedPods-1)
 	}
 	if fact.EvidenceSource != staleSecretEvidenceObservedChange {
-		// The managedFields fallback can't name a key; keep #2179's hedged note.
+		// The managedFields fallback can't name a key; keep the check's hedged note.
 		return pod + ": " + fact.Message
 	}
 	via := ""
