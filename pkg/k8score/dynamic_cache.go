@@ -44,6 +44,8 @@ type informerEntry struct {
 	cancel    context.CancelFunc
 	synced    bool
 	startedAt time.Time
+	// progress follows the informer's lists when list failures are tracked.
+	progress *listProgress
 }
 
 type retainedObservation struct {
@@ -131,6 +133,10 @@ func NewDynamicResourceCache(cfg DynamicCacheConfig) (*DynamicResourceCache, err
 		discoveryStatus:  CRDDiscoveryIdle,
 		discoveryDone:    make(chan struct{}),
 		gvrHandlers:      make(map[schema.GroupVersionResource][]cache.ResourceEventHandler),
+	}
+
+	if cfg.ListFailureAfter > 0 {
+		go runListWatchdog(d.stopCh, cfg.ListFailureAfter, cfg.APIReachability, d.listProgressTrackers)
 	}
 
 	log.Println("Dynamic resource cache initialized")
@@ -495,11 +501,15 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		case <-ctx.Done():
 		}
 	}()
-	d.informers[key] = &informerEntry{
+	entry := &informerEntry{
 		informer:  informer,
 		cancel:    cancel,
 		startedAt: time.Now().UTC(),
 	}
+	if d.config.ListFailureAfter > 0 {
+		d.trackListFailures(entry, key)
+	}
+	d.informers[key] = entry
 	delete(d.observations, gvr)
 
 	kind := d.gvrToKind(gvr)
@@ -543,6 +553,76 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		d.mu.Unlock()
 	}()
 	return nil
+}
+
+// trackListFailures gives entry a list tracker fed by its informer's watch
+// error handler. The factory hands back the same informer when a key is
+// watched again after an idle reap, and a started informer keeps its first
+// handler, so the handler finds the live entry by key.
+func (d *DynamicResourceCache) trackListFailures(entry *informerEntry, key informerKey) {
+	label := key.gvr.Resource + "." + key.gvr.Group + "/" + key.gvr.Version
+	if key.ns != "" {
+		label += " in namespace " + key.ns
+	}
+	client := d.config.DynamicClient
+	entry.progress = newListProgress(label, entry.informer.LastSyncResourceVersion, entry.informer.HasSynced,
+		func(ctx context.Context) error {
+			_, err := client.Resource(key.gvr).Namespace(key.ns).List(ctx, metav1.ListOptions{Limit: 1})
+			return err
+		})
+	informer := entry.informer
+	if err := informer.SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
+		d.mu.RLock()
+		live := d.informers[key]
+		d.mu.RUnlock()
+		if live != nil && live.informer == informer && live.progress != nil {
+			live.progress.observe(err, time.Now())
+		}
+	}); err != nil {
+		log.Printf("Warning: failed to set watch error handler for %s: %v", label, err)
+	}
+}
+
+// listProgressTrackers returns the list tracker of every informer.
+func (d *DynamicResourceCache) listProgressTrackers() []*listProgress {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]*listProgress, 0, len(d.informers))
+	for _, e := range d.informers {
+		if e.progress != nil {
+			out = append(out, e.progress)
+		}
+	}
+	return out
+}
+
+// NamespaceListFailure reports that Radar no longer vouches for the store
+// serving reads of gvr in namespace (the cluster-wide informer when there is
+// one, otherwise namespace's own; "" asks for every informer an
+// all-namespaces read would use), because its lists keep failing. A stopped
+// cache, a kind with no informer, and a cache that doesn't track list
+// failures report none.
+func (d *DynamicResourceCache) NamespaceListFailure(gvr schema.GroupVersionResource, namespace string) (ListFailure, bool) {
+	if d == nil || d.config.ListFailureAfter <= 0 {
+		return ListFailure{}, false
+	}
+	entries := d.readEntries(gvr, namespace)
+	d.mu.RLock()
+	stopped := d.stopped
+	d.mu.RUnlock()
+	if stopped {
+		return ListFailure{}, false
+	}
+	now := time.Now()
+	for _, e := range entries {
+		if e.progress == nil {
+			continue
+		}
+		if failure, failing := e.progress.failure(now, d.config.ListFailureAfter, d.config.APIReachability); failing {
+			return failure, true
+		}
+	}
+	return ListFailure{}, false
 }
 
 // nsCtxExpired reports whether a probe error is a context deadline/cancel —

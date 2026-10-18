@@ -525,6 +525,7 @@ func ResetTestState() {
 	k8sClient = nil
 	discoveryClient = nil
 	dynamicClient = nil
+	apiReachability = nil
 	activeClientGeneration = 0
 	kubeconfigMode = ""
 	contextBinding = ""
