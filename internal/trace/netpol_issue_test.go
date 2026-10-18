@@ -338,3 +338,38 @@ func TestDenyAllSplitAcrossPodsKeepsIssues(t *testing.T) {
 		t.Errorf("in-cluster pass through the Service: %d deny-all warnings left, want 2", got)
 	}
 }
+
+// Only this run's in-cluster request to a backend settles its deny-all issue.
+// A backend whose earlier outcome came from the shared front door, and whose
+// own in-cluster request didn't succeed, keeps the warning while a sibling
+// backend's success folds in.
+func TestApplyInClusterResultsSettlesOnlyBackendsItReached(t *testing.T) {
+	denyAll := func() []Finding {
+		return []Finding{{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress"}}
+	}
+	tr := &Trace{
+		Subject: ResourceRef{Kind: "Ingress", Namespace: "shop", Name: "web"},
+		Downstream: []Hop{
+			{Resource: ResourceRef{Kind: "Ingress", Namespace: "shop", Name: "web"}, Edge: "entry:Ingress"},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "svc-a"}, Edge: "Ingress->Service", Findings: denyAll()},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods"},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "svc-b"}, Edge: "Ingress->Service", Findings: denyAll()},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods"},
+		},
+		Routes: []RouteResult{
+			// Reached through the front door earlier; no in-cluster result now.
+			{Route: "/a", Target: "svc-a:80", TargetNamespace: "shop", Outcome: OutcomeReached, Confidence: ConfidenceReal,
+				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/a"}},
+			{Route: "/b", Target: "svc-b:80", TargetNamespace: "shop", Outcome: OutcomeReached, Confidence: ConfidenceIndirect,
+				InClusterRequest: &ProbeRequest{Protocol: "http", Scheme: "http", Path: "/b"}},
+		},
+		Coverage: &Coverage{Tested: 2, Passed: 2},
+	}
+	ApplyInClusterResults(tr, map[string][]probe.Result{InClusterResultKey("/b", "svc-b:80", "shop"): cleanInClusterPass()})
+	if f := tr.Downstream[1].Findings[0]; f.Severity != SeverityWarning {
+		t.Errorf("svc-a deny-all = %s, want the warning kept: no in-cluster request reached it", f.Severity)
+	}
+	if f := tr.Downstream[3].Findings[0]; f.Severity != SeverityInfo {
+		t.Errorf("svc-b deny-all = %s, want info after its in-cluster request got through", f.Severity)
+	}
+}

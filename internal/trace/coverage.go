@@ -633,6 +633,10 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		return
 	}
 	folded := false
+	// livePasses holds the backends this run's in-cluster requests reached,
+	// keyed like passedBackends. A route's earlier outcome can come from a
+	// shared front-door probe, so only these can settle a deny-all issue.
+	livePasses := map[string]map[int32]bool{}
 	for i := range t.Routes {
 		if t.Routes[i].Benign {
 			continue
@@ -658,6 +662,14 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 		rr.ByVantage = mergeVantages(t.Routes[i].ByVantage, rr.ByVantage)
 		t.Routes[i] = rr
 		folded = true
+		if rr.Confidence == ConfidenceReal && (rr.Outcome == OutcomeVerified || rr.Outcome == OutcomeReached) {
+			name, port := splitTargetPort(rr.Target)
+			key := name + "\x00" + rr.TargetNamespace
+			if livePasses[key] == nil {
+				livePasses[key] = map[int32]bool{}
+			}
+			livePasses[key][port] = true
+		}
 	}
 	if !folded {
 		return
@@ -730,7 +742,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 	// reached the backend is ground truth that the rule isn't blocking this path.
 	// Downgrade the surviving would-deny WARNING so computeDiagnosis can't
 	// re-promote a prediction that the confirmed live success contradicts.
-	reconcileInClusterPolicy(t)
+	reconcileInClusterPolicy(t, livePasses)
 	// Same ground-truth principle for the targetPort suspicion: live in-cluster
 	// traffic that reached the suspect Service port proves a listener exists, so
 	// downgrade the surviving svc:targetport-no-listener WARNING before computeDiagnosis
@@ -785,7 +797,7 @@ func ApplyInClusterResults(t *Trace, byTarget map[string][]probe.Result) {
 // REAL in-cluster traffic. Without this, ApplyInClusterResults would fold the
 // live success into the route outcome but leave the contradicting prediction on
 // the hop, where primaryProblemFinding could re-promote it as the lead cause.
-func reconcileInClusterPolicy(t *Trace) {
+func reconcileInClusterPolicy(t *Trace, livePasses map[string]map[int32]bool) {
 	passed, anyPass := passedBackends(t)
 	if !anyPass {
 		return
@@ -794,15 +806,16 @@ func reconcileInClusterPolicy(t *Trace) {
 	// covered the port the deny is about (or the deny is all-ports). A pass on
 	// :80 must not clear a :443 prediction. ports==nil means this branch had no
 	// real pass at all.
-	downgrade := func(start, end int, ports map[int32]bool) {
+	downgrade := func(start, end int, ports, live map[int32]bool) {
 		for i := start; i < end && i < len(t.Downstream); i++ {
 			h := &t.Downstream[i]
-			// A deny-all policy issue claims every port is blocked, so a real
-			// pass to this backend disproves it whatever the port. The pass went
-			// through the Service, so it can't say which pod answered: settle
-			// only a lone policy issue, which isolates every backend (policies
-			// that split the pods each add their own issue).
-			if h.Resource.Kind == "Service" && len(ports) > 0 && countFindings(h.Findings, k8s.NetworkPolicyDenyAllIngressFingerprint) == 1 {
+			// A deny-all policy issue claims every port is blocked, so this
+			// run's in-cluster request reaching the backend disproves it
+			// whatever the port. The request went through the Service, so it
+			// can't say which pod answered: settle only a lone policy issue,
+			// which isolates every backend (policies that split the pods each
+			// add their own issue).
+			if h.Resource.Kind == "Service" && len(live) > 0 && countFindings(h.Findings, k8s.NetworkPolicyDenyAllIngressFingerprint) == 1 {
 				downgradeDenyAllIngress(h)
 			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
@@ -828,12 +841,13 @@ func reconcileInClusterPolicy(t *Trace) {
 	if len(branches) == 0 {
 		// Single chain (Service subject): the one route covers the whole downstream.
 		// Pool every passed port across the single route(s).
-		downgrade(0, len(t.Downstream), anyPassedPorts(passed))
+		downgrade(0, len(t.Downstream), anyPassedPorts(passed), anyPassedPorts(livePasses))
 		return
 	}
 	for _, b := range branches {
 		if ports, ok := branchPassedPorts(passed, t.Downstream[b.start].Resource); ok {
-			downgrade(b.start, b.end, ports)
+			live, _ := branchPassedPorts(livePasses, t.Downstream[b.start].Resource)
+			downgrade(b.start, b.end, ports, live)
 		}
 	}
 }
