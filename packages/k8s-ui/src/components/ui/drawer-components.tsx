@@ -815,9 +815,9 @@ export type CopyHandler = (text: string, key: string) => void
 // RELATED RESOURCES SECTION
 // ============================================================================
 
-import type { TimelineEvent, Relationships, ResourceRef } from '../../types'
+import type { TimelineEvent, Relationships, ResourceRef, OwnershipCoverage } from '../../types'
 import { isChangeEvent, isK8sEvent } from '../../types'
-import { Link } from 'lucide-react'
+import { Info, Link } from 'lucide-react'
 import { formatRelativeAgeTime } from '../../utils/format'
 
 interface RelatedResourcesSectionProps {
@@ -830,9 +830,23 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
 
   const configRefs = omitResourceRefs(relationships.configRefs ?? [], relationships.dependencies ?? [])
   const consumers = omitResourceRefs(relationships.consumers ?? [], relationships.dependents ?? [])
+  const alsoOwnedBy = omitResourceRefs(relationships.owners ?? [], relationships.owner ? [relationships.owner] : [])
+  const managesNote = membersNote(relationships.ownership?.manages)
+  const unanswered = ownershipUnanswered(relationships.ownership)
+  const several = !relationships.owner && relationships.ownership?.ownerState === 'several'
+  const ownerMissing = relationships.owner || several ? undefined : ownerNote(relationships.ownership)
+  const childrenCoverage = childrenNote(relationships.ownership)
 
   const hasRelationships =
     relationships.owner ||
+    unanswered ||
+    ownerMissing ||
+    several ||
+    childrenCoverage?.text ||
+    alsoOwnedBy.length > 0 ||
+    (relationships.managers && relationships.managers.length > 0) ||
+    (relationships.manages && relationships.manages.length > 0) ||
+    managesNote ||
     relationships.deployment ||
     relationships.node ||
     (relationships.children && relationships.children.length > 0) ||
@@ -864,8 +878,20 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
   return (
     <Section title="Related Resources" icon={Link} defaultExpanded>
       <div className="space-y-3">
-        {relationships.owner && (
-          <RelationshipGroup label="Owner" refs={[relationships.owner]} onNavigate={onNavigate} />
+        {unanswered && <div className="text-xs text-theme-text-tertiary">{unanswered}</div>}
+        {(relationships.owner || ownerMissing) && (
+          <RelationshipGroup label="Owner" refs={relationships.owner ? [relationships.owner] : []} onNavigate={onNavigate} note={ownerMissing} />
+        )}
+        {(alsoOwnedBy.length > 0 || several) && (
+          <RelationshipGroup
+            label={relationships.owner || ownerMissing ? 'Also Owned By' : 'Owners'}
+            refs={dedupeResourceRefs(alsoOwnedBy)}
+            onNavigate={onNavigate}
+            note={several ? { text: alsoOwnedBy.length > 0 ? 'None of them is its controller.' : 'None of the owners it names can be shown.' } : undefined}
+          />
+        )}
+        {relationships.managers && relationships.managers.length > 0 && (
+          <RelationshipGroup label="Managed By" refs={dedupeResourceRefs(relationships.managers)} onNavigate={onNavigate} />
         )}
         {relationships.deployment && (
           <RelationshipGroup label="Deployment" refs={[relationships.deployment]} onNavigate={onNavigate} />
@@ -873,8 +899,11 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
         {relationships.node && (
           <RelationshipGroup label="Node" refs={[relationships.node]} onNavigate={onNavigate} />
         )}
-        {relationships.children && relationships.children.length > 0 && (
-          <RelationshipGroup label="Children" refs={dedupeResourceRefs(relationships.children)} onNavigate={onNavigate} />
+        {((relationships.children && relationships.children.length > 0) || childrenCoverage?.text) && (
+          <RelationshipGroup label="Children" refs={dedupeResourceRefs(relationships.children ?? [])} onNavigate={onNavigate} note={childrenCoverage} />
+        )}
+        {((relationships.manages && relationships.manages.length > 0) || managesNote) && (
+          <RelationshipGroup label="Manages" refs={dedupeResourceRefs(relationships.manages ?? [])} onNavigate={onNavigate} note={managesNote} />
         )}
         {relationships.services && relationships.services.length > 0 && (
           <RelationshipGroup label="Services" refs={dedupeResourceRefs(relationships.services)} onNavigate={onNavigate} />
@@ -947,23 +976,156 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
   )
 }
 
+// ownershipUnanswered says why Owner and Children couldn't be answered at all.
+function ownershipUnanswered(coverage: OwnershipCoverage | undefined): string | undefined {
+  if (coverage?.changed) return "Owner and children aren't shown: the object was deleted and recreated after it was opened."
+  const reason = coverage?.unavailable
+  if (!reason) return undefined
+  if (reason === 'user_forbidden') return "Owner and children aren't shown: your access lets you open this object, but not list its kind here."
+  return `Owner and children couldn't be read: ${gapReasonText(reason)}.`
+}
+
+// ownerNote says why no owner is named, when there is an owner reference.
+function ownerNote(coverage: OwnershipCoverage | undefined): RelationshipNote | undefined {
+  const ref = coverage?.ownerRef
+  const named = ref?.kind && ref.name ? `${ref.kind} ${ref.name}` : 'the owner it names'
+  switch (coverage?.ownerState) {
+    case 'gone':
+      return { text: `${capitalize(named)} no longer exists.` }
+    case 'replaced':
+      return { text: `${capitalize(named)} was deleted and recreated; this object names the earlier one.` }
+    case 'unknown':
+      return { text: coverage?.ownerReason ? `Couldn't check ${named} (${gapReasonText(coverage.ownerReason)}).` : `Couldn't check ${named}.` }
+    case 'withheld':
+      return { text: 'Not visible to you.' }
+    case 'unresolvable':
+      return { text: "Its owner reference can't be resolved in this cluster." }
+    case 'excluded':
+      return { text: "Its owner reference names an Event, which Radar doesn't follow as an owner." }
+  }
+  return undefined
+}
+
+// childrenNote says what a Children list may be missing. Kinds Radar doesn't
+// collect are a hint, since most lists miss a few; kinds it couldn't check
+// for any other reason, a list cut short, and places the viewer may not read
+// are said outright.
+function childrenNote(coverage: OwnershipCoverage | undefined): RelationshipNote | undefined {
+  const children = coverage?.children
+  if (!children) return undefined
+  const uncollected = new Set<string>()
+  let someNamespaces = false
+  const pressing = new Map<string, string>()
+  for (const g of children.notChecked ?? []) {
+    const kind = g.kind || 'Kinds discovery did not list'
+    if (g.reason === 'radar_kind_not_collected') uncollected.add(kind)
+    else if (g.reason === 'radar_namespace_not_collected') someNamespaces = true
+    else if (!pressing.has(kind)) pressing.set(kind, gapReasonText(g.reason))
+  }
+  const note: RelationshipNote = {}
+  const hint: string[] = []
+  if (uncollected.size > 0) hint.push(`Radar doesn't collect ${joinOr(Array.from(uncollected))} objects, so none of those are listed.`)
+  if (someNamespaces) hint.push("Radar doesn't collect every namespace, so children in the others aren't listed.")
+  if (children.narrowed) hint.push('Only children you can view are listed.')
+  if (hint.length > 0) note.hint = hint
+  const text: string[] = []
+  if (pressing.size > 0) text.push(`Couldn't check ${Array.from(pressing, ([kind, why]) => `${kind} (${why})`).join(', ')}.`)
+  if (children.truncated) text.push('More children than shown.')
+  if (text.length > 0) note.text = text.join(' ')
+  return note.hint || note.text ? note : undefined
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+function joinOr(items: string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`
+}
+
+function gapReasonText(reason: string): string {
+  switch (reason) {
+    case 'radar_kind_not_collected':
+    case 'radar_namespace_not_collected':
+      return "Radar doesn't collect it"
+    case 'kind_sync_pending':
+      return 'still loading'
+    case 'kind_sync_timed_out':
+      return 'loading is overdue'
+    case 'radar_forbidden':
+    case 'radar_credentials_rejected':
+      return 'Radar may not list it'
+    case 'kind_not_watchable':
+      return "its API can't be watched"
+    case 'user_permission_check_failed':
+      return "your access couldn't be checked"
+    case 'user_forbidden':
+      return 'you may not list it'
+    case 'kind_unknown':
+      return "this cluster doesn't serve its kind"
+    case 'object_not_found':
+      return "Radar doesn't have it yet"
+    case 'cluster_connecting':
+      return 'Radar is still connecting'
+    case 'cluster_disconnected':
+      return 'Radar lost its connection'
+    case 'connection_changed':
+      return 'Radar switched clusters meanwhile'
+    default:
+      return 'the read failed'
+  }
+}
+
+// membersNote says what a GitOps manager's status records beyond the members
+// Manages lists.
+function membersNote(manages: OwnershipCoverage['manages'] | undefined): RelationshipNote | undefined {
+  if (!manages) return undefined
+  if (manages.membership === 'remote') return { text: 'Its members are in another cluster.' }
+  if (manages.membership === 'unreadable') {
+    return manages.unavailable ? { text: `Couldn't read the members its status records (${gapReasonText(manages.unavailable)}).` } : undefined
+  }
+  const extra: string[] = []
+  if (manages.missing) extra.push(`${manages.missing} not in the cluster`)
+  if (manages.withheld) extra.push(`${manages.withheld} you can't view`)
+  if (manages.unknown) extra.push(`${manages.unknown} Radar can't check`)
+  const parts: string[] = []
+  if (extra.length > 0) parts.push(`Its status also lists ${extra.join(', ')}.`)
+  if (manages.truncated) parts.push('More members than shown.')
+  return parts.length > 0 ? { text: parts.join(' ') } : undefined
+}
+
+export interface RelationshipNote {
+  /** Shown under the group. */
+  text?: string
+  /** Lines shown on hovering an info mark beside the label. */
+  hint?: string[]
+}
+
 interface RelationshipGroupProps {
   label: string
   refs: ResourceRef[]
   onNavigate?: (ref: ResourceRef) => void
+  note?: RelationshipNote
 }
 
 const RELATIONSHIP_TRUNCATE_LIMIT = 10
 
-export function RelationshipGroup({ label, refs, onNavigate }: RelationshipGroupProps) {
+export function RelationshipGroup({ label, refs, onNavigate, note }: RelationshipGroupProps) {
   const [showAll, setShowAll] = useState(false)
-  if (!refs || refs.length === 0) return null
+  if ((!refs || refs.length === 0) && !note) return null
   const truncated = !showAll && refs.length > RELATIONSHIP_TRUNCATE_LIMIT
   const visibleRefs = truncated ? refs.slice(0, RELATIONSHIP_TRUNCATE_LIMIT) : refs
 
   return (
     <div>
-      <div className="text-xs text-theme-text-tertiary mb-1">{label}{refs.length > 1 ? ` (${refs.length})` : ''}</div>
+      <div className="text-xs text-theme-text-tertiary mb-1 flex items-center gap-1">
+        <span>{label}{refs.length > 1 ? ` (${refs.length})` : ''}</span>
+        {note?.hint && (
+          <Tooltip content={<div className="space-y-0.5">{note.hint.map((line) => <div key={line}>{line}</div>)}</div>} delay={150}>
+            <Info className="w-3 h-3" aria-label={note.hint.join(' ')} />
+          </Tooltip>
+        )}
+      </div>
       <div className="flex flex-wrap gap-1">
         {visibleRefs.map((resourceRef, i) => (
           <ResourceRefBadge key={`${resourceRef.kind}-${resourceRef.namespace}-${resourceRef.name}-${i}`} resourceRef={resourceRef} onClick={onNavigate} />
@@ -977,6 +1139,7 @@ export function RelationshipGroup({ label, refs, onNavigate }: RelationshipGroup
           </button>
         )}
       </div>
+      {note?.text && <div className="mt-1 text-xs text-theme-text-tertiary">{note.text}</div>}
     </div>
   )
 }

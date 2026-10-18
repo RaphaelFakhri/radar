@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/pkg/health"
+	"github.com/skyhook-io/radar/pkg/ownership"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -58,6 +59,11 @@ type Options struct {
 	// helpers (e.g. ManagedBy owner walk) read Topology and RelIndex through
 	// it.
 	Relationships *topology.Relationships
+
+	// Ownership, when set, answers the relationships' ownership from owner
+	// references in place of the topology's manages edges, for fetched, the
+	// object Build describes. rel is never nil.
+	Ownership func(rel *topology.Relationships, fetched ownership.Observation)
 
 	// RelIndex is the topology inverted-edge index. Pass a shared instance
 	// (topology.IndexByResource(topo)) for high-fanout callers; nil is fine
@@ -202,6 +208,16 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 			opts.Topology, opts.Provider, opts.DynamicProv, opts.RelIndex,
 		)
 	}
+	// Whether the topology answered, before an ownership answer exists to
+	// carry the rest.
+	fromTopology := rel != nil
+	if m, ok := obj.(metav1.Object); ok && opts.Ownership != nil {
+		if rel == nil {
+			rel = &topology.Relationships{}
+		}
+		ref := resourceid.Ref{Group: ident.Group, Kind: ident.Kind, Namespace: ident.Namespace, Name: ident.Name}
+		opts.Ownership(rel, ownership.Observe(ref, obj.GetObjectKind().GroupVersionKind().GroupVersion().String(), m))
+	}
 
 	// 1. ManagedBy — prefer Relationships.ManagedBy (server-synthesized when
 	// a topology is available; covers GitOps signals + owner-chain walk).
@@ -211,7 +227,7 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 	var managedBy []topology.ResourceRef
 	if rel != nil && len(rel.ManagedBy) > 0 {
 		managedBy = rel.ManagedBy
-	} else if rel == nil {
+	} else if !fromTopology {
 		if m, ok := obj.(metav1.Object); ok {
 			managedBy = topology.SynthesizeManagedBy(m, ident.Kind, ident.Namespace, ident.Name, nil, nil, nil)
 		}
@@ -234,7 +250,18 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		} else {
 			omitted.add("owner", OmittedRBACDenied)
 		}
+	} else if rel != nil && rel.Ownership != nil {
+		// An ownership answer without an owner: say why, unless there is no
+		// owner to name (none referenced, or one that is gone).
+		switch {
+		case rel.Ownership.OwnerState == "withheld":
+			omitted.add("owner", OmittedRBACDenied)
+		case rel.Ownership.OwnerState == "unknown",
+			(rel.Ownership.Unavailable != "" || rel.Ownership.Changed) && ownerFromObject(obj, ident.Namespace) != nil:
+			omitted.add("owner", OmittedUnavailable)
+		}
 	} else if owner := ownerFromObject(obj, ident.Namespace); owner != nil {
+		// Without an ownership answer, the object's own controller reference.
 		if checkRef(ctx, opts.AccessChecker, owner) {
 			rc.Owner = owner
 		} else {
