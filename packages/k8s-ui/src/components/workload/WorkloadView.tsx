@@ -940,6 +940,7 @@ export function WorkloadView({
     <TemplateDivergenceCard
       divergence={templateDivergence}
       namespace={namespace}
+      resourceKey={`${group ?? ''}/${kind}/${namespace}/${name}`}
       onNavigate={onNavigateToResource ? (ref) => onNavigateToResource(refToSelectedResource(ref)) : undefined}
     />
   ) : null
