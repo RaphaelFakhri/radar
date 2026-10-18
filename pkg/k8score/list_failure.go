@@ -102,17 +102,27 @@ type listProgress struct {
 	rv     func() string
 	synced func() bool
 	probe  func(context.Context) error
+	// heartbeat probes the kind every failure threshold even with no failure
+	// on record, for a kind whose watch can drop events silently. A failing
+	// heartbeat opens an episode only a passing probe closes, and onRecover
+	// then makes the informer relist.
+	heartbeat bool
+	onRecover func()
 
-	mu        sync.Mutex
-	since     time.Time // zero when no episode is open
-	sinceRV   string
-	lastFail  time.Time
-	cause     ListFailureCause
-	probedOK  bool
-	distrust  bool
-	probing   bool
-	lastProbe time.Time
-	logged    bool
+	mu       sync.Mutex
+	since    time.Time // zero when no episode is open
+	sinceRV  string
+	lastFail time.Time
+	cause    ListFailureCause
+	probedOK bool
+	distrust bool
+	// probeOpened: a heartbeat opened the episode. The informer's resource
+	// version keeps moving through bookmarks while its watch drops events,
+	// so it is no evidence of progress.
+	probeOpened bool
+	probing     bool
+	lastProbe   time.Time
+	logged      bool
 	// reachEpoch and rvAtReach hold the resource version the store had when
 	// it was first looked at during the API server's current unreachable
 	// episode. A store whose version moves after that is still updating,
@@ -150,7 +160,7 @@ func (p *listProgress) observe(err error, now time.Time) {
 
 func (p *listProgress) closeLocked() {
 	p.since, p.sinceRV, p.cause = time.Time{}, "", ""
-	p.probedOK, p.distrust = false, false
+	p.probedOK, p.distrust, p.probeOpened = false, false, false
 }
 
 // failure reports the store's list failure, if Radar no longer vouches for it.
@@ -166,7 +176,7 @@ func (p *listProgress) failureOf(now time.Time, after time.Duration, reach *APIR
 	synced := p.synced()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.since.IsZero() && rv != p.sinceRV {
+	if !p.since.IsZero() && !p.probeOpened && rv != p.sinceRV {
 		p.closeLocked()
 	}
 	if !p.since.IsZero() && !p.probedOK && now.Sub(p.since) >= after {
@@ -188,11 +198,15 @@ func (p *listProgress) failureOf(now time.Time, after time.Duration, reach *APIR
 
 // startProbe reports whether the watchdog should probe now, and marks the
 // probe running.
-func (p *listProgress) startProbe(now time.Time, every time.Duration) bool {
+func (p *listProgress) startProbe(now time.Time, every, after time.Duration) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.probe == nil || p.probing || p.since.IsZero() || p.probedOK || p.distrust ||
-		now.Sub(p.lastFail) < every || now.Sub(p.lastProbe) < every {
+	if p.probe == nil || p.probing {
+		return false
+	}
+	verify := !p.since.IsZero() && !p.probedOK && !p.distrust && now.Sub(p.lastFail) >= every && now.Sub(p.lastProbe) >= every
+	heartbeat := p.heartbeat && p.since.IsZero() && p.synced() && now.Sub(p.lastProbe) >= after
+	if !verify && !heartbeat {
 		return false
 	}
 	p.probing, p.lastProbe = true, now
@@ -200,18 +214,29 @@ func (p *listProgress) startProbe(now time.Time, every time.Duration) bool {
 }
 
 func (p *listProgress) probeDone(err error, now time.Time) {
+	rv := p.rv()
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.probing = false
-	if p.since.IsZero() {
-		return
-	}
-	if err == nil {
+	recovered := false
+	switch {
+	case p.since.IsZero() && err != nil && p.heartbeat:
+		p.since, p.sinceRV, p.lastFail, p.probeOpened = now, rv, now, true
+		p.cause = classifyListFailure(err)
+	case p.since.IsZero():
+	case err == nil && p.probeOpened:
+		p.closeLocked()
+		recovered = true
+	case err == nil:
 		p.probedOK = true
-		return
+	default:
+		p.lastFail = now
+		p.cause = classifyListFailure(err)
 	}
-	p.lastFail = now
-	p.cause = classifyListFailure(err)
+	onRecover := p.onRecover
+	p.mu.Unlock()
+	if recovered && onRecover != nil {
+		onRecover()
+	}
 }
 
 // probeSkipped releases a probe the watchdog had no capacity to run.
@@ -358,7 +383,7 @@ func runListWatchdog(stop <-chan struct{}, after time.Duration, reach *APIReacha
 				f, failing, unreachableOnly := p.failureOf(now, after, reach)
 				p.logTransition(f, failing && !unreachableOnly)
 				// Probes would only fail while the API server is unreachable.
-				if unreachable || !p.startProbe(now, every) {
+				if unreachable || !p.startProbe(now, every, after) {
 					continue
 				}
 				select {

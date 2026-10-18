@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
@@ -93,10 +94,10 @@ func TestListProgressEpisodes(t *testing.T) {
 		p := newP()
 		p.probe = func(context.Context) error { return nil }
 		p.observe(listErr(serverErr()), t0)
-		if !p.startProbe(t0.Add(time.Second), time.Second) {
+		if !p.startProbe(t0.Add(time.Second), time.Second, after) {
 			t.Fatal("probe not started")
 		}
-		if p.startProbe(t0.Add(2*time.Second), time.Second) {
+		if p.startProbe(t0.Add(2*time.Second), time.Second, after) {
 			t.Fatal("a second probe started while one runs")
 		}
 		p.probeDone(nil, t0.Add(time.Second))
@@ -109,7 +110,7 @@ func TestListProgressEpisodes(t *testing.T) {
 		if f, ok := p.failure(t0.Add(2*after), after, nil); !ok || !f.Since.Equal(t0) {
 			t.Fatalf("after the reflector failed again = %+v, %v", f, ok)
 		}
-		if p.startProbe(t0.Add(3*after), time.Second) {
+		if p.startProbe(t0.Add(3*after), time.Second, after) {
 			t.Fatal("probed again after the reflector contradicted a probe")
 		}
 		rv = "11"
@@ -123,10 +124,46 @@ func TestListProgressEpisodes(t *testing.T) {
 		p := newP()
 		p.probe = func(context.Context) error { return nil }
 		p.observe(listErr(serverErr()), t0)
-		p.startProbe(t0.Add(time.Second), time.Second)
+		p.startProbe(t0.Add(time.Second), time.Second, after)
 		p.probeDone(apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "", errors.New("denied")), t0.Add(time.Second))
 		if f, ok := p.failure(t0.Add(after), after, nil); !ok || f.Cause != ListFailureForbidden {
 			t.Fatalf("failure = %+v, %v", f, ok)
+		}
+	})
+
+	t.Run("a failing heartbeat opens an episode only a passing probe closes", func(t *testing.T) {
+		rv = "10"
+		recovered := 0
+		p := newP()
+		p.probe = func(context.Context) error { return nil }
+		p.heartbeat, p.onRecover = true, func() { recovered++ }
+		if !p.startProbe(t0.Add(after), time.Second, after) {
+			t.Fatal("no heartbeat on a quiet kind")
+		}
+		p.probeDone(serverErr(), t0.Add(after))
+		// Bookmarks move the version while the watch drops events.
+		rv = "11"
+		f, ok := p.failure(t0.Add(2*after), after, nil)
+		if !ok || f.Cause != ListFailureServerError || !f.Since.Equal(t0.Add(after)) {
+			t.Fatalf("after a failed heartbeat = %+v, %v", f, ok)
+		}
+		if !p.startProbe(t0.Add(2*after), time.Second, after) {
+			t.Fatal("no verification probe in a heartbeat episode")
+		}
+		p.probeDone(nil, t0.Add(2*after))
+		if failing(p, t0.Add(3*after)) || recovered != 1 {
+			t.Fatalf("after a passing probe: failing=%v, relists=%d", failing(p, t0.Add(3*after)), recovered)
+		}
+		if p.startProbe(t0.Add(2*after+time.Second), time.Second, after) {
+			t.Fatal("heartbeat ran again before the threshold")
+		}
+	})
+
+	t.Run("no heartbeat without the flag", func(t *testing.T) {
+		p := newP()
+		p.probe = func(context.Context) error { return nil }
+		if p.startProbe(t0.Add(time.Hour), time.Second, after) {
+			t.Fatal("a healthy kind without heartbeat was probed")
 		}
 	})
 
@@ -515,4 +552,62 @@ func TestDynamicNamespaceListFailure(t *testing.T) {
 	if _, ok := d.NamespaceListFailure(gvr, "alpha"); ok {
 		t.Fatal("a stopped cache vouched for a list failure")
 	}
+}
+
+// An API server drops watch events it can't convert when a custom resource's
+// conversion webhook fails, without ending the watch. A multi-version custom
+// resource is therefore probed on a heartbeat: the failed probe makes it stale,
+// and once lists work again the informer relists, so the events it missed
+// reach the store.
+func TestDynamicSilentlyDroppedEventsNeedHeartbeat(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v2", Resource: "widgets"}
+	w1 := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.io/v2", "kind": "Widget", "metadata": map[string]any{"name": "w1", "namespace": "alpha"}}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, w1)
+	var converting atomic.Bool
+	converting.Store(true)
+	dyn.PrependReactor("list", "widgets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if !converting.Load() {
+			return true, nil, serverErr()
+		}
+		return false, nil, nil
+	})
+	// The watch stays open and delivers nothing, as a real one does while
+	// conversion fails.
+	dyn.PrependWatchReactor("widgets", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, watch.NewFake(), nil
+	})
+	disc := &ResourceDiscovery{resources: []APIResource{
+		{Group: "example.io", Version: "v1", Kind: "Widget", Name: "widgets", Namespaced: true, IsCRD: true},
+		{Group: "example.io", Version: "v2", Kind: "Widget", Name: "widgets", Namespaced: true, IsCRD: true},
+	}}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, Discovery: disc, ListFailureAfter: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	if err := d.startWatching(gvr, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, "widgets to load", func() bool { return d.IsNamespaceSynced(gvr, "alpha") })
+
+	converting.Store(false)
+	// An object the open watch never delivers.
+	w2 := w1.DeepCopy()
+	w2.SetName("w2")
+	if _, err := dyn.Resource(gvr).Namespace("alpha").Create(context.Background(), w2, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, "widgets to read stale", func() bool {
+		f, ok := d.NamespaceListFailure(gvr, "alpha")
+		return ok && f.Stale && f.Cause == ListFailureServerError
+	})
+
+	converting.Store(true)
+	waitForCondition(t, "widgets to relist with w2", func() bool {
+		if _, failing := d.NamespaceListFailure(gvr, "alpha"); failing || !d.IsNamespaceSynced(gvr, "alpha") {
+			return false
+		}
+		_, err := d.GetWatched(gvr, "alpha", "w2")
+		return err == nil
+	})
 }

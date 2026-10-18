@@ -483,7 +483,14 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 	}
 
 	factory := d.factoryForNs(scopeNS)
-	informer := factory.ForResource(gvr).Informer()
+	d.runInformerLocked(key, factory.ForResource(gvr).Informer())
+	return nil
+}
+
+// runInformerLocked registers informer as key's and starts it. Caller holds
+// d.mu and has checked the cache isn't stopped.
+func (d *DynamicResourceCache) runInformerLocked(key informerKey, informer cache.SharedIndexInformer) {
+	gvr, scopeNS := key.gvr, key.ns
 	// Apply the dynamic-cache transform BEFORE informer.Run so every
 	// object entering the store is shrunk in place. SetTransform must
 	// be called pre-Run (returns ErrRunning otherwise). If it ever
@@ -547,12 +554,32 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		}
 
 		d.mu.Lock()
-		if e := d.informers[key]; e != nil {
+		if e := d.informers[key]; e != nil && e.informer == informer {
 			e.synced = true
 		}
 		d.mu.Unlock()
 	}()
-	return nil
+}
+
+// restartInformer replaces key's informer, if it is still old, with a new one
+// that lists from scratch. A watch can drop events without reporting them (an
+// API server does for objects a failing conversion webhook can't convert),
+// and the dropped events never come back, so only a new list repairs the
+// store. The factory hands back a stopped informer once it built one for a
+// resource, so the replacement is built directly.
+func (d *DynamicResourceCache) restartInformer(key informerKey, old cache.SharedIndexInformer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	entry := d.informers[key]
+	if d.stopped || entry == nil || entry.informer != old {
+		return
+	}
+	entry.cancel()
+	delete(d.informers, key)
+	informer := dynamicinformer.NewFilteredDynamicInformer(d.config.DynamicClient, key.gvr, key.ns, 0,
+		cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, nil).Informer()
+	log.Printf("Relisting %s.%s/%s (namespace %q): its watch may have dropped events while its lists failed", key.gvr.Resource, key.gvr.Group, key.gvr.Version, key.ns)
+	d.runInformerLocked(key, informer)
 }
 
 // trackListFailures gives entry a list tracker fed by its informer's watch
@@ -565,12 +592,20 @@ func (d *DynamicResourceCache) trackListFailures(entry *informerEntry, key infor
 		label += " in namespace " + key.ns
 	}
 	client := d.config.DynamicClient
-	entry.progress = newListProgress(label, entry.informer.LastSyncResourceVersion, entry.informer.HasSynced,
+	informer := entry.informer
+	entry.progress = newListProgress(label, informer.LastSyncResourceVersion, informer.HasSynced,
 		func(ctx context.Context) error {
 			_, err := client.Resource(key.gvr).Namespace(key.ns).List(ctx, metav1.ListOptions{Limit: 1})
 			return err
 		})
-	informer := entry.informer
+	// A custom resource served in several versions may go through a
+	// conversion webhook. When that webhook fails, the API server drops the
+	// watch events it can't convert without telling the informer, which
+	// never relists, so only a periodic list notices.
+	if d.config.Discovery.CRDServedInOtherVersions(key.gvr) {
+		entry.progress.heartbeat = true
+		entry.progress.onRecover = func() { d.restartInformer(key, informer) }
+	}
 	if err := informer.SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
 		d.mu.RLock()
 		live := d.informers[key]
