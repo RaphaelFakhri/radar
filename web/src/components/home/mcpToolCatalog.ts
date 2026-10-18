@@ -358,12 +358,12 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
   {
     name: 'manage_helm_release',
     write: true,
-    desc: 'Uninstall or rollback one Helm release after reviewing its stored resources, action hooks, status, and history policy. Preview does not simulate hooks or validate write permissions.',
+    desc: 'Uninstall or rollback one Helm release after reviewing its stored resources, action hooks, status, and history policy. Preview does not simulate hooks or validate all write permissions.',
     params: [
       { arg: 'action', required: true, desc: 'uninstall or rollback' },
       { arg: 'namespace', required: true, desc: 'Helm storage namespace' },
       { arg: 'name', required: true, desc: 'Helm release name' },
-      { arg: 'revision', desc: 'Required older revision for rollback; enumerate release history' },
+      { arg: 'revision', desc: 'Required existing revision up to the current revision for rollback; enumerate release history' },
       { arg: 'no_hooks', desc: 'Skip action hooks; can leave external resources behind' },
       { arg: 'keep_history', desc: 'Uninstall only: retain Helm history, not resources (default false)' },
       { arg: 'dry_run', desc: 'Default true; stored-manifest preview. False requires confirm' },

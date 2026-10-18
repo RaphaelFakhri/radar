@@ -245,7 +245,7 @@ func TestToolCatalogContextBudget(t *testing.T) {
 	// These caps guard against description accretion, not against new tools or
 	// load-bearing routing and uncertainty contracts. Raise them deliberately.
 	const (
-		maxCatalogBytes         = 63200
+		maxCatalogBytes         = 63350
 		maxToolDescriptionBytes = 3000
 	)
 
@@ -261,6 +261,7 @@ func TestToolCatalogContextBudget(t *testing.T) {
 		}
 		total += len(tool.Description) + len(schema)
 	}
+	t.Logf("MCP catalog: %d bytes (budget %d)", total, maxCatalogBytes)
 	if total > maxCatalogBytes {
 		t.Fatalf("MCP tool descriptions and schemas use %d bytes, budget is %d; raise deliberately for new tools or load-bearing contracts, and trim response-field manuals rather than routing or uncertainty boundaries",
 			total, maxCatalogBytes)
@@ -689,5 +690,33 @@ func TestDiagnoserAllowlistCoversAllReadTools(t *testing.T) {
 	}
 	if len(stale) > 0 {
 		t.Errorf("investigation.ReadOnlyTools names tools that are not registered: %v", stale)
+	}
+}
+
+func TestHelmPreviewCopyBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{setupDialogCatalogPath, []string{"validate all write permissions", "Required existing revision up to the current revision"}, []string{"validate write permissions", "Required older revision"}},
+		{"../../docs/mcp.md", []string{"Each token can start one action", "new preview of the same state issues a new token", "single-use applies per token", "prompt guidance", "not server-enforced approval checks"}, []string{"Batch deletion and Helm release operations are separate follow-ups"}},
+		{"../../docs/helm.md", []string{"existing revision up to and including the current one", "already-uninstalled `keep_history=true` conflicts return 409 for both preview and execution"}, []string{"revision older than the current one"}},
+	} {
+		raw, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.Join(strings.Fields(string(raw)), " ")
+		for _, required := range tc.required {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s missing contract %q", tc.path, required)
+			}
+		}
+		for _, forbidden := range tc.forbidden {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s retains outdated contract %q", tc.path, forbidden)
+			}
+		}
 	}
 }

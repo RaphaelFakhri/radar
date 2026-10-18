@@ -6,11 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/skyhook-io/radar/internal/k8s"
-	authv1 "k8s.io/api/authorization/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +13,12 @@ import (
 	"testing"
 
 	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/helm"
+	"github.com/skyhook-io/radar/internal/k8s"
+	authv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 func TestManageHelmReleaseValidationBeforeClusterAccess(t *testing.T) {
@@ -39,7 +40,7 @@ func TestManageHelmReleaseValidationBeforeClusterAccess(t *testing.T) {
 
 func TestManageHelmConfirmationIsolation(t *testing.T) {
 	ctx := auth.ContextWithUser(context.Background(), &auth.User{Username: "alice"})
-	target, err := helmConfirmationTarget("storage", "demo", "snapshot-with-options")
+	target, err := helmConfirmationTarget("storage", "demo", "snapshot-with-options", &helm.ReleaseActionPreview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestManageHelmConfirmationIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, other := range []string{"another-snapshot", "different-options"} {
-		changed, _ := helmConfirmationTarget("storage", "demo", other)
+		changed, _ := helmConfirmationTarget("storage", "demo", other, &helm.ReleaseActionPreview{})
 		if err := verifyMutationConfirmationTarget(ctx, "manage_helm_release", changed, token); !errors.Is(err, ErrConfirmationTargetMismatch) {
 			t.Fatal("changed snapshot accepted")
 		}
@@ -62,7 +63,7 @@ func TestManageHelmConfirmationIsolation(t *testing.T) {
 }
 
 func TestHelmConfirmationDigestAndConsumption(t *testing.T) {
-	target, _ := helmConfirmationTarget("storage", "demo", "private-release-fingerprint")
+	target, _ := helmConfirmationTarget("storage", "demo", "private-release-fingerprint", &helm.ReleaseActionPreview{})
 	token, err := issueMutationConfirmationTarget(context.Background(), "manage_helm_release", target)
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +167,60 @@ func TestManageHelmReleaseRefusesUntilConnected(t *testing.T) {
 					t.Fatalf("%s %s execute=%v: result=%v err=%v, want %q", tc.status.State, action, execute, result, err, tc.want)
 				}
 			}
+		}
+	}
+}
+
+func TestHelmConfirmationRejectsReencodedConsumedTokens(t *testing.T) {
+	ctx := context.Background()
+	token, err := issueMutationConfirmationTarget(ctx, "manage_helm_release", "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeHelmConfirmation(token); err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, parts[1][len(parts[1])-1])
+	trailingBits := parts[0] + "." + parts[1][:len(parts[1])-1] + string(alphabet[last+1])
+	for _, variant := range []string{parts[0] + "." + parts[1][:3] + "\n" + parts[1][3:], parts[0][:3] + "\r\n" + parts[0][3:] + "." + parts[1], trailingBits} {
+		if err := verifyMutationConfirmationTarget(ctx, "manage_helm_release", "plan", variant); err == nil {
+			t.Error("reencoded consumed token verified")
+		}
+	}
+}
+
+func TestManageWorkloadRoutesHelmRollback(t *testing.T) {
+	for _, tool := range listRegisteredTools(t) {
+		if tool.Name == "manage_workload" && !strings.Contains(tool.Description, "For a Helm-managed workload, roll back the release with manage_helm_release.") {
+			t.Fatal("Helm rollback misrouted")
+		}
+	}
+}
+
+func TestHelmConfirmationBindsLiveEffectsAndFluxOwner(t *testing.T) {
+	ctx := context.Background()
+	preview := &helm.ReleaseActionPreview{Resources: []helm.ReleaseActionResource{{Effect: "keep (live helm.sh/resource-policy)"}}}
+	target, err := helmConfirmationTarget("storage", "demo", "snapshot", preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := issueMutationConfirmationTarget(ctx, "manage_helm_release", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(){func() { preview.Resources[0].Effect = "delete" }, func() {
+		preview.Resources[0].Effect = "keep (live helm.sh/resource-policy)"
+		preview.ManagedByFluxHelmRelease = "flux-system/owner"
+	}} {
+		mutate()
+		changed, err := helmConfirmationTarget("storage", "demo", "snapshot", preview)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyMutationConfirmationTarget(ctx, "manage_helm_release", changed, token); !errors.Is(err, ErrConfirmationTargetMismatch) {
+			t.Fatalf("live plan change accepted: %v", err)
 		}
 	}
 }

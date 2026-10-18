@@ -19,6 +19,7 @@ import (
 	"helm.sh/helm/v3/pkg/storage/driver"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
 	"helm.sh/helm/v3/pkg/action"
@@ -61,11 +62,14 @@ func (o ReleaseActionOptions) Validate() error {
 type ReleaseActionResource struct {
 	ResourceRef
 	Effect string `json:"effect"`
+	Scope  string `json:"scope,omitempty"`
 }
 
 type ReleaseActionHook struct {
 	HelmHook
-	Effect string `json:"effect"`
+	Effect      string                  `json:"effect"`
+	Enumeration string                  `json:"enumeration"`
+	Resources   []ReleaseActionResource `json:"resources,omitempty"`
 }
 
 type ReleaseActionPreview struct {
@@ -102,8 +106,8 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 	}
 	target := current
 	if options.Action == "rollback" {
-		if options.Revision >= current.Version {
-			return nil, fmt.Errorf("rollback revision must be older than current revision %d", current.Version)
+		if options.Revision > current.Version {
+			return nil, fmt.Errorf("rollback revision must not exceed current revision %d", current.Version)
 		}
 		target, err = cfg.Releases.Get(name, options.Revision)
 		if err != nil {
@@ -157,13 +161,17 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 			}
 		}
 	}
-	rendered, err := enumerableReleaseResources(cfg, target.Manifest, current.Namespace)
+	enumerationAction := options.Action
+	if options.Action == "uninstall" && current.Info.Status == release.StatusUninstalled {
+		enumerationAction = "purge"
+	}
+	rendered, err := enumerableReleaseResources(cfg, target.Manifest, current.Namespace, enumerationAction)
 	if err != nil {
 		return nil, err
 	}
 	currentRendered := rendered
 	if options.Action == "rollback" {
-		currentRendered, err = enumerableReleaseResources(cfg, current.Manifest, current.Namespace)
+		currentRendered, err = enumerableReleaseResources(cfg, current.Manifest, current.Namespace, "rollback")
 		if err != nil {
 			return nil, err
 		}
@@ -184,14 +192,14 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 				effect = "update"
 			}
 		} else if current.Info.Status == release.StatusUninstalled {
-			effect = "not processed (history purge only)"
+			effect = "not processed (history-only purge)"
 		} else if policy, present := resource.Object.GetAnnotations()[kube.ResourcePolicyAnno]; present {
 			effect = "not deleted (helm.sh/resource-policy)"
 			if strings.ToLower(strings.TrimSpace(policy)) == kube.KeepPolicy {
 				effect = "keep (helm.sh/resource-policy)"
 			}
 		}
-		preview.Resources = append(preview.Resources, ReleaseActionResource{ResourceRef: resource.Ref, Effect: effect})
+		preview.Resources = append(preview.Resources, ReleaseActionResource{ResourceRef: resource.Ref, Effect: effect, Scope: resource.Scope})
 	}
 	if options.Action == "rollback" {
 		for _, r := range currentRendered {
@@ -205,7 +213,7 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 	})
 	hookTarget := *target
 	hookTarget.Namespace = current.Namespace
-	for _, hook := range extractHooks(&hookTarget) {
+	for i, hook := range extractHooks(&hookTarget) {
 		relevant := slices.Contains(hook.Events, "pre-delete") || slices.Contains(hook.Events, "post-delete")
 		if options.Action == "rollback" {
 			relevant = slices.Contains(hook.Events, "pre-rollback") || slices.Contains(hook.Events, "post-rollback")
@@ -219,7 +227,23 @@ func PreviewReleaseAction(cfg *action.Configuration, name string, options Releas
 		} else if options.Action == "uninstall" && current.Info.Status == release.StatusUninstalled {
 			effect = "skip (already uninstalled)"
 		}
-		preview.Hooks = append(preview.Hooks, ReleaseActionHook{HelmHook: hook, Effect: effect})
+		plannedHook := ReleaseActionHook{HelmHook: hook, Effect: effect, Enumeration: "one named object"}
+		manifest := target.Hooks[i].Manifest
+		resources, err := enumerableReleaseResources(cfg, manifest, current.Namespace, "hook")
+		if err != nil {
+			plannedHook.Enumeration = "not enumerated: " + strings.TrimPrefix(strings.TrimSuffix(err.Error(), "; no confirmation issued"), ErrReleaseActionInvalidManifest.Error()+": ")
+		} else {
+			direct, _ := parseManifestResourceObjects(manifest, "")
+			if len(resources) == 0 {
+				plannedHook.Enumeration = "not enumerated: manifest contains no named objects"
+			} else if len(resources) != 1 || len(direct) != 1 {
+				plannedHook.Enumeration = "multiple objects or List manifest"
+			}
+			for _, r := range resources {
+				plannedHook.Resources = append(plannedHook.Resources, ReleaseActionResource{ResourceRef: r.Ref, Effect: effect, Scope: r.Scope})
+			}
+		}
+		preview.Hooks = append(preview.Hooks, plannedHook)
 	}
 	if len(preview.Hooks) > 0 {
 		preview.StatusMeaning = "Hook status is the last recorded phase; Running can persist after hook creation or waiting failed"
@@ -240,7 +264,7 @@ func releaseActionSummary(preview *ReleaseActionPreview) string {
 	}
 	parts := []string{}
 	for _, effect := range []struct{ key, verb string }{
-		{"create", "creates"}, {"update", "updates"}, {"delete", "deletes"}, {"keep", "keeps"},
+		{"create", "creates"}, {"adopt", "adopts"}, {"update", "updates"}, {"delete", "deletes"}, {"keep", "keeps"},
 		{"not deleted", "does not delete"}, {"not processed", "does not process"},
 	} {
 		if count := counts[effect.key]; count > 0 {
@@ -321,6 +345,9 @@ func uninstallWithOptions(cfg *action.Configuration, name string, options Uninst
 	uninstall.KeepHistory = options.KeepHistory
 	uninstall.DryRun = options.DryRun
 	if _, err := uninstall.Run(name); err != nil {
+		if err.Error() == fmt.Sprintf("the release named %q is already deleted", name) {
+			return fmt.Errorf("%w: %v", ErrReleaseActionRefused, err)
+		}
 		return fmt.Errorf("uninstall failed: %w", err)
 	}
 	return nil
@@ -339,47 +366,94 @@ func BeginReleaseAction(storageNamespace, name string) (func(), error) {
 	return func() { releaseActionsInFlight.Delete(key) }, nil
 }
 
-func enumerableReleaseResources(cfg *action.Configuration, manifest, namespace string) ([]renderedResource, error) {
-	resources, parseErrors := parseManifestResourceObjects(manifest, "")
-	documents := 0
+type releaseActionManifestResource struct {
+	renderedResource
+	Scope string
+}
+
+func enumerableReleaseResources(cfg *action.Configuration, manifest, namespace, action string) ([]releaseActionManifestResource, error) {
+	resources := []releaseActionManifestResource{}
 	for _, doc := range releaseutil.SplitManifests(manifest) {
 		raw, err := yaml.YAMLToJSON([]byte(doc))
-		if err != nil || string(raw) != "null" {
-			documents++
+		if err != nil {
+			return nil, fmt.Errorf("%w: release manifest cannot be fully enumerated; no confirmation issued", ErrReleaseActionInvalidManifest)
 		}
+		if string(raw) == "null" {
+			continue
+		}
+		var obj unstructured.Unstructured
+		if err := json.Unmarshal(raw, &obj.Object); err != nil {
+			return nil, fmt.Errorf("%w: release manifest cannot be fully enumerated; no confirmation issued", ErrReleaseActionInvalidManifest)
+		}
+		if action == "hook" && obj.IsList() {
+			items, err := obj.ToList()
+			if err != nil {
+				return nil, fmt.Errorf("cannot enumerate hook List: %w", err)
+			}
+			for _, item := range items.Items {
+				itemRaw, err := json.Marshal(item.Object)
+				if err != nil {
+					return nil, err
+				}
+				nested, err := enumerableReleaseResources(cfg, string(itemRaw), namespace, action)
+				if err != nil {
+					return nil, err
+				}
+				resources = append(resources, nested...)
+			}
+			continue
+		}
+		parsed, errors := parseManifestResourceObjects(doc, "")
+		if errors > 0 || len(parsed) != 1 {
+			return nil, fmt.Errorf("%w: release manifest cannot be fully enumerated; no confirmation issued", ErrReleaseActionInvalidManifest)
+		}
+		resources = append(resources, releaseActionManifestResource{renderedResource: parsed[0]})
 	}
-	if parseErrors > 0 || len(resources) != documents {
-		return nil, fmt.Errorf("%w: release manifest cannot be fully enumerated; no confirmation issued", ErrReleaseActionInvalidManifest)
-	}
-	if len(resources) == 0 {
+	if action == "purge" || len(resources) == 0 {
 		return resources, nil
 	}
-	mapper, err := cfg.RESTClientGetter.ToRESTMapper()
-	if err != nil {
-		return nil, fmt.Errorf("%w: cannot resolve resource scopes: %v; no confirmation issued", ErrReleaseActionInvalidManifest, err)
-	}
+	mapper, mapperErr := cfg.RESTClientGetter.ToRESTMapper()
 	for i := range resources {
 		r := &resources[i]
-		gvk := r.Object.GroupVersionKind()
-		if gvk.Version == "" {
-			return nil, fmt.Errorf("%w: resource %s/%s has no apiVersion; no confirmation issued", ErrReleaseActionInvalidManifest, r.Ref.Kind, r.Ref.Name)
-		}
-		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			return nil, fmt.Errorf("%w: cannot resolve scope of %s %s/%s: %v; no confirmation issued", ErrReleaseActionInvalidManifest, r.Ref.APIVersion, r.Ref.Kind, r.Ref.Name, err)
-		}
-		switch mapping.Scope.Name() {
-		case meta.RESTScopeNameRoot:
-			r.Object.SetNamespace("")
-		case meta.RESTScopeNameNamespace:
-			if r.Object.GetNamespace() == "" {
-				r.Object.SetNamespace(namespace)
+		_, policyPresent := r.Object.GetAnnotations()[kube.ResourcePolicyAnno]
+		bestEffort := action == "hook" || (action == "uninstall" && policyPresent)
+		resolveErr := mapperErr
+		if mapperErr == nil {
+			gvk := r.Object.GroupVersionKind()
+			if gvk.Version == "" {
+				resolveErr = fmt.Errorf("resource %s/%s has no apiVersion", r.Ref.Kind, r.Ref.Name)
+			} else {
+				mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+				resolveErr = err
+				if err == nil {
+					switch mapping.Scope.Name() {
+					case meta.RESTScopeNameRoot:
+						r.Object.SetNamespace("")
+					case meta.RESTScopeNameNamespace:
+						if r.Object.GetNamespace() == "" {
+							r.Object.SetNamespace(namespace)
+						}
+					default:
+						resolveErr = fmt.Errorf("unknown resource scope")
+					}
+				}
 			}
-		default:
-			return nil, fmt.Errorf("%w: unknown scope of %s %s/%s; no confirmation issued", ErrReleaseActionInvalidManifest, r.Ref.APIVersion, r.Ref.Kind, r.Ref.Name)
+		}
+		if resolveErr != nil {
+			if bestEffort {
+				r.Scope = "scope unresolved: " + resolveErr.Error()
+				continue
+			}
+			if mapperErr != nil {
+				return nil, fmt.Errorf("%w: cannot resolve resource scopes: %v; no confirmation issued", ErrReleaseActionInvalidManifest, mapperErr)
+			}
+			return nil, fmt.Errorf("%w: cannot resolve scope of %s %s/%s: %v; no confirmation issued", ErrReleaseActionInvalidManifest, r.Ref.APIVersion, r.Ref.Kind, r.Ref.Name, resolveErr)
 		}
 		r.Ref.Namespace = r.Object.GetNamespace()
 	}
+	slices.SortFunc(resources, func(a, b releaseActionManifestResource) int {
+		return strings.Compare(resourceRefKey(a.Ref), resourceRefKey(b.Ref))
+	})
 	return resources, nil
 }
 
@@ -388,14 +462,18 @@ func releaseActionResourceIdentity(ref ResourceRef) resourceid.Ref {
 }
 
 func EnrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview) error {
+	if err := EnrichReleaseActionLivePlan(ctx, cfg, storageNamespace, preview); err != nil {
+		return err
+	}
+	enrichReleaseActionHookEvidence(ctx, preview)
+	return nil
+}
+
+func EnrichReleaseActionLivePlan(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview) error {
 	return enrichReleaseActionPreview(ctx, cfg, storageNamespace, preview, fluxHelmReleaseMap(ctx))
 }
 
-func enrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview, fluxMap map[string]string) error {
-	preview.ManagedByFluxHelmRelease = applyFluxOwnership(preview.Name, storageNamespace, fluxMap)
-	if preview.ManagedByFluxHelmRelease != "" {
-		preview.Warnings = append(preview.Warnings, fmt.Sprintf("Flux HelmRelease %s owns this release and may reconcile it back. Change its source of truth before managing it directly.", preview.ManagedByFluxHelmRelease))
-	}
+func enrichReleaseActionHookEvidence(ctx context.Context, preview *ReleaseActionPreview) {
 	hooks := make([]HelmHook, 0, len(preview.Hooks))
 	for _, h := range preview.Hooks {
 		hooks = append(hooks, h.HelmHook)
@@ -403,6 +481,13 @@ func enrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, 
 	detail := &HelmReleaseDetail{Namespace: preview.Namespace, Hooks: hooks, HookDiagnostics: extractHookDiagnostics(hooks)}
 	EnrichHookDiagnosticsWithClusterEvidence(ctx, detail, k8s.ClientFromContext(ctx))
 	preview.HookDiagnostics = detail.HookDiagnostics
+}
+
+func enrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, storageNamespace string, preview *ReleaseActionPreview, fluxMap map[string]string) error {
+	preview.ManagedByFluxHelmRelease = applyFluxOwnership(preview.Name, storageNamespace, fluxMap)
+	if preview.ManagedByFluxHelmRelease != "" {
+		preview.Warnings = append(preview.Warnings, fmt.Sprintf("Flux HelmRelease %s owns this release and may reconcile it back. Change its source of truth before managing it directly.", preview.ManagedByFluxHelmRelease))
+	}
 	if preview.Options.Action != "rollback" {
 		preview.Summary = releaseActionSummary(preview)
 		return nil
@@ -432,13 +517,22 @@ func enrichReleaseActionPreview(ctx context.Context, cfg *action.Configuration, 
 		if err != nil {
 			return fmt.Errorf("read rollback resource %s/%s: %w", r.Namespace, r.Name, err)
 		}
-		if r.Effect != "delete" {
-			r.Effect = "update"
-			continue
-		}
 		accessor, err := meta.Accessor(infos[0].Object)
 		if err != nil {
 			return err
+		}
+		if r.Effect != "delete" {
+			if r.Effect == "create" {
+				r.Effect = "adopt (exists live, not in current revision)"
+				annotations := accessor.GetAnnotations()
+				ownerName, ownerNamespace := annotations["meta.helm.sh/release-name"], annotations["meta.helm.sh/release-namespace"]
+				if (ownerName != "" && ownerName != preview.Name) || (ownerNamespace != "" && ownerNamespace != preview.Namespace) {
+					preview.Warnings = append(preview.Warnings, fmt.Sprintf("Rollback adopts %s %s/%s from Helm release %s/%s (live ownership annotations).", r.Kind, r.Namespace, r.Name, ownerNamespace, ownerName))
+				}
+			} else {
+				r.Effect = "update"
+			}
+			continue
 		}
 		if accessor.GetAnnotations()[kube.ResourcePolicyAnno] == kube.KeepPolicy {
 			r.Effect = "keep (live helm.sh/resource-policy)"

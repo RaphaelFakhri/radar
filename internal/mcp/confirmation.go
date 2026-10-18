@@ -86,11 +86,11 @@ func verifyMutationConfirmation(ctx context.Context, action, token string) (stri
 		return "", malformed
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
+	if err != nil || base64.RawURLEncoding.EncodeToString(raw) != parts[0] {
 		return "", malformed
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
+	if err != nil || base64.RawURLEncoding.EncodeToString(signature) != parts[1] {
 		return "", malformed
 	}
 	key, err := confirmationKey()

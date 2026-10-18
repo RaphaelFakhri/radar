@@ -123,13 +123,16 @@ preview. Omit `dry_run` (or set it to `true`) to inspect current status, release
 manifest resources, action hooks, and history policy. Pass `dry_run=false` and the
 returned `confirm` token only after showing the plan to the user and obtaining
 explicit approval. On a Diagnose Apply turn, confirmation of an exact fix already
-authorizes preview-then-confirm for that fix; the agent must stop if the preview
-expands its scope or reveals an owner that would revert it. See the confirmed-fix
+authorizes preview-then-confirm for that fix. Prompt guidance tells the agent to
+stop if the preview expands its scope, reveals an owner that would revert it, or
+shows hooks running/skipped or a history purge not stated in the fix. It takes
+`no_hooks` and `keep_history` only from the fix text. See the confirmed-fix
 rule in [MCP](mcp.md). Uninstall with history purge is irreversible. Tokens expire after five
 minutes and bind the caller, cluster context, release snapshot, and action options.
-The current and target Helm records are rechecked before execution. A confirmation
-is consumed when an action starts. REST and MCP uninstall/rollback share an
-in-process guard for the context, storage namespace, and release name. Helm has no
+The current and target Helm records, live resource effects, and Flux owner are
+rechecked before execution. A changed plan requires a new preview. One token can
+start one action; a new preview of the same state issues a new token. REST and MCP
+uninstall/rollback share an in-process guard for the context, storage namespace, and release name. Helm has no
 atomic release preconditions across processes, so avoid concurrent external operations.
 
 The preview reads stored Helm declarations as the caller and checks the same
@@ -144,7 +147,12 @@ scope is resolved through the Helm action configuration's REST mapper using each
 manifest's API version and kind. Cluster-scoped resources have no namespace;
 namespaced resources without an explicit namespace use the release's recorded
 target namespace. An unresolved scope in either the current or rollback target
-manifest refuses confirmation instead of assuming the resource is namespaced.
+manifest refuses confirmation instead of assuming the resource is namespaced,
+except for uninstall documents that Helm excludes before building resources. A
+history-only purge lists stored identities without resolving scope. Policy-bearing
+uninstall documents use best-effort scope resolution and label unresolved scopes.
+Relevant hook manifests are enumerated too, including List items; a hook that
+cannot be enumerated is labeled with the reason without refusing the action.
 All execution uses the caller's Kubernetes identity; actual writes can still fail or partially
 complete.
 
@@ -162,14 +170,18 @@ complete.
   before explicitly approving deletion or skipped cleanup. The preview reports
   recorded Deleted and LastDeployed timestamps. This action never strips finalizers
   or edits Helm storage to force success.
-- `rollback`: requires an explicit positive revision older than the current one
+- `rollback`: requires an explicit positive existing revision up to and including
+  the current one
   (`get_helm_release include=history` lists revisions). The preview uses that
   revision's pre/post-rollback hooks and one sorted resource plan: create, update,
-  delete, or keep based on live evidence. Removed resources with the live policy
-  exactly `keep` are retained. API version changes do not change object identity.
+  adopt, delete, or keep based on live evidence. A target object absent from the
+  current manifest but present live is adopted; conflicting Helm ownership
+  annotations produce a warning naming that release. Removed resources with the
+  live policy exactly `keep` are retained. API version changes do not change object identity.
   Rollback creates a new revision; pending releases carry a concurrent-operation
   warning because Helm v3.22 has no pending rollback lock. `no_hooks` is supported, while
-  `keep_history` is uninstall-only.
+  `keep_history` is uninstall-only. Rolling back an uninstalled release to its
+  current revision restores absent objects and creates a new revision.
 - For an already `uninstalled` release, uninstall with default options only purges
   history. The preview says resources/hooks are not processed again.
 
@@ -180,7 +192,8 @@ returns the same stored-manifest preview without a mutation; REST uses its exist
 UI confirmation flow and does not require an MCP confirmation token. Missing
 releases return 404; stored-manifest validation refusals (incomplete or malformed
 manifests and unresolved resource scopes) return 422; in-progress and
-already-uninstalled conflicts return 409. Release objects and hooks use the
+already-uninstalled `keep_history=true` conflicts return 409 for both preview
+and execution. Release objects and hooks use the
 recorded target namespace while release history stays in the storage namespace.
 When known, the preview names the owning Flux HelmRelease and warns it may
 reconcile direct actions back. Both surfaces audit previews and actions with

@@ -202,7 +202,7 @@ const applyGuidance = "Use the Radar write tools to make the minimal patch; do n
 
 const confirmedFixPreviewGuidance = "The user's confirmation approves a preview→confirm tool workflow for exactly this fix, including delete_resource and manage_helm_release. " +
 	"Run dry_run=true first and review the preview. Only if it matches the confirmed fix, call the same tool with dry_run=false and its confirm token without asking for another confirmation. " +
-	"If the preview shows additional objects, dependents beyond the fix, Namespace/CRD scope not included in the fix, or a GitOps or Helm owner that would revert it, stop and report instead of confirming. " +
+	"If the preview shows additional objects, dependents beyond the fix, Namespace/CRD scope not included in the fix, or a GitOps or Helm owner that would revert it, or, for manage_helm_release, hooks that would run or be skipped, or a history purge, that the confirmed fix does not state, stop and report instead of confirming. Take no_hooks and keep_history only from the fix text. " +
 	"Standing preview limits, such as dependent counts that are observed rather than exhaustive or stored-manifest caveats, are expected and are not a reason to stop. A preview alone does not apply the fix."
 
 // ApplyPrompt builds the remediation-turn prompt. When the caller passes the

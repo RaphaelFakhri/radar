@@ -14,20 +14,26 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/helm"
+	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
 )
 
 type manageHelmReleaseInput struct {
 	Action      string `json:"action" jsonschema:"uninstall or rollback"`
 	Namespace   string `json:"namespace" jsonschema:"Helm storage namespace; use storageNamespace from list_helm_releases when present"`
 	Name        string `json:"name" jsonschema:"Helm release name"`
-	Revision    int    `json:"revision,omitempty" jsonschema:"required positive older revision for rollback; enumerate with get_helm_release include=history"`
+	Revision    int    `json:"revision,omitempty" jsonschema:"required positive existing revision up to the current revision for rollback; enumerate with get_helm_release include=history"`
 	NoHooks     bool   `json:"no_hooks,omitempty" jsonschema:"skip the action's hooks; may leave external resources behind"`
 	KeepHistory bool   `json:"keep_history,omitempty" jsonschema:"uninstall only: retain Helm history, not Kubernetes resources; default false purges history"`
 	DryRun      *bool  `json:"dry_run,omitempty" jsonschema:"default true: preview stored declarations and live rollback/hook evidence without writes; false requires confirm"`
 	Confirm     string `json:"confirm,omitempty" jsonschema:"reviewed preview token; valid five minutes, bound to release snapshot, action/options, caller, and cluster context"`
 }
 
-func handleManageHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input manageHelmReleaseInput) (*mcp.CallToolResult, any, error) {
+func handleManageHelmRelease(ctx context.Context, req *mcp.CallToolRequest, input manageHelmReleaseInput) (result *mcp.CallToolResult, output any, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			resultErr = fmt.Errorf("%s", aicontext.RedactSecrets(resultErr.Error()))
+		}
+	}()
 	namespace, name := strings.TrimSpace(input.Namespace), strings.TrimSpace(input.Name)
 	if namespace == "" || name == "" {
 		return nil, nil, fmt.Errorf("namespace and name are required")
@@ -76,27 +82,30 @@ func handleManageHelmRelease(ctx context.Context, req *mcp.CallToolRequest, inpu
 		audit.Revision = preview.Revision
 	}
 	if dryRun {
-		if err := helm.EnrichReleaseActionPreview(ctx, cfg, namespace, preview); err != nil {
-			return nil, nil, err
-		}
+		err = helm.EnrichReleaseActionPreview(ctx, cfg, namespace, preview)
+	} else {
+		err = helm.EnrichReleaseActionLivePlan(ctx, cfg, namespace, preview)
 	}
-	target, err := helmConfirmationTarget(namespace, name, preview.Fingerprint)
 	if err != nil {
 		return nil, nil, err
 	}
-	result := map[string]any{"status": "ok", "dry_run": dryRun, "preview": preview, "storageNamespace": namespace}
+	target, err := helmConfirmationTarget(namespace, name, preview.Fingerprint, preview)
+	if err != nil {
+		return nil, nil, err
+	}
+	response := map[string]any{"status": "ok", "dry_run": dryRun, "preview": preview, "storageNamespace": namespace}
 	if dryRun {
 		token, err := issueMutationConfirmationTarget(ctx, "manage_helm_release", target)
 		if err != nil {
 			return nil, nil, err
 		}
 		audit.Outcome = "preview"
-		result["confirm"] = token
-		result["message"] = "Review the stored release resources, action hooks, history policy, and preview limits before confirming. No changes were made."
+		response["confirm"] = token
+		response["message"] = "Review the stored release resources, action hooks, history policy, and preview limits before confirming. No changes were made."
 	} else {
 		if err := verifyMutationConfirmationTarget(ctx, "manage_helm_release", target, input.Confirm); err != nil {
 			if errors.Is(err, ErrConfirmationTargetMismatch) {
-				return nil, nil, fmt.Errorf("the release changed since the preview — preview again")
+				return nil, nil, fmt.Errorf("the live plan changed since the preview: resource effects, ownership, or the release snapshot differ; run dry_run=true again")
 			}
 			return nil, nil, err
 		}
@@ -110,13 +119,20 @@ func handleManageHelmRelease(ctx context.Context, req *mcp.CallToolRequest, inpu
 			return nil, nil, err
 		}
 		audit.Outcome = "accepted"
-		result["message"] = "Helm action completed. Live resource deletion and controller reconciliation can continue asynchronously; inspect get_helm_release and surviving resources."
+		response["message"] = "Helm action completed. Live resource deletion and controller reconciliation can continue asynchronously; inspect get_helm_release and surviving resources."
 	}
-	return toJSONResult(result)
+	return toJSONResult(response)
 }
 
-func helmConfirmationTarget(namespace, name, fingerprint string) (string, error) {
-	raw, err := json.Marshal(struct{ Namespace, Name, Fingerprint string }{namespace, name, fingerprint})
+func helmConfirmationTarget(namespace, name, fingerprint string, preview *helm.ReleaseActionPreview) (string, error) {
+	livePlan, err := json.Marshal(struct {
+		Resources []helm.ReleaseActionResource
+		Owner     string
+	}{preview.Resources, preview.ManagedByFluxHelmRelease})
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(struct{ Namespace, Name, Fingerprint, LivePlanDigest string }{namespace, name, fingerprint, confirmationTargetDigest(string(livePlan))})
 	return string(raw), err
 }
 

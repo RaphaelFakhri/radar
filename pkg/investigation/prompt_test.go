@@ -30,6 +30,8 @@ func TestApplyPrompt_ConfirmedFixApprovesOnlyMatchingPreview(t *testing.T) {
 		"dry_run=false and its confirm token without asking for another confirmation",
 		"additional objects", "dependents beyond the fix", "Namespace/CRD scope not included in the fix",
 		"a GitOps or Helm owner that would revert it", "stop and report instead of confirming",
+		"hooks that would run or be skipped", "a history purge, that the confirmed fix does not state",
+		"Take no_hooks and keep_history only from the fix text",
 		"Standing preview limits", "are not a reason to stop", "A preview alone does not apply the fix",
 	} {
 		if !strings.Contains(prompt, rule) {

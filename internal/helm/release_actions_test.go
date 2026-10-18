@@ -2,6 +2,7 @@ package helm
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,7 +121,7 @@ func TestReleaseActionRollbackPreviewAndBinding(t *testing.T) {
 	if _, err := cfg.Releases.Get("demo", 3); err == nil {
 		t.Fatal("stale execution created rollback revision")
 	}
-	for _, revision := range []int{-1, 0, 2, 3} {
+	for _, revision := range []int{-1, 0, 3} {
 		if _, err := PreviewReleaseAction(cfg, "demo", ReleaseActionOptions{Action: "rollback", Revision: revision}); err == nil {
 			t.Fatalf("revision %d accepted", revision)
 		}
@@ -175,7 +176,7 @@ func TestReleaseActionAlreadyUninstalledAndMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Hooks[0].Effect != "skip (already uninstalled)" || !strings.Contains(preview.Resources[0].Effect, "history purge") {
+	if preview.Hooks[0].Effect != "skip (already uninstalled)" || !strings.Contains(preview.Resources[0].Effect, "history-only purge") {
 		t.Fatalf("purge claims resource deletion: %+v", preview)
 	}
 	for _, manifest := range []string{"not: [valid yaml", "apiVersion: v1\nkind: List\nitems: []", "kind: ConfigMap\nmetadata: {}"} {
@@ -256,5 +257,107 @@ func TestReleaseActionRollbackExecution(t *testing.T) {
 	stored, err := cfg.Releases.Last("demo")
 	if err != nil || stored.Version != 4 || stored.Info.Status != release.StatusDeployed || stored.Config["password"] != "hidden-values" {
 		t.Fatalf("rollback result = %+v %v", stored, err)
+	}
+}
+
+func TestReleaseActionExcludedUnservedKinds(t *testing.T) {
+	for _, policy := range []string{"purge", "keep", "other", ""} {
+		t.Run(policy, func(t *testing.T) {
+			cfg := memoryActionConfig(t)
+			rel := actionTestRelease(t, cfg, 1, release.StatusDeployed)
+			rel.Manifest = "apiVersion: removed.example/v1\nkind: Gone\nmetadata:\n  name: gone\n"
+			if policy == "purge" {
+				rel.Info.Status = release.StatusUninstalled
+				cfg.RESTClientGetter = newRESTConfigGetter(nil, "default", "", nil)
+			} else {
+				rel.Manifest += fmt.Sprintf("  annotations:\n    helm.sh/resource-policy: %q\n", policy)
+			}
+			if err := cfg.Releases.Update(rel); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := PreviewReleaseAction(cfg, "demo", ReleaseActionOptions{Action: "uninstall"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(preview.Resources) != 1 {
+				t.Fatalf("resources: %+v", preview.Resources)
+			}
+			raw, _ := json.Marshal(preview.Resources[0])
+			if policy == "purge" {
+				if preview.Resources[0].Effect != "not processed (history-only purge)" {
+					t.Fatalf("effect: %+v", preview.Resources)
+				}
+				if err := RunReleaseAction(cfg, "demo", preview.Options, preview.Fingerprint); err != nil {
+					t.Fatal(err)
+				}
+			} else if !strings.Contains(string(raw), "scope unresolved") || preview.Resources[0].Effect == "delete" {
+				t.Fatalf("missing unresolved scope/exclusion: %s", raw)
+			}
+		})
+	}
+}
+
+func TestAlreadyUninstalledExecutionIsConflict(t *testing.T) {
+	cfg := memoryActionConfig(t)
+	actionTestRelease(t, cfg, 1, release.StatusUninstalled)
+	err := uninstallWithOptions(cfg, "demo", UninstallOptions{KeepHistory: true})
+	rec := httptest.NewRecorder()
+	writeReleaseExecutionError(rec, "uninstall", "default", "demo", err)
+	if rec.Code != 409 {
+		t.Fatalf("status: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestReleaseActionListHookItems(t *testing.T) {
+	cfg := memoryActionConfig(t)
+	rel := actionTestRelease(t, cfg, 1, release.StatusDeployed)
+	rel.Hooks = []*release.Hook{{Name: "cleanup-list", Kind: "List", Events: []release.HookEvent{release.HookPreDelete}, Manifest: `apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: first
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: second
+  data:
+    password: hidden
+`}}
+	if err := cfg.Releases.Update(rel); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewReleaseAction(cfg, "demo", ReleaseActionOptions{Action: "uninstall"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(preview.Hooks)
+	for _, want := range []string{"first", "second", "List manifest"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("missing %s: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "hidden") {
+		t.Fatal("hook leaked secret")
+	}
+}
+
+func TestReleaseActionUnenumeratedHookDoesNotRefuse(t *testing.T) {
+	for _, manifest := range []string{"", "not: [yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata: {}"} {
+		cfg := memoryActionConfig(t)
+		rel := actionTestRelease(t, cfg, 1, release.StatusDeployed)
+		rel.Hooks[0].Manifest = manifest
+		if err := cfg.Releases.Update(rel); err != nil {
+			t.Fatal(err)
+		}
+		preview, err := PreviewReleaseAction(cfg, "demo", ReleaseActionOptions{Action: "uninstall"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(preview.Hooks[0])
+		if !strings.Contains(string(raw), "not enumerated:") || strings.Contains(string(raw), "action refused") || strings.Contains(string(raw), "no confirmation issued") {
+			t.Fatalf("hook enumeration: %s", raw)
+		}
 	}
 }
