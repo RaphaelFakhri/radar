@@ -618,3 +618,41 @@ func TestDynamicSilentlyDroppedEventsNeedHeartbeat(t *testing.T) {
 		return err == nil
 	})
 }
+
+// Only a custom resource served in several versions can go through a
+// conversion webhook, so a single-version one is never probed while healthy.
+func TestDynamicSingleVersionCRDIsNeverProbed(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "gadgets"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "GadgetList"})
+	var probes atomic.Int32
+	dyn.PrependReactor("list", "gadgets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.(k8stesting.ListActionImpl).GetListOptions().Limit == 1 {
+			probes.Add(1)
+		}
+		return false, nil, nil
+	})
+	disc := &ResourceDiscovery{resources: []APIResource{
+		{Group: "example.io", Version: "v1", Kind: "Gadget", Name: "gadgets", Namespaced: true, IsCRD: true},
+	}}
+	if disc.CRDServedInOtherVersions(gvr) {
+		t.Fatal("a single-version custom resource reads as multi-version")
+	}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, Discovery: disc, ListFailureAfter: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	if err := d.startWatching(gvr, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, "gadgets to load", func() bool { return d.IsNamespaceSynced(gvr, "alpha") })
+	time.Sleep(time.Second) // ten heartbeat periods
+	if n := probes.Load(); n != 0 {
+		t.Fatalf("a single-version custom resource was probed %d times", n)
+	}
+	// The same kind served in a second version is probed.
+	disc.resources = append(disc.resources, APIResource{Group: "example.io", Version: "v2", Kind: "Gadget", Name: "gadgets", Namespaced: true, IsCRD: true})
+	if !disc.CRDServedInOtherVersions(gvr) {
+		t.Fatal("a multi-version custom resource reads as single-version")
+	}
+}
