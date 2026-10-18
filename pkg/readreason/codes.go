@@ -49,9 +49,6 @@ const (
 	// does not restart it; if it persists, Radar's connection or
 	// list/watch permissions need attention.
 	KindSyncTimedOut Code = "kind_sync_timed_out"
-	// KindWatchStartFailed: the kind's watch failed to start. A request that names
-	// the kind starts it again.
-	KindWatchStartFailed Code = "kind_watch_start_failed"
 	// RadarKindNotCollected: Radar's setup leaves the kind out, so it can't say
 	// which exist. Whoever runs Radar can include it, if Radar's identity may
 	// list and watch it.
@@ -109,9 +106,6 @@ const (
 	// ActionWait: retry later; if it persists, Radar needs
 	// attention.
 	ActionWait Action = "wait"
-	// ActionRequestKind: a request that names the kind starts its watch again.
-	// list and get name the kind, so for them this is a retry.
-	ActionRequestKind Action = "request_kind"
 	// ActionCheckTarget: confirm which cluster Radar is connected to before
 	// repeating the request.
 	ActionCheckTarget Action = "check_target"
@@ -135,7 +129,6 @@ var actions = map[Code]Action{
 	RadarNamespaceNotCollected: ActionRadarConfig,
 	KindSyncPending:            ActionRetry,
 	KindSyncTimedOut:           ActionWait,
-	KindWatchStartFailed:       ActionRequestKind,
 	RadarKindNotCollected:      ActionRadarConfig,
 	KindUnknown:                ActionChangeRequest,
 	KindNotWatchable:           ActionChangeRequest,
@@ -192,7 +185,7 @@ func AffectsWholeCluster(c Code) bool {
 var precedence = []Code{
 	NamespaceRequired, KindUnknown, KindNotWatchable, ListTooLarge,
 	ClusterDisconnected, ClusterConnecting, ConnectionChanged,
-	KindSyncPending, UserPermissionCheckFailed, KindWatchStartFailed,
+	KindSyncPending, UserPermissionCheckFailed,
 	UserForbidden, UserNoNamespaceAccess, UserNamespaceNotVisible, NamespaceNotFound,
 	OutsideNamespacePin, OutsideNamespaceSelection,
 	RadarCredentialsRejected, RadarForbidden, RadarKindNotCollected,

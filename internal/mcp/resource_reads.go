@@ -93,8 +93,6 @@ func errorNext(code readreason.Code) string {
 		return "" // its message already says to retry shortly
 	case readreason.ReadError:
 		return "Retry in a few seconds; if it keeps failing, report the error to whoever runs Radar."
-	case readreason.KindWatchStartFailed:
-		return "Retry: the retry starts the watch again."
 	case readreason.KindUnknown:
 		return "Check the spelling, or pass group for a custom resource; list_resources with kind=customresourcedefinitions lists the custom kinds installed here."
 	}
@@ -622,8 +620,6 @@ func gapReason(ctx context.Context, resource string, code readreason.Code) (why,
 		return fmt.Sprintf("Radar is still loading %s there", resource), ""
 	case readreason.KindSyncTimedOut:
 		return fmt.Sprintf("Radar's load of %s there didn't finish in time", resource), "if it keeps failing, whoever runs Radar should check its cluster connection and list/watch permissions"
-	case readreason.KindWatchStartFailed:
-		return fmt.Sprintf("Radar's watch of %s there failed to start", resource), ""
 	case readreason.UserForbidden:
 		return fmt.Sprintf("your Kubernetes access doesn't allow listing %s there", resource), withCloudRole(ctx, "a cluster admin can grant it")
 	case readreason.UserPermissionCheckFailed:
@@ -686,7 +682,7 @@ func retrySteps(cov resourceapi.Coverage) string {
 // when retrying alone won't.
 func retryAfter(code readreason.Code) string {
 	switch action, _ := readreason.ActionFor(code); action {
-	case readreason.ActionRetry, readreason.ActionRequestKind:
+	case readreason.ActionRetry:
 		return "in a few seconds"
 	case readreason.ActionWait:
 		return "in a minute"
@@ -1086,11 +1082,6 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 		return false, errKindUnknown(kind, group, readErr)
 	}
 	if errors.Is(readErr, k8s.ErrDynamicNotReady) {
-		if ok && dynamicCache != nil && k8s.GetConnectionStatus().State != k8s.StateConnecting {
-			if observation := dynamicCache.Observation(gvr); observation.State == k8score.DynamicObservationDeferred && observation.ReasonCode == "watch_start_failed" {
-				return false, readErrorf(readreason.KindWatchStartFailed, "Radar's watch for %s failed to start, so it can't answer.", kind)
-			}
-		}
 		return false, errDynamicUnavailable(kind, readErr)
 	}
 	direct := ok && directRead(gvr, verb)
