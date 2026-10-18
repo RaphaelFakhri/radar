@@ -2778,6 +2778,7 @@ export function useResource<T>(
     relationships: query.data?.relationships,
     certificateInfo: query.data?.certificateInfo,
     hpaDiagnosis: query.data?.hpaDiagnosis,
+    templateDivergence: query.data?.templateDivergence,
   };
 }
 

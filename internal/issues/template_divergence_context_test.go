@@ -308,6 +308,9 @@ func TestTemplateDivergenceForPodsAndWorkloads(t *testing.T) {
 	if len(got.Differences) != 1 || got.Differences[0] != "containers[app].resources.limits.memory is 16Mi; template specifies 256Mi" || !strings.Contains(got.Summary, "1 of 3 current Pods") || !strings.Contains(got.Summary, "context, not proof") {
 		t.Fatalf("deployment divergence=%+v", got)
 	}
+	if len(got.SourceGaps) == 0 || got.SourceGaps[0] != "Mutating webhook configurations were not inspected: Radar has not cached them." || len(got.SourceRefs) != 0 {
+		t.Fatalf("structured sources: refs=%v gaps=%v", got.SourceRefs, got.SourceGaps)
+	}
 	if note := TemplateDivergenceNote(got); note != "1 of 3 compared Pods differ from their owner template; Pod web-new-2 vs ReplicaSet web-new: containers[app].resources.limits.memory is 16Mi; template specifies 256Mi. Read without context=none for the full comparison and the objects that could have changed it." {
 		t.Fatalf("note=%q", note)
 	}

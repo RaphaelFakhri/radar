@@ -182,14 +182,17 @@ func (p *CacheProvider) templateDivergenceFor(baselines []podBaseline, access po
 	}
 	sources := p.templateSources(example.pod, example.template, exampleDifferences, access)
 	return &resourcecontext.TemplateDivergence{
-		Summary:       summary,
-		PodsCompared:  len(baselines),
-		PodsDiffering: differing,
-		ExamplePod:    examplePod,
-		PodsCapped:    truncated,
-		Baseline:      baseline,
-		Differences:   messages,
-		Sources:       sources.sentences,
+		Summary:         summary,
+		PodsCompared:    len(baselines),
+		PodsDiffering:   differing,
+		ExamplePod:      examplePod,
+		PodsCapped:      truncated,
+		Baseline:        baseline,
+		Differences:     messages,
+		Sources:         sources.sentences,
+		SourceRefs:      contextRefs(sources.refs),
+		SourceGaps:      sources.coverage,
+		SourcesNotNamed: sources.notNamed,
 	}
 }
 
@@ -217,4 +220,15 @@ func TemplateDivergenceNote(d *resourcecontext.TemplateDivergence) string {
 		scope += fmt.Sprintf("; Pod %s vs %s", d.ExamplePod, d.Baseline)
 	}
 	return strings.TrimSpace(fmt.Sprintf("%s: %s. Read without context=none for the full comparison and the objects that could have changed it.", scope, first))
+}
+
+func contextRefs(refs []Ref) []resourcecontext.ContextRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]resourcecontext.ContextRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, resourcecontext.ContextRef{Kind: ref.Kind, Group: ref.Group, Namespace: ref.Namespace, Name: ref.Name})
+	}
+	return out
 }

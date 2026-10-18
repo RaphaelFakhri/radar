@@ -138,6 +138,10 @@ type templateCandidate struct {
 type templateSourceReport struct {
 	sentences []string
 	refs      []Ref
+	// coverage holds the sentences about sources that could not be inspected;
+	// notNamed counts matching candidates past the naming budget.
+	coverage []string
+	notNamed int
 }
 
 // templateSources describes what could have produced the differences: the
@@ -166,7 +170,8 @@ func (p *CacheProvider) templateSources(pod *corev1.Pod, template *corev1.PodTem
 		}
 		sentence := "Also matching: " + strings.Join(names, ", ") + "."
 		if len(candidates) > end {
-			sentence += fmt.Sprintf(" %d more matching candidate objects are not named.", len(candidates)-end)
+			report.notNamed = len(candidates) - end
+			sentence += fmt.Sprintf(" %d more matching candidate objects are not named.", report.notNamed)
 		}
 		report.sentences = append(report.sentences, sentence)
 	}
@@ -175,6 +180,7 @@ func (p *CacheProvider) templateSources(pod *corev1.Pod, template *corev1.PodTem
 	}
 	report.sentences = append(report.sentences, selfReportedMutations(pod, template, differences)...)
 	report.sentences = append(report.sentences, coverage...)
+	report.coverage = coverage
 	report.sentences = append(report.sentences, "Writer and timing are unknown. Candidate inspection is incomplete: current readable configuration only; CEL conditions are not evaluated.")
 	return report
 }
