@@ -481,7 +481,7 @@ You see what you have access to — Radar doesn't require cluster-admin. Whateve
 
 A namespace-scoped ServiceAccount (RoleBinding without a ClusterRole) is fully supported — Radar detects this at startup and works within the permitted namespace.
 
-**Request deadlines.** Each read request Radar makes with its own identity has a client-side deadline: 2 minutes, or a watch's own `timeoutSeconds` plus 1 minute. A request that stalls without a connection reset, for example through a proxy whose upstream dropped silently, ends at that deadline, and the informer lists again instead of freezing that kind's cache. Log streams, exec, attach, port-forward and API-server proxy requests have no deadline. The 2-minute limit is twice the apiserver's own default `--request-timeout` (60 seconds), which already bounds how long a list may run on the server.
+**Request deadlines.** Each read request on Radar's shared API clients (its resource cache, dynamic and discovery clients) has a client-side deadline: 2 minutes, or a watch's own `timeoutSeconds` plus 1 minute. A request that stalls without a connection reset, for example through a proxy whose upstream dropped silently, ends at that deadline, and the informer lists again instead of freezing that kind's cache. Log streams, exec, attach, port-forward and API-server proxy requests have no deadline. The 2-minute limit is twice the apiserver's own default `--request-timeout` (60 seconds), which bounds how long the server spends on a list. A response that takes longer than 2 minutes to arrive, for example through a slow or buffering proxy, is cut and retried.
 
 **RBAC granularity (auth enabled):**
 

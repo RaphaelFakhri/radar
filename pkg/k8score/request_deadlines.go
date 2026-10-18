@@ -11,9 +11,11 @@ import (
 
 const (
 	// DefaultRequestDeadline bounds one non-streaming GET (a single object, or
-	// one page of a LIST). It is twice the apiserver's default
-	// --request-timeout for non-long-running requests, so a LIST the server
-	// is still allowed to finish is not cut short on an ordinary setup.
+	// one page of a LIST) from send to the end of the body. It is twice the
+	// apiserver's default --request-timeout for non-long-running requests.
+	// That timeout bounds the server's handling, not delivery, so a response
+	// a slow or buffering path takes longer than this to deliver is cut and
+	// retried: an accepted tradeoff against a request that never ends.
 	DefaultRequestDeadline = 2 * time.Minute
 	// DefaultWatchDeadlineGrace is added to a watch's timeoutSeconds. The
 	// apiserver ends such a watch itself after timeoutSeconds, so the client
@@ -22,8 +24,11 @@ const (
 	DefaultWatchDeadlineGrace = time.Minute
 )
 
-// WrapRequestDeadlines returns a RoundTripper that gives informer-style GETs a
-// client-side deadline, for use as a rest.Config WrapTransport.
+// WrapRequestDeadlines returns a rest.Config WrapTransport that gives
+// informer-style GETs a client-side deadline. serverPath is the path part of
+// the config's Host (for example "/k8s/clusters/c-1" behind a proxy, usually
+// empty); it is stripped before a request path is classified, so a prefix that
+// looks like an API path can't change the classification.
 //
 // rest.Config.Timeout cannot do this job: it becomes http.Client.Timeout and
 // would also end every long-lived watch, log stream and exec session. Without
@@ -34,16 +39,21 @@ const (
 // Exempt: non-GET requests, protocol upgrades (exec/attach/port-forward),
 // follow=true log streams, the apiserver's long-running subresources (log,
 // exec, attach, portforward, proxy), and watches without timeoutSeconds.
-func WrapRequestDeadlines(rt http.RoundTripper) http.RoundTripper {
-	return &requestDeadlineRoundTripper{
-		next:       rt,
-		deadline:   DefaultRequestDeadline,
-		watchGrace: DefaultWatchDeadlineGrace,
+func WrapRequestDeadlines(serverPath string) func(http.RoundTripper) http.RoundTripper {
+	serverPath = strings.TrimRight(serverPath, "/")
+	return func(rt http.RoundTripper) http.RoundTripper {
+		return &requestDeadlineRoundTripper{
+			next:       rt,
+			serverPath: serverPath,
+			deadline:   DefaultRequestDeadline,
+			watchGrace: DefaultWatchDeadlineGrace,
+		}
 	}
 }
 
 type requestDeadlineRoundTripper struct {
 	next       http.RoundTripper
+	serverPath string
 	deadline   time.Duration
 	watchGrace time.Duration
 }
@@ -72,7 +82,7 @@ func (t *requestDeadlineRoundTripper) deadlineFor(req *http.Request) time.Durati
 	if q.Get("follow") == "true" {
 		return 0
 	}
-	subresource, legacyWatch := apiPathSubresource(req.URL.Path)
+	subresource, legacyWatch := apiPathSubresource(strings.TrimPrefix(req.URL.Path, t.serverPath))
 	if longRunningSubresources[subresource] {
 		return 0
 	}
@@ -132,23 +142,17 @@ func isAPIVersion(s string) bool {
 // resource/name/subresource — and returns the subresource and whether the
 // legacy watch prefix was used. Matching by position means a resource or
 // object that happens to be named "log" or "proxy" is not mistaken for the
-// subresource. A prefix before the API root (a proxied server URL such as
-// /k8s/clusters/x/api/v1) is skipped: the root is the first api/{version} or
-// apis/{group}/{version}, so a prefix segment named "api" is not mistaken for it.
+// subresource. path must already have the server's path prefix removed;
+// anything that doesn't start at the API root has no subresource.
 func apiPathSubresource(path string) (subresource string, legacyWatch bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	start := -1
-	for i, s := range parts {
-		if s == "api" && i+1 < len(parts) && isAPIVersion(parts[i+1]) {
-			start = i + 2
-			break
-		}
-		if s == "apis" && i+2 < len(parts) && isAPIVersion(parts[i+2]) {
-			start = i + 3
-			break
-		}
-	}
-	if start < 0 || start >= len(parts) {
+	var start int
+	switch {
+	case len(parts) > 2 && parts[0] == "api" && isAPIVersion(parts[1]):
+		start = 2
+	case len(parts) > 3 && parts[0] == "apis" && isAPIVersion(parts[2]):
+		start = 3
+	default:
 		return "", false
 	}
 	parts = parts[start:]
