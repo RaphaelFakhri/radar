@@ -44,7 +44,7 @@ const (
 //
 // A non-watch GET ends when its headers take longer than
 // DefaultResponseHeaderTimeout (or idle, if longer), when no body bytes arrive
-// for idle, or after DefaultRequestCeiling in total. A watch with
+// for idle, or after DefaultRequestCeiling (or idle, if longer) in total. A watch with
 // timeoutSeconds ends at timeoutSeconds plus DefaultWatchDeadlineGrace; it is
 // never idle-timed, because a healthy watch can go quiet. Each HTTP attempt
 // gets its own bounds; client-go may retry an attempt. Exempt: non-GET
@@ -77,9 +77,12 @@ type requestDeadlineRoundTripper struct {
 	watchGrace    time.Duration
 }
 
-// errRequestStalled is the cancellation cause, and the error a caller sees,
-// when a read is ended for receiving no data.
-var errRequestStalled = errors.New("request stalled")
+// errRequestEnded is the cancellation cause, and the error a caller sees,
+// when one of these bounds ends a read. It is deliberately not a timeout or
+// connection error: client-go retries those inside a single Watch call and
+// can swallow the last one, while this error reaches the reflector, which
+// then lists again.
+var errRequestEnded = errors.New("request ended by Radar")
 
 func (t *requestDeadlineRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	bounded, watchDeadline := t.classify(req)
@@ -87,44 +90,48 @@ func (t *requestDeadlineRoundTripper) RoundTrip(req *http.Request) (*http.Respon
 	case !bounded:
 		return t.next.RoundTrip(req)
 	case watchDeadline > 0:
-		ctx, cancel := context.WithTimeout(req.Context(), watchDeadline)
+		ctx, cancel := context.WithTimeoutCause(req.Context(), watchDeadline,
+			fmt.Errorf("%w: watch still open %s after its timeoutSeconds", errRequestEnded, t.watchGrace))
 		resp, err := t.next.RoundTrip(req.WithContext(ctx))
 		if err != nil {
+			err = endCause(ctx, err)
 			cancel()
 			return resp, err
 		}
-		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+		resp.Body = &causeBody{ReadCloser: resp.Body, ctx: ctx, stop: cancel}
 		return resp, nil
 	}
 
-	ceilingCtx, cancelCeiling := context.WithTimeout(req.Context(), t.ceiling)
+	ceilingCtx, cancelCeiling := context.WithTimeoutCause(req.Context(), t.ceiling,
+		fmt.Errorf("%w: still running after %s", errRequestEnded, t.ceiling))
 	ctx, cancel := context.WithCancelCause(ceilingCtx)
 	stop := func() {
 		cancel(nil)
 		cancelCeiling()
 	}
 	headerTimer := time.AfterFunc(t.headerTimeout, func() {
-		cancel(fmt.Errorf("%w: no response headers within %s", errRequestStalled, t.headerTimeout))
+		cancel(fmt.Errorf("%w: no response headers within %s", errRequestEnded, t.headerTimeout))
 	})
 	resp, err := t.next.RoundTrip(req.WithContext(ctx))
 	headerTimer.Stop()
 	if err != nil {
-		err = stallCause(ctx, err)
+		err = endCause(ctx, err)
 		stop()
 		return resp, err
 	}
-	body := &idleTimeoutBody{ReadCloser: resp.Body, ctx: ctx, idle: t.idle, stop: stop}
+	body := &idleTimeoutBody{causeBody: causeBody{ReadCloser: resp.Body, ctx: ctx, stop: stop}, idle: t.idle}
 	body.timer = time.AfterFunc(t.idle, func() {
-		cancel(fmt.Errorf("%w: no data received for %s", errRequestStalled, t.idle))
+		cancel(fmt.Errorf("%w: no data received for %s", errRequestEnded, t.idle))
 	})
 	resp.Body = body
 	return resp, nil
 }
 
-// stallCause replaces the bare context error the HTTP stack reports with the
-// stall that caused it, so logs and diagnostics say why the read ended.
-func stallCause(ctx context.Context, err error) error {
-	if cause := context.Cause(ctx); errors.Is(cause, errRequestStalled) {
+// endCause replaces the context error the HTTP stack reports with the bound
+// that caused it, so logs and diagnostics say why the read ended. The original
+// error is kept as text only, so the result is not a timeout to client-go.
+func endCause(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); errors.Is(cause, errRequestEnded) {
 		return fmt.Errorf("%w (%v)", cause, err)
 	}
 	return err
@@ -164,43 +171,49 @@ var longRunningSubresources = map[string]bool{
 	"proxy":       true,
 }
 
-type cancelOnCloseBody struct {
+// causeBody reports a read ended by one of these bounds with its cause, and
+// releases the request's context on Close.
+type causeBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	ctx  context.Context
+	stop func()
 }
 
-func (b *cancelOnCloseBody) Close() error {
+func (b *causeBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		err = endCause(b.ctx, err)
+	}
+	return n, err
+}
+
+func (b *causeBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.cancel()
+	b.stop()
 	return err
 }
 
 // idleTimeoutBody restarts the idle timer each time a Read delivers bytes, so
-// only a body that stops delivering is cancelled.
+// only a body that stops delivering is cancelled. It measures the time between
+// the caller's reads, so the caller must read the body steadily; client-go
+// reads a response whole before decoding it.
 type idleTimeoutBody struct {
-	io.ReadCloser
-	ctx   context.Context
+	causeBody
 	idle  time.Duration
 	timer *time.Timer
-	stop  func()
 }
 
 func (b *idleTimeoutBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
+	n, err := b.causeBody.Read(p)
 	if n > 0 {
 		b.timer.Reset(b.idle)
-	}
-	if err != nil && err != io.EOF {
-		err = stallCause(b.ctx, err)
 	}
 	return n, err
 }
 
 func (b *idleTimeoutBody) Close() error {
 	b.timer.Stop()
-	err := b.ReadCloser.Close()
-	b.stop()
-	return err
+	return b.causeBody.Close()
 }
 
 // namespaceSubresources are subresources of a Namespace object, which share

@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -180,7 +182,7 @@ func TestRequestDeadlines_StallsEndSlowTransfersFinish(t *testing.T) {
 	t.Run("no headers ends at the header timeout", func(t *testing.T) {
 		start := time.Now()
 		_, err := client.Get(srv.URL + "/api/v1/secrets")
-		if !errors.Is(err, errRequestStalled) {
+		if !errors.Is(err, errRequestEnded) {
 			t.Fatalf("err = %v, want a stall", err)
 		}
 		if d := time.Since(start); d < 250*time.Millisecond || d > 2*time.Second {
@@ -196,7 +198,7 @@ func TestRequestDeadlines_StallsEndSlowTransfersFinish(t *testing.T) {
 		start := time.Now()
 		_, err = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if !errors.Is(err, errRequestStalled) {
+		if !errors.Is(err, errRequestEnded) {
 			t.Fatalf("err = %v, want a stall", err)
 		}
 		if d := time.Since(start); d < 150*time.Millisecond || d > 2*time.Second {
@@ -228,7 +230,7 @@ func TestRequestDeadlines_StallsEndSlowTransfersFinish(t *testing.T) {
 		}
 		_, err = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if !errors.Is(err, context.DeadlineExceeded) {
+		if !errors.Is(err, errRequestEnded) || !strings.Contains(err.Error(), "still running") {
 			t.Fatalf("err = %v, want the ceiling", err)
 		}
 		if d := time.Since(start); d < 1500*time.Millisecond || d > 4*time.Second {
@@ -283,5 +285,55 @@ func TestRequestDeadlines_ZeroIdleDisables(t *testing.T) {
 	rt := WrapRequestDeadlines("", 5*time.Minute)(base).(*requestDeadlineRoundTripper)
 	if rt.headerTimeout != 5*time.Minute || rt.ceiling != DefaultRequestCeiling {
 		t.Fatalf("a long idle timeout must raise the header bound with it: header=%v ceiling=%v", rt.headerTimeout, rt.ceiling)
+	}
+}
+
+// A watch that outlives its timeoutSeconds plus grace is ended with an error
+// client-go passes on instead of retrying, so the reflector lists again rather
+// than silently re-watching a dead path.
+func TestRequestDeadlines_DeadWatchSurfacesAsError(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("watch") != "true" {
+			http.NotFound(w, r)
+			return
+		}
+		if attempts.Add(1) == 1 || r.URL.Query().Get("resourceVersion") == "hang-headers" {
+			<-r.Context().Done() // no headers
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // headers, then nothing
+	}))
+	defer srv.Close()
+	rt := WrapRequestDeadlines("", time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt.watchGrace = 200 * time.Millisecond
+	cfg := &rest.Config{Host: srv.URL, Transport: rt}
+	client := kubernetes.NewForConfigOrDie(cfg)
+	timeout := int64(1) // the deadline is timeoutSeconds plus grace: 1.2s
+	ctx := context.Background()
+
+	_, err := client.CoreV1().Secrets("").Watch(ctx, metav1.ListOptions{TimeoutSeconds: &timeout, ResourceVersion: "hang-headers"})
+	if !errors.Is(err, errRequestEnded) {
+		t.Fatalf("a watch with no headers: err = %v, want it ended by Radar", err)
+	}
+	if n := attempts.Load(); n != 1 {
+		t.Fatalf("client-go retried the ended watch %d times; it must surface the error", n-1)
+	}
+
+	w, err := client.CoreV1().Secrets("").Watch(ctx, metav1.ListOptions{TimeoutSeconds: &timeout})
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	defer w.Stop()
+	select {
+	case ev, ok := <-w.ResultChan():
+		if !ok || ev.Type != watch.Error {
+			t.Fatalf("a dead established watch must end with an error event, got ok=%v %v", ok, ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a dead established watch was not ended")
 	}
 }
