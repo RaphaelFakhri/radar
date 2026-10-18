@@ -28,9 +28,10 @@ export function divergenceSummary(divergence: TemplateDivergence): string {
   const unlisted = divergence.differences.reduce((n, d) => n + Number(MORE_DIFFERENCES.exec(d)?.[1] ?? 0), 0)
   const parts = [shortDifference(listed[0] ?? divergence.differences[0])]
   const more = listed.length - 1 + unlisted
-  if (more > 0) parts.push(`+${more} more`)
+  // Non-breaking spaces keep each part on one line when the summary wraps.
+  if (more > 0) parts.push(`+${more}\u00a0more`)
   const sources = (divergence.sourceRefs?.length ?? 0) + (divergence.sourcesNotNamed ?? 0)
-  if (sources > 0) parts.push(`${sources} possible ${sources === 1 ? 'source' : 'sources'}`)
+  if (sources > 0) parts.push(`${sources}\u00a0possible\u00a0${sources === 1 ? 'source' : 'sources'}`)
   return parts.join(' · ')
 }
 

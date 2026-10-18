@@ -43,8 +43,8 @@ describe('collapsed summary', () => {
     const one = { ...workload, differences: [workload.differences[0]], sourceRefs: [], sourcesNotNamed: 0 }
     expect(divergenceSummary(one)).toBe('memory limit 16Mi (template 256Mi)')
     const several = { ...one, differences: [...one.differences, 'nodeSelector differs from the template', '3 more differences not listed'] }
-    expect(divergenceSummary(several)).toBe('memory limit 16Mi (template 256Mi) · +4 more')
-    expect(divergenceSummary({ ...several, sourceRefs: workload.sourceRefs, sourcesNotNamed: 0 })).toBe('memory limit 16Mi (template 256Mi) · +4 more · 1 possible source')
+    expect(divergenceSummary(several)).toBe('memory limit 16Mi (template 256Mi) · +4\u00a0more')
+    expect(divergenceSummary({ ...several, sourceRefs: workload.sourceRefs, sourcesNotNamed: 0 })).toBe('memory limit 16Mi (template 256Mi) · +4\u00a0more · 1\u00a0possible\u00a0source')
   })
 })
 
@@ -57,7 +57,7 @@ describe('TemplateDivergenceCard', () => {
   it('is collapsed to one line by default', () => {
     const html = renderToStaticMarkup(<TemplateDivergenceCard namespace="shop" divergence={workload} />)
     expect(html).toContain('aria-expanded="false"')
-    expect(html).toContain('memory limit 16Mi (template 256Mi) · 5 possible sources')
+    expect(html).toContain('memory limit 16Mi (template 256Mi) · 5\u00a0possible\u00a0sources')
     expect(html).not.toContain('Could have changed it')
   })
 
