@@ -990,25 +990,25 @@ func failedLoadError(ctx context.Context, target collectorTarget, where string, 
 		return readreason.KindSyncTimedOut, errKindLoadFailed(target.resource)
 	}
 	why, check := staleCause(failure.Cause, target.resource)
-	return readreason.KindStale, readErrorf(readreason.KindStale, "Radar's copy of %s%s stopped updating %s ago because %s, so Radar doesn't use it and can't answer. It keeps retrying; if this persists, whoever runs Radar should check %s.", target.resource, where, durationAgo(failure.Since), why, check)
+	return readreason.KindStale, readErrorf(readreason.KindStale, "Radar's copy of %s%s has stopped updating, so Radar doesn't use it and can't answer: %s for %s. It keeps retrying; if this persists, whoever runs Radar should check %s.", target.resource, where, why, durationAgo(failure.Since), check)
 }
 
 // errListRefused stands for the API server response behind a list failure,
 // which Radar keeps in its logs and sync diagnostics rather than in answers.
 var errListRefused = errors.New("Radar's informer lists were refused")
 
-// staleCause says, as clauses, why a store's lists keep failing and what
-// whoever runs Radar should check.
+// staleCause says, as clauses, what has kept failing (completed by "for
+// <duration>") and what whoever runs Radar should check.
 func staleCause(cause k8score.ListFailureCause, resource string) (why, check string) {
 	switch cause {
 	case k8score.ListFailureUnreachable:
-		return "Radar can't reach the Kubernetes API server", "its cluster connection"
+		return "Radar hasn't reached the Kubernetes API server", "its cluster connection"
 	case k8score.ListFailureTimeout:
-		return "its lists of them keep timing out", "its cluster connection and the API server's load"
+		return "its lists of them have timed out", "its cluster connection and the API server's load"
 	case k8score.ListFailureServerError:
-		return "the API server keeps failing to list them (for a custom resource, often because a conversion webhook is down)", "the API server and any webhooks for " + resource
+		return "the API server has failed its lists of them (for a custom resource, often because a conversion webhook is down)", "the API server and any webhooks for " + resource
 	}
-	return "its lists of them keep failing", "its cluster connection and list/watch permissions"
+	return "its lists of them have failed", "its cluster connection and list/watch permissions"
 }
 
 // durationAgo renders how long ago since was, in whole minutes.

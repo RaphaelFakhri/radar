@@ -158,7 +158,7 @@ func TestResourceReadsStaleTypedNamespace(t *testing.T) {
 		t.Fatalf("summary doesn't explain the stale namespace: %s", coverage.Summary)
 	}
 	_, _, err := list("beta")
-	if errCode(err) != "kind_stale" || !strings.Contains(err.Error(), `Radar's copy of configmaps in namespace "beta" stopped updating`) ||
+	if errCode(err) != "kind_stale" || !strings.Contains(err.Error(), `Radar's copy of configmaps in namespace "beta" has stopped updating, so Radar doesn't use it`) ||
 		!strings.Contains(err.Error(), "conversion webhook is down") || strings.Contains(err.Error(), "service not found") {
 		t.Fatalf("list of the stale namespace = %v", err)
 	}
