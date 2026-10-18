@@ -2,6 +2,7 @@ package k8score
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -103,18 +105,22 @@ func TestProbeRetryNamespaceOutcomes(t *testing.T) {
 func TestProbeRetryWholeKindOutcomes(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	for _, tc := range []struct {
-		name    string
-		allowed []string
-		refused int
-		want    DynamicObservationState
-		whole   bool
+		name      string
+		allowed   []string
+		refused   int
+		fallbacks []string
+		want      DynamicObservationState
+		whole     bool
 	}{
-		{"OK", []string{""}, 1, DynamicObservationSynced, false},
-		{"Forbidden", nil, 1, DynamicObservationDenied, false},
-		{"exhausted", nil, 100, DynamicObservationDeferred, true},
+		{"OK", []string{""}, 1, nil, DynamicObservationSynced, false},
+		{"Forbidden", nil, 1, nil, DynamicObservationDenied, false},
+		// When the budget runs out the kind is reported unanswered; the slow
+		// recovery re-checks it later (TestProbeRecoveryAfterTheBudget).
+		{"exhausted", nil, 100, nil, DynamicObservationDeferred, true},
+		{"exhausted, with fallbacks", nil, 100, []string{"a"}, DynamicObservationDeferred, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: rateLimitedLists(gvr, tc.allowed, map[string]int{"": tc.refused}), ProbeRetryBackoff: []time.Duration{50 * time.Millisecond}})
+			d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: rateLimitedLists(gvr, tc.allowed, map[string]int{"": tc.refused}), NamespaceFallbacks: tc.fallbacks, ProbeRetryBackoff: []time.Duration{50 * time.Millisecond}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,6 +145,93 @@ func TestProbeRetryWholeKindOutcomes(t *testing.T) {
 			got := d.Observation(gvr)
 			if got.ProbeRetrying || got.State != tc.want || (got.ReasonCode == "scope_probe_incomplete") != tc.whole {
 				t.Fatalf("terminal observation: %+v", got)
+			}
+		})
+	}
+}
+
+// A 401 rejects Radar's credentials, not one scope. A retry that meets one
+// records it as such, stops, and settling the walk doesn't overwrite it.
+func TestProbeRetryKeepsRejectedCredentials(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	for _, tc := range []struct {
+		name      string
+		fallbacks []string
+		// throttled is how often each namespace's probe is refused by the
+		// client-side rate limiter before it gets the 401: enough to outlast
+		// the first walk, which retries throttled candidates once itself.
+		throttled map[string]int
+		// forbiddenClusterWide answers the cluster-wide check with a 403, so
+		// the walk falls back to namespaces.
+		forbiddenClusterWide bool
+	}{
+		{"whole kind", nil, map[string]int{"": 1}, false},
+		{"namespace", []string{"a", "b"}, map[string]int{"a": 2, "b": 2}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			probed := map[string]int{}
+			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+			dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+				ns := action.GetNamespace()
+				mu.Lock()
+				defer mu.Unlock()
+				probed[ns]++
+				if ns == "" && tc.forbiddenClusterWide {
+					return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("collector cannot list"))
+				}
+				if tc.throttled[ns] > 0 {
+					tc.throttled[ns]--
+					return true, nil, errClientRateLimited
+				}
+				return true, nil, apierrors.NewUnauthorized("token rejected")
+			})
+			d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, NamespaceFallbacks: tc.fallbacks, ProbeRetryBackoff: []time.Duration{20 * time.Millisecond, 20 * time.Millisecond}, ProbeRecoveryIntervals: []time.Duration{10 * time.Millisecond}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.Stop)
+			_ = d.EnsureWatching(gvr)
+			mu.Lock()
+			bBefore := probed["b"]
+			mu.Unlock()
+			d.mu.RLock()
+			r := d.probeRetries[gvr]
+			d.mu.RUnlock()
+			if r == nil {
+				t.Fatal("no retry started for the unanswered check")
+			}
+			select {
+			case <-r.done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("retry did not finish")
+			}
+			if got := d.Observation(gvr); got.State != DynamicObservationDenied || got.ReasonCode != "credentials_rejected" {
+				t.Fatalf("observation = %+v, want denied/credentials_rejected", got)
+			}
+			// Nor does the slow recovery after the budget probe again.
+			deadline := time.Now().Add(time.Second)
+			for ownerLive(d, r) && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			mu.Lock()
+			total := 0
+			for _, n := range probed {
+				total += n
+			}
+			mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			mu.Lock()
+			defer mu.Unlock()
+			after := 0
+			for _, n := range probed {
+				after += n
+			}
+			if ownerLive(d, r) || after != total {
+				t.Fatalf("re-checks went on after a 401: owner live %v, %d probes then %d", ownerLive(d, r), total, after)
+			}
+			if len(tc.fallbacks) > 1 && probed["b"] != bBefore {
+				t.Fatalf("the retry went on probing after a 401: b probed %d times, %d before the retry", probed["b"], bBefore)
 			}
 		})
 	}
@@ -887,5 +980,289 @@ func TestProbeRetrySingleNamespaceAnswerDoesNotSettle(t *testing.T) {
 	}
 	if !d.HasCoveringInformer(gvr, "a") || !d.HasCoveringInformer(gvr, "b") || !d.WaitForSync(gvr, time.Second) {
 		t.Fatal("explicit answer prevented the remaining fallback walk")
+	}
+}
+
+// Checks still unanswered when the retry budget runs out keep being re-checked,
+// slowly, so a reader of the cache alone gets the kind once the API answers.
+// Each re-check walks as a first probe would: an identity limited to some
+// namespaces falls back to them instead of watching cluster-wide on a guess.
+func TestProbeRecoveryAfterTheBudget(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	for _, tc := range []struct {
+		name      string
+		listable  []string
+		throttled map[string]int
+		fallbacks []string
+		pinned    string
+		watched   string
+	}{
+		{"cluster-wide identity", []string{""}, map[string]int{"": 3}, nil, "", ""},
+		{"identity limited to a namespace", []string{"a"}, map[string]int{"": 3}, []string{"a"}, "", "a"},
+		{"pinned namespace", []string{"shop"}, map[string]int{"shop": 3}, nil, "shop", "shop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := NewDynamicResourceCache(DynamicCacheConfig{
+				DynamicClient:          rateLimitedLists(gvr, tc.listable, tc.throttled),
+				NamespaceFallbacks:     tc.fallbacks,
+				NamespaceScoped:        tc.pinned != "",
+				Namespace:              tc.pinned,
+				ProbeRetryBackoff:      []time.Duration{10 * time.Millisecond},
+				ProbeRecoveryIntervals: []time.Duration{20 * time.Millisecond},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.Stop)
+			_ = d.EnsureWatching(gvr)
+			d.mu.RLock()
+			r := d.probeRetries[gvr]
+			d.mu.RUnlock()
+			if r == nil {
+				t.Fatal("no retry started")
+			}
+			select {
+			case <-r.done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("retry did not finish")
+			}
+			if o := d.Observation(gvr); o.ProbeRetrying {
+				t.Fatalf("an exhausted budget must not read as still retrying: %+v", o)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for !d.HasCoveringInformer(gvr, tc.watched) && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !d.HasCoveringInformer(gvr, tc.watched) {
+				t.Fatalf("recovery never watched the kind: %+v", d.Observation(gvr))
+			}
+			if tc.watched != "" && d.HasCoveringInformer(gvr, "elsewhere") {
+				t.Fatal("recovery watched cluster-wide instead of the namespace")
+			}
+		})
+	}
+}
+
+// A retry record that settled has no owner left, so a gap a later read finds
+// starts a fresh retry instead of waiting forever.
+func TestProbeRetryRearmsAfterSettling(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:          rateLimitedLists(gvr, []string{"a", "c"}, map[string]int{"a": 2, "c": 2}),
+		NamespaceFallbacks:     []string{"a"},
+		ProbeRetryBackoff:      []time.Duration{10 * time.Millisecond, 10 * time.Millisecond},
+		ProbeRecoveryIntervals: []time.Duration{time.Hour},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	_ = d.EnsureWatching(gvr)
+	d.mu.RLock()
+	first := d.probeRetries[gvr]
+	d.mu.RUnlock()
+	if first == nil {
+		t.Fatal("no retry for the throttled fallback namespace")
+	}
+	<-first.done
+	d.mu.RLock()
+	settled := first.settled()
+	d.mu.RUnlock()
+	if !settled || !d.HasCoveringInformer(gvr, "a") {
+		t.Fatalf("first retry didn't settle on namespace a: %+v", d.Observation(gvr))
+	}
+	_ = d.EnsureWatchingContext(t.Context(), gvr, "c")
+	deadline := time.Now().Add(3 * time.Second)
+	for !d.HasCoveringInformer(gvr, "c") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	d.mu.RLock()
+	rearmed := d.probeRetries[gvr] != first
+	d.mu.RUnlock()
+	if !rearmed || !d.HasCoveringInformer(gvr, "c") {
+		t.Fatalf("a gap found after settling was never retried: rearmed=%v %+v", rearmed, d.Observation(gvr))
+	}
+	if ownerLive(d, first) {
+		t.Fatal("the settled record's owner outlived it")
+	}
+}
+
+// Stopping the cache ends a recovery waiting for its next re-check, which
+// would otherwise hold the stopped cache until then.
+func TestProbeRecoveryStopsWithTheCache(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:          rateLimitedLists(gvr, []string{""}, map[string]int{"": 100}),
+		ProbeRetryBackoff:      []time.Duration{10 * time.Millisecond},
+		ProbeRecoveryIntervals: []time.Duration{time.Hour},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d.EnsureWatching(gvr)
+	d.mu.RLock()
+	r := d.probeRetries[gvr]
+	d.mu.RUnlock()
+	<-r.done
+	if !ownerLive(d, r) {
+		t.Fatal("no recovery after the budget ran out")
+	}
+	d.Stop()
+	deadline := time.Now().Add(time.Second)
+	for ownerLive(d, r) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ownerLive(d, r) {
+		t.Fatal("the recovery outlived Stop")
+	}
+}
+
+func ownerLive(d *DynamicResourceCache, r *probeRetry) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return r.owned
+}
+
+// A cluster-wide watch started on a failed check is refused, under the same
+// lock that would replace them, while namespace watches exist.
+func TestFailedOpenWatchKeepsNamespaceWatches(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: rateLimitedLists(gvr, []string{"", "a"}, nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	if err := d.startWatching(gvr, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.startWatchingScope(gvr, "", true); !errors.Is(err, errNamespaceWatchesKept) {
+		t.Fatalf("failed-open cluster-wide watch = %v", err)
+	}
+	if !d.HasCoveringInformer(gvr, "a") || d.HasCoveringInformer(gvr, "elsewhere") {
+		t.Fatal("the namespace watch was replaced")
+	}
+	if err := d.startWatchingScope(gvr, "", false); err != nil || !d.HasCoveringInformer(gvr, "elsewhere") {
+		t.Fatalf("a passed cluster-wide check must still replace namespace watches: %v", err)
+	}
+}
+
+// A recovery walk whose cluster-wide check fails rather than passes (here a
+// 503 from a proxy) must not replace namespace watches that work with a
+// cluster-wide one.
+func TestProbeRecoveryKeepsNamespaceWatchesOnAFailedCheck(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	var mu sync.Mutex
+	clusterCalls := 0
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if action.GetNamespace() != "" {
+			return false, nil, nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		clusterCalls++
+		if clusterCalls <= 2 {
+			return true, nil, errClientRateLimited
+		}
+		return true, nil, apierrors.NewServiceUnavailable("proxy unavailable")
+	})
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:          dyn,
+		ProbeRetryBackoff:      []time.Duration{50 * time.Millisecond},
+		ProbeRecoveryIntervals: []time.Duration{10 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	_ = d.EnsureWatching(gvr)
+	// A read started a namespace watch before the background retries ran.
+	if err := d.startWatching(gvr, "a"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		calls := clusterCalls
+		mu.Unlock()
+		if calls >= 5 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	calls := clusterCalls
+	mu.Unlock()
+	if calls < 5 {
+		t.Fatalf("recovery made %d cluster-wide checks, so the failed ones were never tried", calls)
+	}
+	d.mu.RLock()
+	_, clusterWide := d.informers[informerKey{gvr: gvr}]
+	d.mu.RUnlock()
+	if clusterWide || !d.HasCoveringInformer(gvr, "a") {
+		t.Fatalf("a failed cluster-wide check replaced the namespace watch: clusterWide=%v", clusterWide)
+	}
+}
+
+// A retained credential rejection is never reported as an unfinished check,
+// whatever the retry record still holds.
+func TestObservationKeepsCredentialRejection(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: rateLimitedLists(gvr, nil, nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	d.retainObservation(gvr, DynamicObservationDenied, "credentials_rejected", false)
+	d.mu.Lock()
+	d.probeRetries[gvr] = &probeRetry{whole: true}
+	d.mu.Unlock()
+	if o := d.Observation(gvr); o.ReasonCode != "credentials_rejected" {
+		t.Fatalf("observation = %+v", o)
+	}
+}
+
+// A new gap on a record whose owner can no longer take it, because the owner
+// ended or met rejected credentials, gets a fresh owner that also takes over
+// every gap still outstanding.
+func TestProbeRetryRearmTakesOverOutstandingGaps(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	for _, tc := range []struct {
+		name            string
+		owned, rejected bool
+	}{
+		{"owner ended", false, false},
+		{"owner rejected but not yet released", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := NewDynamicResourceCache(DynamicCacheConfig{
+				DynamicClient:          rateLimitedLists(gvr, nil, map[string]int{"b": 100, "c": 100, "d": 100}),
+				NamespaceFallbacks:     []string{"a", "b", "c"},
+				ProbeRetryBackoff:      []time.Duration{time.Hour},
+				ProbeRecoveryIntervals: []time.Duration{time.Hour},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.Stop)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			prev := &probeRetry{unanswered: []string{"b", "c"}, fullWalk: true, owned: tc.owned, rejected: tc.rejected, answered: map[string]time.Time{}, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+			d.mu.Lock()
+			d.probeRetries[gvr] = prev
+			d.mu.Unlock()
+			d.noteWalk(gvr, probeOutcome{unanswered: []string{"d"}, startedAt: time.Now()})
+			d.mu.RLock()
+			r := d.probeRetries[gvr]
+			gaps := slices.Sorted(slices.Values(r.unanswered))
+			live := r.owned && !r.rejected
+			d.mu.RUnlock()
+			if r == prev || !live || !slices.Equal(gaps, []string{"b", "c", "d"}) {
+				t.Fatalf("re-armed=%v live=%v gaps=%v, want a fresh owner of b, c and d", r != prev, live, gaps)
+			}
+			if ctx.Err() == nil {
+				t.Fatal("the replaced record's owner was not ended")
+			}
+		})
 	}
 }
