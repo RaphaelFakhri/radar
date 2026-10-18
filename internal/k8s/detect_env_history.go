@@ -1033,7 +1033,7 @@ func findStaleSecretEnvChecksUpTo(cache *ResourceCache, pods []*corev1.Pod, even
 				out = append(out, newStaleSecretEnvCheck(pod, container.Name, env.Name, "secretKeyRef", "", ref.Name, ref.Key, startedAt, changedAt))
 				containerChecks++
 			}
-			for _, envFrom := range container.EnvFrom {
+			for i, envFrom := range container.EnvFrom {
 				if containerChecks >= perContainer {
 					break
 				}
@@ -1045,8 +1045,7 @@ func findStaleSecretEnvChecksUpTo(cache *ResourceCache, pods []*corev1.Pod, even
 					if containerChecks >= perContainer {
 						break
 					}
-					// An explicit env entry of the same name overrides envFrom.
-					if !startedAt.Before(change.changedAt) || containerDeclaresEnv(container, envFrom.Prefix+change.key) {
+					if !startedAt.Before(change.changedAt) || envFromKeyOverridden(cache, pod.Namespace, container, i, envFrom.Prefix+change.key) {
 						continue
 					}
 					out = append(out, newStaleSecretEnvCheck(pod, container.Name, envFrom.Prefix+change.key, "envFrom", envFrom.Prefix, envFrom.SecretRef.Name, change.key, startedAt, change.changedAt))
@@ -1127,10 +1126,33 @@ func findStaleSecretEnvChecksWithManagedFieldsUpTo(cache *ResourceCache, pods []
 	return out
 }
 
-func containerDeclaresEnv(container corev1.Container, name string) bool {
+// envFromKeyOverridden reports whether the env var that container.EnvFrom[index]
+// supplies is set by something that wins over it: an explicit env entry, or a
+// later envFrom source that currently has the same key.
+func envFromKeyOverridden(cache *ResourceCache, namespace string, container corev1.Container, index int, variable string) bool {
 	for _, env := range container.Env {
-		if env.Name == name {
+		if env.Name == variable {
 			return true
+		}
+	}
+	for _, later := range container.EnvFrom[index+1:] {
+		key, ok := strings.CutPrefix(variable, later.Prefix)
+		if !ok || key == "" {
+			continue
+		}
+		switch {
+		case later.SecretRef != nil && cache.Secrets() != nil:
+			if secret, err := cache.Secrets().Secrets(namespace).Get(later.SecretRef.Name); err == nil && secret != nil {
+				if _, found := secret.Data[key]; found {
+					return true
+				}
+			}
+		case later.ConfigMapRef != nil && cache.ConfigMaps() != nil:
+			if cm, err := cache.ConfigMaps().ConfigMaps(namespace).Get(later.ConfigMapRef.Name); err == nil && cm != nil {
+				if _, found := cm.Data[key]; found {
+					return true
+				}
+			}
 		}
 	}
 	return false

@@ -163,6 +163,28 @@ func TestFindStaleEnvConfigMap(t *testing.T) {
 		}
 	})
 
+	t.Run("envFrom key shadowed by a later source or held in binaryData is not flagged", func(t *testing.T) {
+		withBinary := configMap.DeepCopy()
+		withBinary.BinaryData = map[string][]byte{"TRUSTSTORE": []byte{1}}
+		overrides := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "overrides", Namespace: "shop"}, Data: map[string]string{"REGION": "us"}}
+		pod := staleSecretEnvPod("catalog", startedAt, true)
+		pod.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{
+			{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "settings"}}},
+			{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "overrides"}}},
+		}
+		withBinary.Data["MODE"] = "a"
+		cache := envHistoryTestCache(t, pod, withBinary, overrides)
+		setEnvHistoryEvents(t,
+			envHistoryEvent(changedAt, "ConfigMap", "shop", "settings", "data.REGION", "eu", "ap"),
+			envHistoryEvent(changedAt.Add(time.Second), "ConfigMap", "shop", "settings", "data.MODE", "b", "a"),
+			envHistoryEvent(changedAt.Add(2*time.Second), "ConfigMap", "shop", "settings", "binaryData (modified keys)", []string{"TRUSTSTORE"}, []string{"TRUSTSTORE"}),
+		)
+		facts := FindStaleEnvConsumersOf(context.Background(), cache, "ConfigMap", "shop", "settings")
+		if len(facts) != 1 || facts[0].Env != "MODE" || facts[0].ReferenceKind != "envFrom" {
+			t.Fatalf("want only MODE flagged: %+v", facts)
+		}
+	})
+
 	t.Run("added key is not flagged", func(t *testing.T) {
 		pod := staleSecretEnvPod("catalog", startedAt, true, configMapKeyEnv("REGION", "region"))
 		cache := envHistoryTestCache(t, pod, configMap.DeepCopy())

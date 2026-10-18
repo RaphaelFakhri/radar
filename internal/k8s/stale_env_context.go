@@ -128,6 +128,9 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 		return nil
 	}
 	sources := make(map[envresolve.SourceID]envresolve.SourceData)
+	// binaryData keys never become env vars; their diffs share the
+	// "(modified keys)" path suffix with data, so they are skipped by name.
+	binaryKeys := make(map[string]map[string][]byte)
 	var consumers []*corev1.Pod
 	var names []string
 	for _, pod := range pods {
@@ -146,14 +149,12 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 					sources[id] = envresolve.SourceData{}
 					continue
 				}
-				keys := make([]string, 0, len(cm.Data)+len(cm.BinaryData))
+				keys := make([]string, 0, len(cm.Data))
 				for key := range cm.Data {
 					keys = append(keys, key)
 				}
-				for key := range cm.BinaryData {
-					keys = append(keys, key)
-				}
 				sources[id] = envresolve.SourceData{Kind: "ConfigMap", Name: name, Keys: keys}
+				binaryKeys[name] = cm.BinaryData
 				names = append(names, name)
 			}
 		}
@@ -206,7 +207,7 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 					out = append(out, newStaleConfigMapEnvFact(pod, container.Name, env.Name, "configMapKeyRef", ref.Name, ref.Key, startedAt, change.changedAt))
 				}
 			}
-			for _, from := range container.EnvFrom {
+			for i, from := range container.EnvFrom {
 				if from.ConfigMapRef == nil {
 					continue
 				}
@@ -214,8 +215,11 @@ func findStaleConfigMapEnv(ctx context.Context, cache *ResourceCache, namespace 
 					if identity.kind != "ConfigMap" || identity.name != from.ConfigMapRef.Name || !stale(change, startedAt) {
 						continue
 					}
+					if _, binary := binaryKeys[identity.name][identity.key]; binary {
+						continue
+					}
 					variable := from.Prefix + identity.key
-					if len(validation.IsEnvVarName(variable)) != 0 || containerDeclaresEnv(container, variable) {
+					if len(validation.IsEnvVarName(variable)) != 0 || envFromKeyOverridden(cache, namespace, container, i, variable) {
 						continue
 					}
 					out = append(out, newStaleConfigMapEnvFact(pod, container.Name, variable, "envFrom", from.ConfigMapRef.Name, identity.key, startedAt, change.changedAt))
