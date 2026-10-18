@@ -12,6 +12,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Pushes to main rerun every Go test instead of reusing results cached from an
+# earlier run; PRs keep the cache. Go applies -count only to go test.
+env:
+  GOFLAGS: ${{ github.event_name == 'push' && '-count=1' || '' }}
+
 jobs:
   # Decides which jobs a PR needs from every file it changes, not only those in
   # the latest push. Pushes to main, and any PR touching .github/,
@@ -177,7 +182,15 @@ jobs:
 
       # internal/server runs in its own job; it is the slowest package by far.
       # The assignment fails the step if go list does; an argument would not.
+      # The PostgreSQL tests (internal/timeline, internal/k8s) run here too,
+      # against the service above.
       - name: Run tests
+        env:
+          RADAR_TEST_POSTGRES_DSN: postgres://radar:radar@localhost:5432/radar?sslmode=disable
+          # Turns a missing DSN into a failure instead of a silent skip: without
+          # it, losing the service or the env block above would leave the whole
+          # PostgreSQL backend untested while this job still reported green.
+          RADAR_REQUIRE_POSTGRES_TESTS: "1"
         run: |
           pkgs=$(go list ./...)
           go test $(grep -vx 'github.com/skyhook-io/radar/internal/server' <<<"$pkgs")
@@ -186,15 +199,6 @@ jobs:
         env:
           RADAR_TEST_PROMTOOL_IMAGE: prom/prometheus:v3.5.0
         run: go test ./internal/prometheus -run '^(TestPVCScopePromQL|TestCNPGDiskGrowthPromQL)$' -count=1
-
-      - name: Run PostgreSQL integration tests
-        env:
-          RADAR_TEST_POSTGRES_DSN: postgres://radar:radar@localhost:5432/radar?sslmode=disable
-          # Turns a missing DSN into a failure instead of a silent skip: without
-          # it, losing the service or the env block above would leave the whole
-          # PostgreSQL backend untested while this job still reported green.
-          RADAR_REQUIRE_POSTGRES_TESTS: "1"
-        run: go test ./internal/timeline ./internal/k8s
 
       - name: Build
         run: go build -o explorer ./cmd/explorer
