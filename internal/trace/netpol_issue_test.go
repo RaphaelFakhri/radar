@@ -101,12 +101,13 @@ func TestServiceTraceShowsNetworkPolicyIssueOnce(t *testing.T) {
 
 // Traffic that got through to the pods settles the Service hop's policy issues
 // (one per policy) into a single note, as it does the Pods hop's per-port
-// prediction; a dropped data path keeps them.
+// Traffic that got through to the pods settles a lone deny-all issue on the
+// Service hop, as it does the Pods hop's per-port prediction; a dropped data
+// path keeps it.
 func TestReconcilePolicyDowngradesServiceDenyAll(t *testing.T) {
 	trace := func(dataOK bool) *Trace {
 		svc := Hop{Resource: ResourceRef{Kind: "Service", Namespace: "ns", Name: "rec"}, Edge: "entry:Service", Findings: []Finding{
-			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress - Would block all inbound traffic (default-deny)"},
-			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress - Would block all inbound traffic (deny-rec)"},
+			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress - Would block all inbound traffic"},
 		}}
 		pods := wouldDenyHop([]probe.Result{
 			{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Port: 80, Path: probe.PathData, OK: dataOK},
@@ -118,15 +119,28 @@ func TestReconcilePolicyDowngradesServiceDenyAll(t *testing.T) {
 	tr := trace(true)
 	reconcilePolicyFindings(tr)
 	if got := tr.Downstream[0].Findings; len(got) != 1 || got[0].Severity != SeverityInfo || !strings.Contains(got[0].Message, "Traffic got through") {
-		t.Errorf("Service hop findings = %+v, want one info note after traffic got through", got)
+		t.Errorf("Service hop findings = %+v, want the info note after traffic got through", got)
 	}
 
 	tr = trace(false)
 	reconcilePolicyFindings(tr)
-	for _, f := range tr.Downstream[0].Findings {
-		if f.Severity != SeverityWarning {
-			t.Errorf("Service hop finding %+v, want both warnings kept when the data path was dropped", f)
-		}
+	if f := tr.Downstream[0].Findings[0]; f.Severity != SeverityWarning {
+		t.Errorf("Service hop finding %+v, want the warning kept when the data path was dropped", f)
+	}
+}
+
+// A TCP probe that got through on a port says nothing about a UDP prediction
+// on the same port number.
+func TestReconcilePolicyKeepsUDPPrediction(t *testing.T) {
+	pods := wouldDenyHop([]probe.Result{
+		{Layer: probe.LayerTCP, Target: "10.0.0.5:53", Port: 53, Path: probe.PathData, OK: true},
+	}, false)
+	pods.Meta["policyDenyPort"] = int32(53)
+	pods.Meta["policyProtocol"] = "UDP"
+	tr := &Trace{Downstream: []Hop{pods}}
+	reconcilePolicyFindings(tr)
+	if f := tr.Downstream[0].Findings[findingIndexByCode(tr.Downstream[0].Findings, codePolicyWouldDeny)]; f.Severity != SeverityWarning {
+		t.Errorf("UDP prediction = %s, want it kept after a TCP pass", f.Severity)
 	}
 }
 
@@ -274,10 +288,9 @@ func TestReconcilePolicySettlesDenyAllWithoutAPinnedPort(t *testing.T) {
 }
 
 // Policies that split a Service's pods each add a deny-all issue to the
-// Service hop. A pass through the Service can't say which pod answered, and a
-// probe that reached only one pod doesn't disprove the other pod's policy, so
-// neither settles them.
-func TestDenyAllSplitAcrossPodsNeedsEveryPodReached(t *testing.T) {
+// Service hop. A pass through the Service can't say which pod answered, and
+// Radar's probes reach only a sample of the pods, so neither settles them.
+func TestDenyAllSplitAcrossPodsKeepsIssues(t *testing.T) {
 	svcHop := func() Hop {
 		return Hop{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "rec"}, Edge: "entry:Service", Findings: []Finding{
 			{Code: k8s.NetworkPolicyDenyAllIngressFingerprint, Severity: SeverityWarning, Message: "NetworkPolicy denies all ingress (deny-a)"},
@@ -294,12 +307,13 @@ func TestDenyAllSplitAcrossPodsNeedsEveryPodReached(t *testing.T) {
 		return n
 	}
 
-	// Radar's own probes: one pod reached, the other dropped, then both reached.
+	// Radar's own probes: one pod reached and the other dropped, then both
+	// probed pods reached (other pods may be outside the sample).
 	for _, tt := range []struct {
 		name   string
 		podBOK bool
 		want   int
-	}{{"one pod dropped", false, 2}, {"both pods reached", true, 0}} {
+	}{{"one pod dropped", false, 2}, {"both probed pods reached", true, 2}} {
 		pods := Hop{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods", Probes: []probe.Result{
 			{Layer: probe.LayerTCP, Target: "10.0.0.5:80", Port: 80, Path: probe.PathData, OK: true},
 			{Layer: probe.LayerTCP, Target: "10.0.0.6:80", Port: 80, Path: probe.PathData, OK: tt.podBOK},
