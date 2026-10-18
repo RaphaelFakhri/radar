@@ -2,6 +2,8 @@ package k8score
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,13 +12,16 @@ import (
 )
 
 const (
-	// DefaultRequestDeadline bounds one non-streaming GET (a single object, or
-	// one page of a LIST) from send to the end of the body. It is twice the
-	// apiserver's default --request-timeout for non-long-running requests.
-	// That timeout bounds the server's handling, not delivery, so a response
-	// a slow or buffering path takes longer than this to deliver is cut and
-	// retried: an accepted tradeoff against a request that never ends.
-	DefaultRequestDeadline = 2 * time.Minute
+	// DefaultRequestIdleTimeout ends a read when no response bytes have
+	// arrived for this long. A transfer that keeps delivering bytes, however
+	// slowly, is never cut.
+	DefaultRequestIdleTimeout = time.Minute
+	// DefaultResponseHeaderTimeout bounds the wait for response headers: the
+	// apiserver can take a while to start answering a large LIST.
+	DefaultResponseHeaderTimeout = 3 * time.Minute
+	// DefaultRequestCeiling bounds a whole non-watch read, only to stop a
+	// request that keeps trickling bytes forever.
+	DefaultRequestCeiling = 15 * time.Minute
 	// DefaultWatchDeadlineGrace is added to a watch's timeoutSeconds. The
 	// apiserver ends such a watch itself after timeoutSeconds, so the client
 	// deadline only fires when the connection died without a reset — for
@@ -24,76 +29,129 @@ const (
 	DefaultWatchDeadlineGrace = time.Minute
 )
 
-// WrapRequestDeadlines returns a rest.Config WrapTransport that gives
-// informer-style GETs a client-side deadline. serverPath is the path part of
+// WrapRequestDeadlines returns a rest.Config WrapTransport that ends
+// informer-style GETs whose connection stalls. serverPath is the path part of
 // the config's Host (for example "/k8s/clusters/c-1" behind a proxy, usually
 // empty); it is stripped before a request path is classified, so a prefix that
-// looks like an API path can't change the classification.
+// looks like an API path can't change the classification. idle is the idle
+// timeout (see DefaultRequestIdleTimeout); 0 or less returns the transport
+// unchanged.
 //
 // rest.Config.Timeout cannot do this job: it becomes http.Client.Timeout and
 // would also end every long-lived watch, log stream and exec session. Without
-// any deadline, a LIST whose connection stalls without a TCP reset blocks the
+// any bound, a LIST whose connection stalls without a TCP reset blocks the
 // reflector forever and its store silently stops updating.
 //
-// Each HTTP attempt gets its own deadline; client-go may retry an attempt.
-// Exempt: non-GET requests, protocol upgrades (exec/attach/port-forward),
-// follow=true log streams, the apiserver's long-running subresources (log,
-// exec, attach, portforward, proxy), and watches without timeoutSeconds.
-func WrapRequestDeadlines(serverPath string) func(http.RoundTripper) http.RoundTripper {
+// A non-watch GET ends when its headers take longer than
+// DefaultResponseHeaderTimeout (or idle, if longer), when no body bytes arrive
+// for idle, or after DefaultRequestCeiling in total. A watch with
+// timeoutSeconds ends at timeoutSeconds plus DefaultWatchDeadlineGrace; it is
+// never idle-timed, because a healthy watch can go quiet. Each HTTP attempt
+// gets its own bounds; client-go may retry an attempt. Exempt: non-GET
+// requests, protocol upgrades (exec/attach/port-forward), follow=true log
+// streams, the apiserver's long-running subresources (log, exec, attach,
+// portforward, proxy), and watches without timeoutSeconds.
+func WrapRequestDeadlines(serverPath string, idle time.Duration) func(http.RoundTripper) http.RoundTripper {
 	serverPath = strings.TrimRight(serverPath, "/")
 	return func(rt http.RoundTripper) http.RoundTripper {
+		if idle <= 0 {
+			return rt
+		}
 		return &requestDeadlineRoundTripper{
-			next:       rt,
-			serverPath: serverPath,
-			deadline:   DefaultRequestDeadline,
-			watchGrace: DefaultWatchDeadlineGrace,
+			next:          rt,
+			serverPath:    serverPath,
+			idle:          idle,
+			headerTimeout: max(DefaultResponseHeaderTimeout, idle),
+			ceiling:       max(DefaultRequestCeiling, idle),
+			watchGrace:    DefaultWatchDeadlineGrace,
 		}
 	}
 }
 
 type requestDeadlineRoundTripper struct {
-	next       http.RoundTripper
-	serverPath string
-	deadline   time.Duration
-	watchGrace time.Duration
+	next          http.RoundTripper
+	serverPath    string
+	idle          time.Duration
+	headerTimeout time.Duration
+	ceiling       time.Duration
+	watchGrace    time.Duration
 }
 
+// errRequestStalled is the cancellation cause, and the error a caller sees,
+// when a read is ended for receiving no data.
+var errRequestStalled = errors.New("request stalled")
+
 func (t *requestDeadlineRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	d := t.deadlineFor(req)
-	if d <= 0 {
+	bounded, watchDeadline := t.classify(req)
+	switch {
+	case !bounded:
 		return t.next.RoundTrip(req)
+	case watchDeadline > 0:
+		ctx, cancel := context.WithTimeout(req.Context(), watchDeadline)
+		resp, err := t.next.RoundTrip(req.WithContext(ctx))
+		if err != nil {
+			cancel()
+			return resp, err
+		}
+		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+		return resp, nil
 	}
-	ctx, cancel := context.WithTimeout(req.Context(), d)
+
+	ceilingCtx, cancelCeiling := context.WithTimeout(req.Context(), t.ceiling)
+	ctx, cancel := context.WithCancelCause(ceilingCtx)
+	stop := func() {
+		cancel(nil)
+		cancelCeiling()
+	}
+	headerTimer := time.AfterFunc(t.headerTimeout, func() {
+		cancel(fmt.Errorf("%w: no response headers within %s", errRequestStalled, t.headerTimeout))
+	})
 	resp, err := t.next.RoundTrip(req.WithContext(ctx))
+	headerTimer.Stop()
 	if err != nil {
-		cancel()
+		err = stallCause(ctx, err)
+		stop()
 		return resp, err
 	}
-	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	body := &idleTimeoutBody{ReadCloser: resp.Body, ctx: ctx, idle: t.idle, stop: stop}
+	body.timer = time.AfterFunc(t.idle, func() {
+		cancel(fmt.Errorf("%w: no data received for %s", errRequestStalled, t.idle))
+	})
+	resp.Body = body
 	return resp, nil
 }
 
-// deadlineFor returns the deadline for req, or 0 when it must stay unbounded.
-func (t *requestDeadlineRoundTripper) deadlineFor(req *http.Request) time.Duration {
+// stallCause replaces the bare context error the HTTP stack reports with the
+// stall that caused it, so logs and diagnostics say why the read ended.
+func stallCause(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); errors.Is(cause, errRequestStalled) {
+		return fmt.Errorf("%w (%v)", cause, err)
+	}
+	return err
+}
+
+// classify reports whether req gets bounds at all and, for a watch, its total
+// deadline (0 for every other bounded read).
+func (t *requestDeadlineRoundTripper) classify(req *http.Request) (bounded bool, watchDeadline time.Duration) {
 	if req.Method != http.MethodGet || req.Header.Get("Upgrade") != "" {
-		return 0
+		return false, 0
 	}
 	q := req.URL.Query()
 	if q.Get("follow") == "true" {
-		return 0
+		return false, 0
 	}
 	subresource, legacyWatch := apiPathSubresource(strings.TrimPrefix(req.URL.Path, t.serverPath))
 	if longRunningSubresources[subresource] {
-		return 0
+		return false, 0
 	}
 	if w := q.Get("watch"); w == "true" || w == "1" || legacyWatch {
 		secs, err := strconv.ParseInt(q.Get("timeoutSeconds"), 10, 64)
 		if err != nil || secs <= 0 {
-			return 0
+			return false, 0
 		}
-		return time.Duration(secs)*time.Second + t.watchGrace
+		return true, time.Duration(secs)*time.Second + t.watchGrace
 	}
-	return t.deadline
+	return true, 0
 }
 
 // longRunningSubresources are the subresources the apiserver itself treats as
@@ -114,6 +172,34 @@ type cancelOnCloseBody struct {
 func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
+	return err
+}
+
+// idleTimeoutBody restarts the idle timer each time a Read delivers bytes, so
+// only a body that stops delivering is cancelled.
+type idleTimeoutBody struct {
+	io.ReadCloser
+	ctx   context.Context
+	idle  time.Duration
+	timer *time.Timer
+	stop  func()
+}
+
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	if err != nil && err != io.EOF {
+		err = stallCause(b.ctx, err)
+	}
+	return n, err
+}
+
+func (b *idleTimeoutBody) Close() error {
+	b.timer.Stop()
+	err := b.ReadCloser.Close()
+	b.stop()
 	return err
 }
 

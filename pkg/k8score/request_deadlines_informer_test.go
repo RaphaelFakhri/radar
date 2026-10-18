@@ -94,7 +94,7 @@ func waitUntil(t *testing.T, timeout time.Duration, what string, cond func() boo
 	}
 }
 
-// A real reflector whose LIST stalls recovers once the request deadline ends
+// A real reflector whose LIST stalls recovers once the stall timeout ends
 // that LIST: the reflector backs off, lists again, and the store catches up.
 // Without a deadline the same stall would block the reflector for good.
 func TestRequestDeadlines_StalledInformerListRecovers(t *testing.T) {
@@ -107,7 +107,7 @@ func TestRequestDeadlines_StalledInformerListRecovers(t *testing.T) {
 			srv := httptest.NewServer(api)
 			cfg := &rest.Config{Host: srv.URL, QPS: 100, Burst: 200}
 			cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
-				return &requestDeadlineRoundTripper{next: rt, deadline: time.Second, watchGrace: time.Second}
+				return &requestDeadlineRoundTripper{next: rt, idle: time.Second, headerTimeout: time.Second, ceiling: time.Minute, watchGrace: time.Second}
 			})
 			rc, err := NewResourceCache(CacheConfig{
 				Client:         kubernetes.NewForConfigOrDie(cfg),

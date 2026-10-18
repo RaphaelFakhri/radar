@@ -16,7 +16,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-func TestRequestDeadlineFor(t *testing.T) {
+// read marks a request bounded by the idle, header and ceiling timeouts.
+const read = time.Duration(-1)
+
+func TestRequestDeadlineClassify(t *testing.T) {
 	cases := []struct {
 		name   string
 		method string
@@ -25,19 +28,19 @@ func TestRequestDeadlineFor(t *testing.T) {
 		want   time.Duration
 		server string // path prefix of the configured server URL
 	}{
-		{"cluster list", "GET", "/api/v1/secrets?resourceVersion=5", nil, 2 * time.Minute, ""},
-		{"namespaced list page", "GET", "/apis/apps/v1/namespaces/a/deployments?limit=500&continue=x", nil, 2 * time.Minute, ""},
-		{"single get", "GET", "/api/v1/namespaces/a/secrets/db", nil, 2 * time.Minute, ""},
-		{"namespace object", "GET", "/api/v1/namespaces/log", nil, 2 * time.Minute, ""},
-		{"namespace status", "GET", "/api/v1/namespaces/a/status", nil, 2 * time.Minute, ""},
-		{"object named log", "GET", "/api/v1/namespaces/a/configmaps/log", nil, 2 * time.Minute, ""},
-		{"crd resource named proxy", "GET", "/apis/example.com/v1/namespaces/a/proxy", nil, 2 * time.Minute, ""},
+		{"cluster list", "GET", "/api/v1/secrets?resourceVersion=5", nil, read, ""},
+		{"namespaced list page", "GET", "/apis/apps/v1/namespaces/a/deployments?limit=500&continue=x", nil, read, ""},
+		{"single get", "GET", "/api/v1/namespaces/a/secrets/db", nil, read, ""},
+		{"namespace object", "GET", "/api/v1/namespaces/log", nil, read, ""},
+		{"namespace status", "GET", "/api/v1/namespaces/a/status", nil, read, ""},
+		{"object named log", "GET", "/api/v1/namespaces/a/configmaps/log", nil, read, ""},
+		{"crd resource named proxy", "GET", "/apis/example.com/v1/namespaces/a/proxy", nil, read, ""},
 		{"proxied server prefix", "GET", "/k8s/clusters/c-1/api/v1/namespaces/a/pods/p/log", nil, 0, "/k8s/clusters/c-1"},
-		{"discovery", "GET", "/version", nil, 2 * time.Minute, ""},
+		{"discovery", "GET", "/version", nil, read, ""},
 		{"API-looking server prefix, log", "GET", "/api/v1/clusters/c-1/api/v1/namespaces/a/pods/p/log", nil, 0, "/api/v1/clusters/c-1"},
 		{"API-looking server prefix, proxy tail", "GET", "/api/v1/clusters/c-1/api/v1/namespaces/a/services/prom:9090/proxy/api/v1/query", nil, 0, "/api/v1/clusters/c-1"},
-		{"server prefix ending in proxy, list", "GET", "/api/v1/clusters/c-1/proxy/api/v1/secrets", nil, 2 * time.Minute, "/api/v1/clusters/c-1/proxy/"},
-		{"prefix-less list under apis", "GET", "/apis/apps/v1beta2/deployments", nil, 2 * time.Minute, ""},
+		{"server prefix ending in proxy, list", "GET", "/api/v1/clusters/c-1/proxy/api/v1/secrets", nil, read, "/api/v1/clusters/c-1/proxy/"},
+		{"prefix-less list under apis", "GET", "/apis/apps/v1beta2/deployments", nil, read, ""},
 		{"api path inside a proxied tail", "GET", "/api/v1/namespaces/m/services/prom:9090/proxy/api/v1/query", nil, 0, ""},
 		{"watch with timeout", "GET", "/api/v1/secrets?watch=true&timeoutSeconds=300", nil, 6 * time.Minute, ""},
 		{"watch=1", "GET", "/api/v1/secrets?watch=1&timeoutSeconds=10", nil, 70 * time.Second, ""},
@@ -59,84 +62,16 @@ func TestRequestDeadlineFor(t *testing.T) {
 			for k, v := range tc.header {
 				req.Header[k] = v
 			}
-			rt := WrapRequestDeadlines(tc.server)(nil).(*requestDeadlineRoundTripper)
-			if got := rt.deadlineFor(req); got != tc.want {
-				t.Fatalf("deadlineFor(%s %s) = %v, want %v", tc.method, tc.url, got, tc.want)
+			rt := WrapRequestDeadlines(tc.server, time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+			bounded, watch := rt.classify(req)
+			got := watch
+			if bounded && watch == 0 {
+				got = read
+			}
+			if got != tc.want {
+				t.Fatalf("classify(%s %s) = %v, want %v", tc.method, tc.url, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestRequestDeadlines_EndStalledRequests(t *testing.T) {
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/secrets": // stalls before sending headers
-			select {
-			case <-r.Context().Done():
-			case <-release:
-			}
-		case "/api/v1/configmaps": // sends headers, then stalls mid-body
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, `{"kind":`)
-			w.(http.Flusher).Flush()
-			select {
-			case <-r.Context().Done():
-			case <-release:
-			}
-		case "/api/v1/namespaces/a/pods/p/log": // long-running: must not be cut
-			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
-			time.Sleep(300 * time.Millisecond)
-			_, _ = io.WriteString(w, "done")
-		}
-	}))
-	defer srv.Close()
-	defer close(release)
-
-	client := &http.Client{Transport: &requestDeadlineRoundTripper{
-		next: http.DefaultTransport, deadline: 100 * time.Millisecond, watchGrace: time.Second,
-	}}
-
-	start := time.Now()
-	_, err := client.Get(srv.URL + "/api/v1/secrets")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("stalled LIST before headers: err = %v, want deadline exceeded", err)
-	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatal("deadline did not end the request promptly")
-	}
-
-	resp, err := client.Get(srv.URL + "/api/v1/configmaps")
-	if err != nil {
-		t.Fatalf("headers should arrive: %v", err)
-	}
-	_, err = io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("stalled body read: err = %v, want deadline exceeded", err)
-	}
-
-	resp, err = client.Get(srv.URL + "/api/v1/namespaces/a/pods/p/log")
-	if err != nil {
-		t.Fatalf("log request: %v", err)
-	}
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil || !strings.Contains(string(body), "done") {
-		t.Fatalf("log stream was cut: body=%q err=%v", body, err)
-	}
-
-	// A caller's shorter deadline still wins.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/secrets", nil)
-	start = time.Now()
-	if _, err := client.Do(req); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("caller deadline: err = %v", err)
-	}
-	if time.Since(start) > 90*time.Millisecond {
-		t.Fatal("caller's shorter deadline was not honored")
 	}
 }
 
@@ -170,8 +105,8 @@ func TestRequestDeadlines_PrefixedServerURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultServerUrlFor: %v", err)
 	}
-	rt := WrapRequestDeadlines(serverURL.Path)(http.DefaultTransport).(*requestDeadlineRoundTripper)
-	rt.deadline = 100 * time.Millisecond
+	rt := WrapRequestDeadlines(serverURL.Path, time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt.headerTimeout = 100 * time.Millisecond
 	cfg.Transport = rt
 	client := kubernetes.NewForConfigOrDie(cfg)
 
@@ -186,5 +121,167 @@ func TestRequestDeadlines_PrefixedServerURL(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Fatal("stalled LIST behind a prefixed server was not ended by the deadline")
+	}
+}
+
+// testRoundTripper is the production wrapper with short bounds.
+func testRoundTripper(idle, header, ceiling time.Duration) *requestDeadlineRoundTripper {
+	rt := WrapRequestDeadlines("", idle)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt.headerTimeout = header
+	rt.ceiling = ceiling
+	return rt
+}
+
+func TestRequestDeadlines_StallsEndSlowTransfersFinish(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hold := func() {
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}
+		switch r.URL.Path {
+		case "/api/v1/secrets": // never sends headers
+			hold()
+		case "/api/v1/configmaps": // headers and a first chunk, then nothing
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"kind":`)
+			w.(http.Flusher).Flush()
+			hold()
+		case "/api/v1/pods": // a slow transfer that keeps delivering bytes
+			w.WriteHeader(http.StatusOK)
+			for i := 0; i < 12; i++ {
+				_, _ = io.WriteString(w, "x")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		case "/api/v1/events": // trickles bytes forever
+			w.WriteHeader(http.StatusOK)
+			for {
+				_, _ = io.WriteString(w, "x")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	client := &http.Client{Transport: testRoundTripper(200*time.Millisecond, 300*time.Millisecond, 2*time.Second)}
+
+	t.Run("no headers ends at the header timeout", func(t *testing.T) {
+		start := time.Now()
+		_, err := client.Get(srv.URL + "/api/v1/secrets")
+		if !errors.Is(err, errRequestStalled) {
+			t.Fatalf("err = %v, want a stall", err)
+		}
+		if d := time.Since(start); d < 250*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("ended after %v, want about the 300ms header timeout", d)
+		}
+	})
+
+	t.Run("a body that stops ends at the idle timeout", func(t *testing.T) {
+		resp, err := client.Get(srv.URL + "/api/v1/configmaps")
+		if err != nil {
+			t.Fatalf("headers should arrive: %v", err)
+		}
+		start := time.Now()
+		_, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if !errors.Is(err, errRequestStalled) {
+			t.Fatalf("err = %v, want a stall", err)
+		}
+		if d := time.Since(start); d < 150*time.Millisecond || d > 2*time.Second {
+			t.Fatalf("ended after %v, want about the 200ms idle timeout", d)
+		}
+	})
+
+	t.Run("a slow transfer longer than the idle timeout is not cut", func(t *testing.T) {
+		start := time.Now()
+		resp, err := client.Get(srv.URL + "/api/v1/pods")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || len(body) != 12 {
+			t.Fatalf("slow transfer was cut: %d bytes, err=%v", len(body), err)
+		}
+		if d := time.Since(start); d < 400*time.Millisecond {
+			t.Fatalf("transfer took %v; the test needs it to outlast the idle and header timeouts", d)
+		}
+	})
+
+	t.Run("a transfer that never ends stops at the ceiling", func(t *testing.T) {
+		start := time.Now()
+		resp, err := client.Get(srv.URL + "/api/v1/events")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		_, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want the ceiling", err)
+		}
+		if d := time.Since(start); d < 1500*time.Millisecond || d > 4*time.Second {
+			t.Fatalf("ended after %v, want about the 2s ceiling", d)
+		}
+	})
+
+	t.Run("a caller's shorter deadline still wins", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/secrets", nil)
+		start := time.Now()
+		if _, err := client.Do(req); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v", err)
+		}
+		if time.Since(start) > 200*time.Millisecond {
+			t.Fatal("caller's shorter deadline was not honored")
+		}
+	})
+}
+
+// A quiet watch is healthy: it is bounded only by its timeoutSeconds plus
+// grace, never by the idle timeout.
+func TestRequestDeadlines_QuietWatchIsNotIdleTimed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+			_, _ = io.WriteString(w, "event")
+		}
+	}))
+	defer srv.Close()
+	client := &http.Client{Transport: testRoundTripper(100*time.Millisecond, 100*time.Millisecond, time.Second)}
+	resp, err := client.Get(srv.URL + "/api/v1/secrets?watch=true&timeoutSeconds=60")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || string(body) != "event" {
+		t.Fatalf("quiet watch was cut: body=%q err=%v", body, err)
+	}
+}
+
+func TestRequestDeadlines_ZeroIdleDisables(t *testing.T) {
+	base := http.DefaultTransport
+	if got := WrapRequestDeadlines("", 0)(base); got != base {
+		t.Fatalf("idle 0 must return the transport unchanged, got %T", got)
+	}
+	rt := WrapRequestDeadlines("", 5*time.Minute)(base).(*requestDeadlineRoundTripper)
+	if rt.headerTimeout != 5*time.Minute || rt.ceiling != DefaultRequestCeiling {
+		t.Fatalf("a long idle timeout must raise the header bound with it: header=%v ceiling=%v", rt.headerTimeout, rt.ceiling)
 	}
 }

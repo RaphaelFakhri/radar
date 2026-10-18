@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func newSharedKubernetesClients(config *rest.Config) (*sharedKubernetesClients, 
 	}
 	// Informer LISTs share this transport; without a per-request deadline a
 	// LIST that stalls without a TCP reset freezes that kind's cache.
-	clientConfig.Wrap(k8score.WrapRequestDeadlines(serverURL.Path))
+	clientConfig.Wrap(k8score.WrapRequestDeadlines(serverURL.Path, resolveRequestIdleTimeout(os.Getenv("RADAR_REQUEST_IDLE_TIMEOUT"))))
 	httpClient, err := rest.HTTPClientFor(clientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes HTTP client: %w", err)
@@ -457,4 +458,20 @@ func transitionConnectedToRuntimeAuthFailure(classification string) bool {
 	runtimeAuthRecoveryOwed.Store(true)
 	notifyConnectionChange(status)
 	return true
+}
+
+// resolveRequestIdleTimeout reads RADAR_REQUEST_IDLE_TIMEOUT: a Go duration
+// ("90s", "5m"), or "0" to turn the request bounds off entirely. Empty or
+// invalid keeps the default.
+func resolveRequestIdleTimeout(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return k8score.DefaultRequestIdleTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		log.Printf("[k8s] Ignoring RADAR_REQUEST_IDLE_TIMEOUT=%q: want a duration such as 90s, or 0 to disable; using %s", raw, k8score.DefaultRequestIdleTimeout)
+		return k8score.DefaultRequestIdleTimeout
+	}
+	return d
 }
