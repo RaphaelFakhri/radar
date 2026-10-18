@@ -606,7 +606,10 @@ func (d *DynamicResourceCache) trackListFailures(entry *informerEntry, key infor
 		entry.progress.heartbeat = true
 		entry.progress.onRecover = func() { d.restartInformer(key, informer) }
 	}
-	if err := informer.SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
+	if err := informer.SetWatchErrorHandler(func(r *cache.Reflector, err error) {
+		// Keep client-go's own logging of the failure: callers only ever see
+		// its classified cause.
+		cache.DefaultWatchErrorHandler(context.Background(), r, err)
 		d.mu.RLock()
 		live := d.informers[key]
 		d.mu.RUnlock()

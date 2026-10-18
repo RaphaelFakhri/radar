@@ -74,6 +74,16 @@ func classifyListFailure(err error) ListFailureCause {
 	return ListFailureOther
 }
 
+// errorForLog is err's text, capped for a log line.
+func errorForLog(err error) string {
+	const maxLen = 256
+	msg := err.Error()
+	if len(msg) > maxLen {
+		msg = msg[:maxLen] + "…"
+	}
+	return msg
+}
+
 // isListPhaseError reports an error from the list that opens each of the
 // reflector's list-and-watch cycles. Every other error reaching the watch
 // error handler (the watch failing to start) ends a cycle whose list
@@ -114,6 +124,7 @@ type listProgress struct {
 	sinceRV  string
 	lastFail time.Time
 	cause    ListFailureCause
+	lastErr  string // the latest failure's text, for logs only
 	probedOK bool
 	distrust bool
 	// probeOpened: a heartbeat opened the episode. The informer's resource
@@ -157,7 +168,7 @@ func (p *listProgress) observe(err error, now time.Time) {
 		p.probedOK, p.distrust = false, true
 	}
 	p.lastFail = now
-	p.cause = classifyListFailure(err)
+	p.cause, p.lastErr = classifyListFailure(err), errorForLog(err)
 }
 
 func (p *listProgress) closeLocked() {
@@ -230,7 +241,7 @@ func (p *listProgress) probeDone(err error, now time.Time) {
 	switch {
 	case p.since.IsZero() && err != nil && p.heartbeat:
 		p.since, p.sinceRV, p.lastFail, p.probeOpened = now, rv, now, true
-		p.cause = classifyListFailure(err)
+		p.cause, p.lastErr = classifyListFailure(err), errorForLog(err)
 	case p.since.IsZero():
 	case err == nil && p.probeOpened:
 		p.closeLocked()
@@ -239,7 +250,7 @@ func (p *listProgress) probeDone(err error, now time.Time) {
 		p.probedOK = true
 	default:
 		p.lastFail = now
-		p.cause = classifyListFailure(err)
+		p.cause, p.lastErr = classifyListFailure(err), errorForLog(err)
 	}
 	onRecover := p.onRecover
 	p.mu.Unlock()
@@ -275,8 +286,8 @@ func (p *listProgress) logTransition(f ListFailure, failing bool) {
 	if f.Stale {
 		state = "is stale"
 	}
-	log.Printf("WARNING: informer %s %s: its lists have failed since %s (%s); Radar no longer treats its cache as current",
-		p.label, state, f.Since.Format(time.RFC3339), f.Cause)
+	log.Printf("WARNING: informer %s %s: its lists have failed since %s (%s: %s); Radar no longer treats its cache as current",
+		p.label, state, f.Since.Format(time.RFC3339), f.Cause, p.lastErr)
 }
 
 // APIReachability follows whether Radar's requests reach the API server at
