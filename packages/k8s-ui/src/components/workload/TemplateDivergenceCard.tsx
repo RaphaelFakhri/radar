@@ -68,7 +68,7 @@ export function TemplateDivergenceCard({
           <p key={gap} className="text-theme-text-tertiary">{gap}</p>
         ))}
         <p className="text-theme-text-tertiary">
-          Admission webhooks, LimitRange defaults, an in-place resize or a direct edit can each cause this. Radar can&apos;t see which one did, and matching a Pod doesn&apos;t mean a source changed it.
+          An admission webhook, a LimitRange default, an in-place resize or a direct edit can cause this. Radar can&apos;t see which one did; a source listed here only matches this Pod.
         </p>
       </div>
     </section>
