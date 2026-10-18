@@ -288,7 +288,7 @@ func TestAdmissionBlocker_OnlyClaimsRecordedOrder(t *testing.T) {
 		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "web", quotaMsg, at)}}
 		attachIssueChangeCorrelation(context.Background(), &resp)
 		iss := resp.Issues[0]
-		want := "ResourceQuota compute was created at " + utc(at) + " and Deployment web was created at " + utc(at) + ", in the same second: Radar can't tell which changed last."
+		want := "ResourceQuota compute was created at " + utc(at) + " and Deployment web was created at " + utc(at) + ": Radar recorded both in the same second, so it can't tell which changed last."
 		if len(iss.CorrelatedChanges) != 2 || !strings.HasSuffix(iss.TimingSummary, want) {
 			t.Fatalf("same-second changes:\n got %q\nwant suffix %q", iss.TimingSummary, want)
 		}
@@ -411,6 +411,27 @@ func TestAdmissionBlocker_YoungStore(t *testing.T) {
 		}
 		if iss.IssueTiming != "started_at_resource_creation" {
 			t.Fatalf("timing changed without an order: %q", iss.IssueTiming)
+		}
+	})
+
+	t.Run("policy side unrecorded", func(t *testing.T) {
+		// The workload changed after Radar started; the quota has no record,
+		// which on a young store doesn't mean it didn't change.
+		initAdmissionCache(t)
+		store := initCorrelationStore(t)
+		timeline.SetObservationStartForTest(now.Add(-170 * time.Second))
+		scaleAt := now.Add(-20 * time.Second)
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: scaleAt, Kind: "Deployment", APIVersion: "apps/v1", Namespace: "shop", Name: "search", EventType: timeline.EventTypeUpdate,
+			Diff: &timeline.DiffInfo{Fields: []timeline.FieldChange{{Path: "spec.replicas", OldValue: int64(1), NewValue: int64(3)}}, Summary: "replicas 1→3"}})
+
+		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "search", kindMsg, scaleAt.Add(2*time.Second))}}
+		attachIssueChangeCorrelation(context.Background(), &resp)
+		iss := resp.Issues[0]
+		if len(iss.CorrelatedChanges) != 1 || iss.CorrelatedChanges[0].Kind != "Deployment" {
+			t.Fatalf("want the deployment ref, got %+v", iss.CorrelatedChanges)
+		}
+		if strings.Contains(iss.TimingSummary, "changed last") || strings.Contains(iss.TimingSummary, "no recorded change") {
+			t.Fatalf("absence claimed on a young store: %q", iss.TimingSummary)
 		}
 	})
 }
