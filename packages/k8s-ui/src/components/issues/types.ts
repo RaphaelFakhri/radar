@@ -201,6 +201,10 @@ export interface Issue {
   reason: string;
   message?: string;
   raw_message?: string;
+  /** 'radar' when `message` is Radar's own summary rather than text from
+   *  Kubernetes or a controller. Such a message is never shown as raw output;
+   *  the server writes a `cause` that stands without it. */
+  message_source?: 'radar';
   /** Parsed domain diagnosis: plain-English cause, suggested next step, and
    *  an optional structured one-click fix.
    *  Server-emitted (omitempty); empty for issues without a parser. */
@@ -283,6 +287,9 @@ export interface Issue {
    *  NEITHER correlation field was not checked — absence must not be read as
    *  "no changes". MCP-only, like correlated_changes. */
   no_recent_changes?: IssueNoRecentChanges;
+  /** The subject's change history in the window was larger than Radar reads,
+   *  so correlated_changes are leads, not its full history. MCP-only. */
+  correlated_changes_incomplete?: boolean;
 }
 
 /** subjectRef builds a deep-linkable ref for an issue's subject — the row's

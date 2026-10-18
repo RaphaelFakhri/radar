@@ -58,6 +58,7 @@ const (
 	CategoryPDBBlocksEvictions       Category = "pdb_blocks_evictions"
 	CategorySecretSyncFailed         Category = "secret_sync_failed"
 	CategoryServiceNoEndpoints       Category = "service_no_endpoints"
+	CategoryServiceMixedBackends     Category = "service_mixed_backends"
 	CategoryIngressBackendMissing    Category = "ingress_backend_missing"
 	CategoryIngressClassMissing      Category = "ingress_class_missing"
 	CategoryLoadBalancerPending      Category = "load_balancer_pending"
@@ -137,6 +138,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryPDBBlocksEvictions:       GroupConfiguration,
 	CategorySecretSyncFailed:         GroupConfiguration,
 	CategoryServiceNoEndpoints:       GroupNetworking,
+	CategoryServiceMixedBackends:     GroupNetworking,
 	CategoryIngressBackendMissing:    GroupNetworking,
 	CategoryIngressClassMissing:      GroupNetworking,
 	CategoryLoadBalancerPending:      GroupNetworking,
@@ -183,6 +185,9 @@ func GroupOf(c Category) CategoryGroup {
 	}
 	return GroupUnknown
 }
+
+// MessageSourceRadar marks an issue Message that Radar wrote.
+const MessageSourceRadar = "radar"
 
 type Scope string
 
@@ -335,6 +340,23 @@ type RecentChange struct {
 	ConsumedBy []string `json:"consumed_by,omitempty"`
 }
 
+// CreatedObjects is one run of plain creates in a namespace, listed compactly
+// instead of one RecentChange row each. A plain create row carries only the
+// object, its creation time and, for a ConfigMap, its consumers; its other
+// fields are constant (changeType and summary "add", change_category
+// lifecycle, rank_reason "resource create/delete for config or desired
+// state"). Each Objects line is "+<seconds after First>s Kind/name", with
+// " (used by Kind/name, ...)" appended when the row had consumed_by. A member's
+// timestamp is First plus its offset, in First's zone; its apiVersion is
+// APIVersions[Kind] (absent when the row had none).
+type CreatedObjects struct {
+	Namespace   string            `json:"namespace"`
+	First       string            `json:"first"`
+	Count       int               `json:"count"`
+	APIVersions map[string]string `json:"apiVersions,omitempty"`
+	Objects     []string          `json:"objects"`
+}
+
 type ClusterContext struct {
 	DNS *ClusterDNSContext `json:"dns,omitempty"`
 }
@@ -463,19 +485,28 @@ type Issue struct {
 	// RequiredReads describe the inventories behind a cross-resource finding.
 	// They are retained internally so cached and grouped projections can authorize it.
 	RequiredReads []EvidenceRead `json:"-"`
-	Severity      Severity       `json:"severity"`
-	Source        Source         `json:"source"`
-	Category      Category       `json:"category"`
-	CategoryGroup CategoryGroup  `json:"category_group"`
-	ID            string         `json:"id"`
-	GroupingScope Scope          `json:"grouping_scope"`
-	Kind          string         `json:"kind"`
-	Group         string         `json:"group,omitempty"`
-	Namespace     string         `json:"namespace,omitempty"`
-	Name          string         `json:"name"`
-	Reason        string         `json:"reason"`
-	Message       string         `json:"message,omitempty"`
-	RawMessage    string         `json:"raw_message,omitempty"`
+	// AffectedRefs are the resources a finding about another subject affects,
+	// all of them rather than the capped links a diagnostic fact shows.
+	// Related-issue lookup matches them; they are never serialized.
+	AffectedRefs  []Ref         `json:"-"`
+	Severity      Severity      `json:"severity"`
+	Source        Source        `json:"source"`
+	Category      Category      `json:"category"`
+	CategoryGroup CategoryGroup `json:"category_group"`
+	ID            string        `json:"id"`
+	GroupingScope Scope         `json:"grouping_scope"`
+	Kind          string        `json:"kind"`
+	Group         string        `json:"group,omitempty"`
+	Namespace     string        `json:"namespace,omitempty"`
+	Name          string        `json:"name"`
+	Reason        string        `json:"reason"`
+	Message       string        `json:"message,omitempty"`
+	RawMessage    string        `json:"raw_message,omitempty"`
+	// MessageSource is MessageSourceRadar when Message is Radar's own summary
+	// rather than text from Kubernetes or a controller, so a UI doesn't present
+	// it as raw output. A detector that sets it writes a Cause that stands on
+	// its own without Message.
+	MessageSource string `json:"message_source,omitempty"`
 	// Cause / Action / Remediation* carry parsed domain diagnosis. They give the
 	// Issues page + MCP a plain-English cause + next step when a detector has
 	// enough evidence. All optional — empty for issues without a parser.
@@ -577,6 +608,35 @@ type Issue struct {
 	// or when the candidate fetch saturated and may have missed changes;
 	// absence must never be read as "no changes".
 	NoRecentChanges *NoRecentChangesMarker `json:"no_recent_changes,omitempty"`
+	// CorrelatedChangesIncomplete is set when CorrelatedChanges is non-empty
+	// but the subject's change history in the window was larger than Radar's
+	// fetch bound, so older changes were not read. The listed changes are
+	// leads, not the subject's full history.
+	CorrelatedChangesIncomplete bool `json:"correlated_changes_incomplete,omitempty"`
+}
+
+// HistoryGapReason names why Radar's recorded change history does not cover a
+// requested window. Wire contract: clients branch on the values.
+type HistoryGapReason string
+
+const (
+	// HistoryObservationStartedLate: this Radar process started observing
+	// after the window began, so earlier changes were never recorded by it.
+	HistoryObservationStartedLate HistoryGapReason = "observation_started_late"
+	// HistoryEventsEvicted: Radar deleted recorded events from the window to
+	// stay within its history size or retention limit.
+	HistoryEventsEvicted HistoryGapReason = "events_evicted"
+)
+
+// HistoryCoverage reports that a change answer's window starts before the
+// history Radar holds, so an empty or short answer does not establish that
+// nothing changed. Present only when Incomplete. CompleteSince is when the
+// held history becomes complete; it is store-wide, so it is sent only to
+// callers who can read the whole cluster.
+type HistoryCoverage struct {
+	Incomplete    bool               `json:"incomplete"`
+	CompleteSince time.Time          `json:"complete_since,omitzero"`
+	Reasons       []HistoryGapReason `json:"reasons"`
 }
 
 // NoRecentChangesMarker carries the window so the "no changes" claim is
@@ -606,6 +666,9 @@ type Response struct {
 	// the lookback window itself: changes older than the window are out of
 	// scope either way, not implied absent.
 	RecentChangesTruncated bool `json:"recent_changes_truncated,omitempty"`
+	// RecentChangesHistoryCoverage is set when the recent-changes window starts
+	// before the history Radar holds, including when no change was returned.
+	RecentChangesHistoryCoverage *HistoryCoverage `json:"recent_changes_history_coverage,omitempty"`
 	// RecentChangesError is set when the recent-changes feed was due but could
 	// not be read, such as while the timeline database is unreachable. Without
 	// it, a missing recent_changes would read the same as no changes.
@@ -621,6 +684,56 @@ type Response struct {
 	// the caller left, is not listed. Consumers must treat an unknown source
 	// value as unchecked too.
 	UncheckedSources []UncheckedSource `json:"unchecked_sources,omitempty"`
+	// ClusterScopedChanges lists changes to cluster-scoped objects that can
+	// change how this namespace's workloads are admitted. Set by the MCP
+	// issues tool for a single-namespace answer, and only when it has rows or
+	// is incomplete.
+	ClusterScopedChanges *ClusterScopedChanges `json:"cluster_scoped_changes,omitempty"`
+}
+
+// ClusterScopedApplicability says how a cluster-scoped change relates to the
+// namespace it is listed under.
+type ClusterScopedApplicability string
+
+const (
+	// ClusterScopedApplies: the object's current scope selects the namespace.
+	ClusterScopedApplies ClusterScopedApplicability = "applies"
+	// ClusterScopedMayApply: whether it reaches the namespace's objects is not
+	// established (object selectors and CEL conditions are not evaluated, the
+	// namespace labels are unreadable, or the change removed or re-scoped it
+	// and its earlier scope is not recorded).
+	ClusterScopedMayApply ClusterScopedApplicability = "may_apply"
+)
+
+type ClusterScopedChange struct {
+	RecentChange
+	Applicability  ClusterScopedApplicability `json:"applicability"`
+	AppliesBecause string                     `json:"applies_because"`
+}
+
+// ClusterScopedChanges is a namespace's view of cluster-scoped changes in the
+// lookback window. It covers MutatingWebhookConfiguration and
+// ValidatingWebhookConfiguration only. Objects that existed unchanged
+// throughout the window never appear, however much they affect the
+// namespace. An empty Changes list is a complete negative only when
+// Truncated, Error and Incomplete are all unset.
+type ClusterScopedChanges struct {
+	Kinds         []string              `json:"kinds"`
+	WindowSeconds int                   `json:"window_seconds"`
+	Changes       []ClusterScopedChange `json:"changes"`
+	// NotListed names further applicable changes beyond the row budget.
+	NotListed []string `json:"not_listed,omitempty"`
+	// Truncated is set when the window held more changes than were read or
+	// named.
+	Truncated  bool   `json:"truncated,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Incomplete string `json:"incomplete,omitempty"`
+}
+
+// Informative reports whether the section says anything beyond "checked, none":
+// rows, or a reason the check was incomplete.
+func (c *ClusterScopedChanges) Informative() bool {
+	return c != nil && (len(c.Changes) > 0 || len(c.NotListed) > 0 || c.Truncated || c.Error != "" || c.Incomplete != "")
 }
 
 // UncheckedSource is one issue source Radar couldn't check.

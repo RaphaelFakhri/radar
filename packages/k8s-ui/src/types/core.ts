@@ -168,9 +168,11 @@ export interface FeatureCapabilities {
   podEnvironment?: boolean
   policyResource?: boolean
   workloadHistory?: boolean
+  cnpgWorkspace?: boolean
+  cnpgProtectionSetup?: boolean
+  gitopsWriteEvidence?: boolean
   serviceEndpointSlices?: boolean
   trafficRecords?: boolean
-  gitopsWriteEvidence?: boolean
   argoRollbackSync?: boolean
   argoSyncInheritance?: boolean
 }

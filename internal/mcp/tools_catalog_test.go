@@ -271,7 +271,7 @@ func TestToolCatalogContextBudget(t *testing.T) {
 	// These caps guard against description accretion, not against new tools or
 	// load-bearing routing and uncertainty contracts. Raise them deliberately.
 	const (
-		maxCatalogBytes         = 59100
+		maxCatalogBytes         = 59450
 		maxToolDescriptionBytes = 3000
 	)
 
@@ -345,6 +345,11 @@ func TestToolsEmittingApplicationConfigurationMarkerDocumentRankingBoundary(t *t
 	}
 	if !strings.Contains(descriptions["get_changes"], "Helm operation entries rank by category and recency") {
 		t.Error("get_changes tool description does not document Helm ranking")
+	}
+	for _, phrase := range []string{"other spec changes", "(value hidden)", "(set)"} {
+		if !strings.Contains(descriptions["get_changes"], phrase) {
+			t.Errorf("get_changes tool description does not explain %q rows", phrase)
+		}
 	}
 }
 
@@ -580,7 +585,7 @@ func TestDiagnoseContractMatchesServerMode(t *testing.T) {
 }
 
 func TestReadOnlyDiagnoseRejectsHandCraftedInClusterArgument(t *testing.T) {
-	session := connectTo(t, newServer(false))
+	session := connectTo(t, newServer(false, ""))
 	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "diagnose",
 		Arguments: map[string]any{
@@ -608,7 +613,7 @@ func TestReadOnlyDiagnoseRejectsHandCraftedInClusterArgument(t *testing.T) {
 }
 
 func TestReadOnlyDiagnoseRepairsArgumentsWithServerLocalRegistry(t *testing.T) {
-	session := connectTo(t, newServer(false))
+	session := connectTo(t, newServer(false, ""))
 	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "diagnose",
 		Arguments: map[string]any{
