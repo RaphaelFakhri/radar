@@ -1129,7 +1129,9 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	var resourceCtx *resourcecontext.ResourceContext
 	var warnings []string
 	if !skipContext {
-		resourceCtx = buildMCPResourceContext(ctx, rawObj, kind, namespace, name, resourcecontext.TierBasic, issueSummary)
+		// Stale Secret env goes in the top-level staleEnv field below, which
+		// survives context=none, so it isn't repeated in appReferences.
+		resourceCtx = buildMCPResourceContextWithStaleChecks(ctx, rawObj, kind, namespace, name, resourcecontext.TierBasic, nil, issueSummary)
 
 		// State-derived advisory warnings (deletionTimestamp, external manager,
 		// terminating namespace, workload health-condition history, PVC stuck
@@ -1146,6 +1148,10 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	if truncationNote != "" {
 		warnings = append(warnings, truncationNote)
 	}
+	// Like the truncation note, staleEnv is kept with context=none: an agent
+	// reading a rotated Secret bare would otherwise miss that its consumers
+	// still run the earlier value.
+	staleEnv := buildGetResourceStaleEnv(ctx, cache, rawObj, namespace)
 
 	defaultConfigMapChanges := meaningfulchanges.ConfigMapKind(kind)
 	includeChanges := includes["changes"] || defaultConfigMapChanges
@@ -1181,7 +1187,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	//     or template-divergence warning upgrades this to {resource, warnings})
 	//   - resource + resourceContext: no includes, default context
 	//   - resource + resourceContext + extras: includes set
-	if len(includes) == 0 && resourceCtx == nil && len(warnings) == 0 && !defaultConfigMapChanges {
+	if len(includes) == 0 && resourceCtx == nil && len(warnings) == 0 && staleEnv == nil && !defaultConfigMapChanges {
 		return toJSONResult(resourceData)
 	}
 
@@ -1194,6 +1200,9 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	}
 	if len(warnings) > 0 {
 		result["warnings"] = warnings
+	}
+	if staleEnv != nil {
+		result["staleEnv"] = staleEnv
 	}
 	if includeChanges {
 		result["recentChangesSaturated"] = recentChangesSaturated
@@ -1234,7 +1243,7 @@ func recentChangesSourceTracked(gvk schema.GroupVersionKind) bool {
 	return meaningfulchanges.TrackedKindForGroup(gvk.Kind, gvk.Group)
 }
 
-// buildMCPResourceContext assembles the resourceContext section for MCP
+// buildMCPResourceContextWithStaleChecks assembles the resourceContext section for MCP
 // get_resource. Mirrors the REST handler's buildAIResourceContext: pre-
 // computes IssueSummary + AuditSummary in the caller, threads the
 // PolicyReport index when Kyverno is installed, hands a request-scoped
@@ -1242,19 +1251,9 @@ func recentChangesSourceTracked(gvk schema.GroupVersionKind) bool {
 // fallback resolve Relationships via topology.GetRelationshipsWithObject
 // (which applies KindForGVK so cross-group CRDs map to the right
 // topology node).
-func buildMCPResourceContext(ctx context.Context, obj runtime.Object, kind, namespace, name string, tier resourcecontext.ContextTier, issueSummary *resourcecontext.IssueSummary) *resourcecontext.ResourceContext {
-	return buildMCPResourceContextWithStaleChecks(
-		ctx,
-		obj,
-		kind,
-		namespace,
-		name,
-		tier,
-		k8s.FindStaleSecretEnvChecksForObject(ctx, k8s.GetResourceCache(), obj),
-		issueSummary,
-	)
-}
-
+//
+// staleChecks feeds appReferences.staleSecretEnv; diagnose passes its Pods'
+// checks, and get_resource passes nil because it reports them in staleEnv.
 func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Object, kind, namespace, name string, tier resourcecontext.ContextTier, staleChecks []k8s.StaleSecretEnvCheck, issueSummary *resourcecontext.IssueSummary) *resourcecontext.ResourceContext {
 	if obj == nil {
 		return nil

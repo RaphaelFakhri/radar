@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -219,8 +220,8 @@ func FindStaleSecretEnvChecksForObject(ctx context.Context, cache *ResourceCache
 }
 
 // FindStaleSecretEnvChecksForPods aggregates the Pod-level facts needed by a
-// workload diagnosis, including the managedFields fallback that is deliberately
-// confined to this diagnostic path.
+// workload diagnosis, including the managedFields fallback, which only diagnose
+// and get_resource's staleEnv (FindStaleEnvForPods) report.
 func FindStaleSecretEnvChecksForPods(ctx context.Context, cache *ResourceCache, pods []*corev1.Pod) []StaleSecretEnvCheck {
 	if cache == nil {
 		return nil
@@ -984,6 +985,16 @@ type secretDataKey struct {
 }
 
 func findStaleSecretEnvChecks(cache *ResourceCache, pods []*corev1.Pod, events []timeline.TimelineEvent) []StaleSecretEnvCheck {
+	return findStaleSecretEnvChecksUpTo(cache, pods, events, maxStaleSecretEnvChecksPerContainer)
+}
+
+// findStaleSecretEnvChecksUpTo is findStaleSecretEnvChecks with the
+// per-container cap as a parameter; perContainer <= 0 means no cap, for callers
+// that filter to one Secret first and cap only what they present.
+func findStaleSecretEnvChecksUpTo(cache *ResourceCache, pods []*corev1.Pod, events []timeline.TimelineEvent, perContainer int) []StaleSecretEnvCheck {
+	if perContainer <= 0 {
+		perContainer = math.MaxInt
+	}
 	if cache == nil || cache.Secrets() == nil {
 		return nil
 	}
@@ -1008,7 +1019,7 @@ func findStaleSecretEnvChecks(cache *ResourceCache, pods []*corev1.Pod, events [
 			startedAt := status.State.Running.StartedAt.Time
 			containerChecks := 0
 			for _, env := range container.Env {
-				if containerChecks >= maxStaleSecretEnvChecksPerContainer {
+				if containerChecks >= perContainer {
 					break
 				}
 				if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -1023,7 +1034,7 @@ func findStaleSecretEnvChecks(cache *ResourceCache, pods []*corev1.Pod, events [
 				containerChecks++
 			}
 			for _, envFrom := range container.EnvFrom {
-				if containerChecks >= maxStaleSecretEnvChecksPerContainer {
+				if containerChecks >= perContainer {
 					break
 				}
 				if envFrom.SecretRef == nil || !secretExists(cache, pod.Namespace, envFrom.SecretRef.Name, exists, checked) {
@@ -1031,10 +1042,11 @@ func findStaleSecretEnvChecks(cache *ResourceCache, pods []*corev1.Pod, events [
 				}
 				identity := pod.Namespace + "\x00" + envFrom.SecretRef.Name
 				for _, change := range changesBySecret[identity] {
-					if containerChecks >= maxStaleSecretEnvChecksPerContainer {
+					if containerChecks >= perContainer {
 						break
 					}
-					if !startedAt.Before(change.changedAt) {
+					// An explicit env entry of the same name overrides envFrom.
+					if !startedAt.Before(change.changedAt) || containerDeclaresEnv(container, envFrom.Prefix+change.key) {
 						continue
 					}
 					out = append(out, newStaleSecretEnvCheck(pod, container.Name, envFrom.Prefix+change.key, "envFrom", envFrom.Prefix, envFrom.SecretRef.Name, change.key, startedAt, change.changedAt))
@@ -1048,7 +1060,14 @@ func findStaleSecretEnvChecks(cache *ResourceCache, pods []*corev1.Pod, events [
 }
 
 func findStaleSecretEnvChecksWithManagedFields(cache *ResourceCache, pods []*corev1.Pod, events []timeline.TimelineEvent) []StaleSecretEnvCheck {
-	out := findStaleSecretEnvChecks(cache, pods, events)
+	return findStaleSecretEnvChecksWithManagedFieldsUpTo(cache, pods, events, maxStaleSecretEnvChecksPerContainer)
+}
+
+func findStaleSecretEnvChecksWithManagedFieldsUpTo(cache *ResourceCache, pods []*corev1.Pod, events []timeline.TimelineEvent, perContainer int) []StaleSecretEnvCheck {
+	out := findStaleSecretEnvChecksUpTo(cache, pods, events, perContainer)
+	if perContainer <= 0 {
+		perContainer = math.MaxInt
+	}
 	if cache == nil || cache.Secrets() == nil {
 		return out
 	}
@@ -1074,7 +1093,7 @@ func findStaleSecretEnvChecksWithManagedFields(cache *ResourceCache, pods []*cor
 			containerIdentity := pod.Namespace + "\x00" + pod.Name + "\x00" + container.Name
 			seenSecrets := make(map[string]bool)
 			addFallback := func(referenceKind, prefix, secretName string) {
-				if checksPerContainer[containerIdentity] >= maxStaleSecretEnvChecksPerContainer || secretName == "" {
+				if checksPerContainer[containerIdentity] >= perContainer || secretName == "" {
 					return
 				}
 				secretIdentity := pod.Namespace + "\x00" + secretName
@@ -1106,6 +1125,15 @@ func findStaleSecretEnvChecksWithManagedFields(cache *ResourceCache, pods []*cor
 	}
 	sortStaleSecretEnvChecks(out)
 	return out
+}
+
+func containerDeclaresEnv(container corev1.Container, name string) bool {
+	for _, env := range container.Env {
+		if env.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func sortStaleSecretEnvChecks(out []StaleSecretEnvCheck) {
