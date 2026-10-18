@@ -1567,7 +1567,7 @@ func envHistoryTestCache(t *testing.T, objects ...runtime.Object) *ResourceCache
 		Client: fake.NewClientset(objects...),
 		ResourceTypes: map[string]bool{
 			k8score.Pods: true, k8score.Secrets: true, k8score.Services: true,
-			k8score.Deployments: true, k8score.ReplicaSets: true,
+			k8score.Deployments: true, k8score.ReplicaSets: true, k8score.ConfigMaps: true,
 		},
 		DeferredTypes: map[string]bool{},
 		OnTransform: func(obj any) {

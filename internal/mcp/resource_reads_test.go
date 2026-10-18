@@ -566,8 +566,8 @@ func collectorRefusal(gr schema.GroupResource, verb, namespace string) error {
 	return apierrors.NewForbidden(gr, "", fmt.Errorf("User %q cannot %s resource %q in API group %q %s", collectorIdentity, verb, gr.Resource, gr.Group, scope))
 }
 
-// wireCoverage is a list's coverage as a client decodes it.
-type wireCoverage struct {
+// listWireCoverage is a list's coverage as a client decodes it.
+type listWireCoverage struct {
 	Status        string
 	Codes         []string
 	GapNamespaces map[string][]string
@@ -584,7 +584,7 @@ type wireCoverage struct {
 // documented shape: one text block and nothing else, holding exactly
 // {"summary", "next"?, "coverage", "items"} with the summary first, and
 // coverage holding the shared single-kind coverage.
-func listBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
+func listBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, listWireCoverage) {
 	t.Helper()
 	if result == nil || result.IsError || len(result.Content) != 1 || result.StructuredContent != nil {
 		t.Fatalf("a list is one successful text block without structuredContent, got %+v", result)
@@ -618,7 +618,7 @@ func listBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wi
 		(coverage.Status == resourceapi.CoveragePartial) != (len(coverage.Gaps) > 0) {
 		t.Fatalf("invalid coverage: %s", top["coverage"])
 	}
-	out := wireCoverage{Status: string(coverage.Status), GapNamespaces: map[string][]string{}, ReadType: string(coverage.Read.Type), ScopeType: string(coverage.Scope.Type), Summary: summary, Next: next}
+	out := listWireCoverage{Status: string(coverage.Status), GapNamespaces: map[string][]string{}, ReadType: string(coverage.Read.Type), ScopeType: string(coverage.Scope.Type), Summary: summary, Next: next}
 	for _, gap := range coverage.Gaps {
 		out.Codes = append(out.Codes, string(gap.Code))
 		if gap.Namespaces != nil {
@@ -644,7 +644,7 @@ func listBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wi
 }
 
 // partialListBody decodes a list Radar read only part of.
-func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
+func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, listWireCoverage) {
 	t.Helper()
 	rows, coverage := listBody(t, result)
 	if coverage.Status != "partial" || !strings.Contains(coverage.Summary, "may exist there that this list doesn't show") {
@@ -655,7 +655,7 @@ func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]
 
 // narrowedListBody decodes a list the caller didn't scope that Radar's
 // collection narrowed: complete within the namespaces Radar collects.
-func narrowedListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
+func narrowedListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, listWireCoverage) {
 	t.Helper()
 	rows, coverage := completeListBody(t, result)
 	if !slices.Contains(coverage.NarrowedBy, "namespace_collection") || coverage.ScopeType != "namespaces" || !strings.Contains(coverage.Summary, "Radar collects ") {
@@ -665,7 +665,7 @@ func narrowedListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string
 }
 
 // completeListBody decodes a list Radar read all of, within its scope.
-func completeListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
+func completeListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, listWireCoverage) {
 	t.Helper()
 	rows, coverage := listBody(t, result)
 	if coverage.Status != "complete" || len(coverage.Codes) != 0 {
@@ -1083,7 +1083,7 @@ func TestListResourcesReportsCollectorCoverage(t *testing.T) {
 					}
 					var rows []map[string]any
 					if tc.limited {
-						var coverage wireCoverage
+						var coverage listWireCoverage
 						rows, coverage = narrowedListBody(t, result)
 						if !slices.Equal(coverage.NarrowedBy, []string{"namespace_collection"}) || !slices.Equal(coverage.Read, []string{"alpha", "gamma"}) || !slices.Equal(coverage.Scope, []string{"alpha", "gamma"}) {
 							t.Fatalf("coverage = %+v, want narrowed by collection to alpha and gamma", coverage)
@@ -1097,7 +1097,7 @@ func TestListResourcesReportsCollectorCoverage(t *testing.T) {
 						}
 						assertNoCollectorLeak(t, errors.New(extractText(t, result)))
 					} else {
-						var coverage wireCoverage
+						var coverage listWireCoverage
 						rows, coverage = completeListBody(t, result)
 						want := fmt.Sprintf("These are all the %s in every namespace.", kind)
 						if len(rows) == 0 {

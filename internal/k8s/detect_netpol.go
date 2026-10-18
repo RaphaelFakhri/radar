@@ -312,13 +312,13 @@ func ciliumMaySelect(policy *unstructured.Unstructured, pods []*corev1.Pod, ns *
 	return false
 }
 
-// calicoMaySelect reports whether a Calico policy that covers dir selects any
-// of the pods, or can't be ruled out. Radar doesn't read ServiceAccount labels
-// here, and namespace labels may be unknown, so those selectors are dropped
-// before matching: what remains can still exclude the pods, but a match only
-// means the policy may apply.
+// calicoMaySelect reports whether a Calico policy that may allow traffic in
+// dir selects any of the pods, or can't be ruled out. Radar doesn't read
+// ServiceAccount labels here, and namespace labels may be unknown, so those
+// selectors are dropped before matching: what remains can still exclude the
+// pods, but a match only means the policy may apply.
 func (v *otherPolicyView) calicoMaySelect(policy *unstructured.Unstructured, pods []*corev1.Pod, namespaceLabels map[string]string, dir netpol.Direction) bool {
-	if !calicoCovers(policy, dir) {
+	if !calicoCovers(policy, dir) || !calicoMayAllow(policy, dir) {
 		return false
 	}
 	key := calicoMatcherKey{policy: policy, namespaceLabels: namespaceLabels != nil}
@@ -377,6 +377,33 @@ func calicoCovers(policy *unstructured.Unstructured, dir netpol.Direction) bool 
 		return len(egress) > 0
 	}
 	return len(ingress) > 0 || len(egress) == 0
+}
+
+// calicoMayAllow reports whether a policy has a rule in dir that may allow
+// traffic: Allow, Pass (a Pass in the default tier falls through to profiles,
+// which allow), or an action Radar can't read. A policy with no rules there,
+// or only Deny and Log rules, can't allow what a core NetworkPolicy denies;
+// Calico's recommended global default-deny is one.
+func calicoMayAllow(policy *unstructured.Unstructured, dir netpol.Direction) bool {
+	field := "ingress"
+	if dir == netpol.DirectionEgress {
+		field = "egress"
+	}
+	rules, _, err := unstructured.NestedSlice(policy.Object, "spec", field)
+	if err != nil {
+		return true
+	}
+	for _, rule := range rules {
+		m, ok := rule.(map[string]any)
+		if !ok {
+			return true
+		}
+		action, _ := m["action"].(string)
+		if !strings.EqualFold(action, "Deny") && !strings.EqualFold(action, "Log") {
+			return true
+		}
+	}
+	return false
 }
 
 func calicoSelectsAll(selector string) bool {

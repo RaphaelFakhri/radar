@@ -490,6 +490,9 @@ func buildPodsHop(deps Deps, svc *corev1.Service, pods []*corev1.Pod, unreadable
 		if res.denyPort > 0 {
 			meta["policyDenyPort"] = res.denyPort
 		}
+		if res.proto != "" {
+			meta["policyProtocol"] = string(res.proto)
+		}
 	}
 	if mesh := detectMesh(pods); mesh != "" {
 		hop.Findings = append(hop.Findings, Finding{
