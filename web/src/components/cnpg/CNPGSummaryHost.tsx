@@ -218,7 +218,8 @@ function SubscriptionSummaryHost(props: { resource: any; workspace: CNPGWorkspac
 }
 
 function PublicationSummaryHost(props: { resource: any; workspace: CNPGWorkspaceResponse | null; onNavigate?: NavigateToRef }) {
-  // Subscribers are the Subscriptions in view; the publisher's own runtime
+  // Subscribers are the Subscriptions in every namespace the caller can read,
+  // since logical replication crosses namespaces; the publisher's own runtime
   // answers for every slot.
   const pubCluster = props.resource?.spec?.cluster?.name
   const ns = props.resource?.metadata?.namespace ?? ''
