@@ -2156,7 +2156,7 @@ func detectManualDriftWithoutAutoSync(root *unstructured.Unstructured) *Issue {
 			Scope:    ScopeOperation,
 			Reason:   "RolledBack",
 			Message:  message + ".",
-			Cause:    "It stays on " + revisionLabel + " with auto-sync off until you sync or turn auto-sync back on.",
+			Cause:    "It stays on " + revisionLabel + " with auto-sync off until you sync or enable auto-sync.",
 		}
 	}
 	return &Issue{

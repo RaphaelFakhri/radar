@@ -9,7 +9,7 @@ function insight(rolledBack: boolean): GitOpsInsight {
     issues: rolledBack ? [{
       reason: 'RolledBack', scope: 'operation', severity: 'info',
       message: `Rolled back to ${'a'.repeat(40)} by alice.`,
-      cause: 'It stays on this revision with auto-sync off until you sync or turn auto-sync back on.',
+      cause: 'It stays on this revision with auto-sync off until you sync or enable auto-sync.',
     }] : [],
     changes: [{
       ref: { group: 'apps', kind: 'Deployment', namespace: 'default', name: 'demo' },
@@ -23,7 +23,7 @@ describe('rollback insights', () => {
     const html = renderToString(<GitOpsIssuesBand issues={insight(true).issues} />)
     expect(html).toContain('a'.repeat(40))
     expect(html).toMatch(/<span class="[^"]*whitespace-normal break-words">Rolled back to/)
-    expect(html).toMatch(/<p class="[^"]*whitespace-normal break-words">It stays on this revision with auto-sync off until you sync or turn auto-sync back on\.<\/p>/)
+    expect(html).toMatch(/<p class="[^"]*whitespace-normal break-words">It stays on this revision with auto-sync off until you sync or enable auto-sync\.<\/p>/)
   })
 
   it('explains that resource Sync can undo the rollback', () => {

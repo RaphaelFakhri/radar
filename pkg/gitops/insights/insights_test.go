@@ -834,7 +834,7 @@ func TestBuildIssuesArgoRollbackState(t *testing.T) {
 		{
 			name: "multi-source result names every revision", reason: "RolledBack",
 			message: "Rolled back to rev-a, rev-b by alice.",
-			cause:   "It stays on these revisions with auto-sync off until you sync or turn auto-sync back on.",
+			cause:   "It stays on these revisions with auto-sync off until you sync or enable auto-sync.",
 			mutate: func(u *unstructured.Unstructured) {
 				unstructured.RemoveNestedField(u.Object, "status", "operationState", "syncResult", "revision")
 				_ = unstructured.SetNestedStringSlice(u.Object, []string{"rev-a", "rev-b"}, "status", "operationState", "syncResult", "revisions")
@@ -923,7 +923,7 @@ func TestBuildIssuesArgoRollbackState(t *testing.T) {
 			if tc.reason == "RolledBack" {
 				wantCause := tc.cause
 				if wantCause == "" {
-					wantCause = "It stays on this revision with auto-sync off until you sync or turn auto-sync back on."
+					wantCause = "It stays on this revision with auto-sync off until you sync or enable auto-sync."
 				}
 				if issue.Cause != wantCause {
 					t.Fatalf("cause = %q, want %q", issue.Cause, wantCause)

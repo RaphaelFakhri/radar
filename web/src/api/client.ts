@@ -6556,7 +6556,7 @@ interface GitOpsMutationConfig<TVariables, TContext = undefined> {
   getBody?: (variables: TVariables, context: TContext) => unknown;
   errorMessage: string;
   successMessage?: string;
-  getSuccessMessage?: (data: GitOpsOperationResponse) => string;
+  getSuccessMessage?: (data: GitOpsOperationResponse, variables: TVariables) => string;
   getInvalidateKeys: (variables: TVariables) => (string | undefined)[][];
 }
 
@@ -6598,7 +6598,7 @@ function createGitOpsMutation<TVariables, TContext = undefined>(
       },
       onSuccess: (data, variables) => {
         if (config.getSuccessMessage)
-          showApiSuccess(config.getSuccessMessage(data));
+          showApiSuccess(config.getSuccessMessage(data, variables));
         config
           .getInvalidateKeys(variables)
           .forEach((key) => queryClient.invalidateQueries({ queryKey: key }));
@@ -6819,7 +6819,7 @@ export const useArgoRollback = createGitOpsMutation<ArgoRollbackVars>({
   getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/rollback`,
   getBody: (v) => ({ id: v.id, prune: v.prune, dryRun: v.dryRun }),
   errorMessage: "Failed to roll back application",
-  successMessage: "Rollback initiated",
+  getSuccessMessage: (_data, v) => (v.dryRun ? "Rollback preview started" : "Rollback initiated"),
   getInvalidateKeys: argoInvalidateKeys,
 });
 
