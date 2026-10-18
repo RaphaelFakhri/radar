@@ -1,4 +1,4 @@
-import { resourceDetailRedirect, resourceDetailSlots, resourceLogs, resourceRendererOverrides } from '../../integrations/resourceHosts'
+import { decorateResourceDiagnose, resourceDetailRedirect, resourceDetailSlots, resourceLogs, resourceRendererOverrides } from '../../integrations/resourceHosts'
 import { useMemo, useEffect, useCallback, useRef, useState, type ReactNode } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Navigate, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
@@ -262,6 +262,16 @@ interface WorkloadViewProps {
   pushTabHistory?: boolean
   breadcrumb?: ReactNode
   extraTabs?: WorkloadExtraTab[]
+  tabOrder?: string[]
+  subheader?: ReactNode
+  specTab?: { label?: string; icon?: ReactNode; lead?: ReactNode; render?: () => ReactNode }
+  titlePrefix?: ReactNode
+  inlineBadges?: boolean
+  namespaceNote?: ReactNode
+  renderStatusBadge?: (resource: any) => ReactNode
+  statusNote?: ReactNode
+  onRefresh?: () => Promise<unknown>
+  hideKindBadge?: boolean
 }
 
 interface ImageTargetOwnershipContext {
@@ -384,7 +394,7 @@ function useActionsBarProps(
       name: string
       className?: string
     }) => <PortForwardButton type={type} namespace={ns} name={n} className={className} />,
-    renderDiagnose,
+    renderDiagnose: decorateResourceDiagnose(renderDiagnose),
     onDelete: (
       params: Parameters<typeof deleteMutation.mutate>[0],
       callbacks?: { onSuccess?: () => void },
@@ -392,7 +402,8 @@ function useActionsBarProps(
     isDeleting: deleteMutation.isPending,
     cascadeDependents: cascadePreview?.dependents,
     cascadeLoading,
-    cascadeRootResolved: cascadeError ? false : cascadePreview?.rootResolved,
+    cascadeRootResolved: cascadePreview?.rootResolved,
+    cascadePreviewFailed: Boolean(cascadeError),
     onRestart: rolloutAllows('restart')
       ? (params: Parameters<typeof restartWorkloadMutation.mutate>[0]) =>
           restartWorkloadMutation.mutate(params)
@@ -569,9 +580,11 @@ export function WorkloadView({
     () => (isDiagnoseKind(apiKind, effectiveGroup) ? [] : (relationships?.services ?? [])),
     [apiKind, effectiveGroup, relationships],
   )
+  const onRefresh = rest.onRefresh
   const refetchResourceAndRuns = useCallback(async () => {
     await Promise.all([
       refetchResource(),
+      onRefresh?.(),
       ...(apiKind === 'rayjobs' && effectiveGroup === 'ray.io' ? [
         queryClient.refetchQueries({ queryKey: ['resource', 'jobs', namespace, name, 'batch'], type: 'active' }),
         ...(resource?.spec?.clusterSelector?.['ray.io/cluster'] ? [queryClient.refetchQueries({ queryKey: ['resource', 'rayclusters', namespace, resource.spec.clusterSelector['ray.io/cluster'], 'ray.io'], type: 'active' })] : []),
@@ -585,7 +598,7 @@ export function WorkloadView({
         ...(apiKind === 'rayclusters' ? { type: 'active' as const } : {}),
       }),
     ])
-  }, [apiKind, effectiveGroup, name, namespace, queryClient, refetchResource, resource?.spec?.clusterSelector])
+  }, [apiKind, effectiveGroup, name, namespace, queryClient, refetchResource, resource?.spec?.clusterSelector, onRefresh])
   const podWorkloadOwner = useMemo(
     () => podWorkloadOwnerFromRelationships(apiKind, namespace, relationships, resource),
     [apiKind, namespace, relationships, resource],

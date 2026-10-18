@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/readscope"
 	"github.com/skyhook-io/radar/internal/settings"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -428,7 +429,7 @@ func TestParseNamespacesForUser_IgnoresPickKeepsRBAC(t *testing.T) {
 	if got := s.parseNamespacesForUser(asUser("carol", "/api/resources/pods")); !slices.Equal(got, []string{"broken"}) {
 		t.Fatalf("carol plain read = %v, want her RBAC ceiling [broken]", got)
 	}
-	if got := s.parseNamespacesForUser(asUser("carol", "/api/resources/pods?namespace=default")); !noNamespaceAccess(got) {
+	if got := s.parseNamespacesForUser(asUser("carol", "/api/resources/pods?namespace=default")); !readscope.NoNamespaceAccess(got) {
 		t.Fatalf("carol naming a denied namespace = %v, want no access", got)
 	}
 }
