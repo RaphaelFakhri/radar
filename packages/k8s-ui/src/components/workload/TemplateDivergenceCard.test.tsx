@@ -1,10 +1,11 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { TemplateDivergence } from '../../types'
 import { TemplateDivergenceCard } from './TemplateDivergenceCard'
 import { WorkloadView } from './WorkloadView'
 
-const workload = {
+const workload: TemplateDivergence = {
   summary: 'server summary for agents',
   podsCompared: 3,
   podsDiffering: 2,
@@ -58,7 +59,7 @@ describe('WorkloadView with a template comparison', () => {
     spec: { containers: [{ name: 'app', image: 'nginx' }] },
     status: { phase: 'Running', containerStatuses: [{ name: 'app', ready: true, state: { running: {} } }] },
   }
-  const render = (templateDivergence?: typeof workload) =>
+  const render = (templateDivergence?: TemplateDivergence) =>
     renderToStaticMarkup(
       <WorkloadView kind="pods" namespace="shop" name="web-1" onBack={vi.fn()} resource={pod} templateDivergence={templateDivergence} />,
     )

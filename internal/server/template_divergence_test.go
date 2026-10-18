@@ -31,12 +31,16 @@ func TestGetResourceIncludesTemplateDivergence(t *testing.T) {
 	if _, err := testFakeClient.AppsV1().ReplicaSets(ns).Create(ctx, rs, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = testFakeClient.AppsV1().ReplicaSets(ns).Delete(context.Background(), rs.Name, metav1.DeleteOptions{}) })
+	t.Cleanup(func() {
+		_ = testFakeClient.AppsV1().ReplicaSets(ns).Delete(context.Background(), rs.Name, metav1.DeleteOptions{})
+	})
 	for _, p := range []*corev1.Pod{pod("app-1-mutated", "16Mi"), pod("app-1-healthy", "256Mi")} {
 		if _, err := testFakeClient.CoreV1().Pods(ns).Create(ctx, p, metav1.CreateOptions{}); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = testFakeClient.CoreV1().Pods(ns).Delete(context.Background(), p.Name, metav1.DeleteOptions{}) })
+		t.Cleanup(func() {
+			_ = testFakeClient.CoreV1().Pods(ns).Delete(context.Background(), p.Name, metav1.DeleteOptions{})
+		})
 	}
 	get := func(path string) map[string]any {
 		t.Helper()
