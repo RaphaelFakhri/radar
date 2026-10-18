@@ -108,8 +108,8 @@ func buildGetResourceStaleEnv(ctx context.Context, cache *k8s.ResourceCache, obj
 			Key:                fact.Key,
 			ReferenceKind:      fact.ReferenceKind,
 			EvidenceSource:     fact.EvidenceSource,
-			ContainerStartedAt: fact.ContainerStartedAt,
-			ChangedAt:          fact.ChangedAt,
+			ContainerStartedAt: fact.ContainerStartedAt.UTC(),
+			ChangedAt:          fact.ChangedAt.UTC(),
 			Message:            fact.Message,
 		})
 	}
