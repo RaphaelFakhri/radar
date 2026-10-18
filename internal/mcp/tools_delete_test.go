@@ -25,6 +25,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 )
 
 func TestDeleteResourceMandatoryPreviewAndPreconditions(t *testing.T) {
@@ -262,10 +263,7 @@ func TestDeleteResourceGenerationBinding(t *testing.T) {
 					t.Fatalf("safe reconciliation refused: %v, calls %d", err, deletes)
 				}
 			default:
-				want := "object changed since preview"
-				if change == "replacement" {
-					want = "object replaced"
-				}
+				want := map[string]string{"spec": "its spec changed (generation 6, previewed 5)", "finalizers": "its finalizers are now [example.com/new]", "replacement": "object replaced"}[change]
 				if err == nil || !strings.Contains(err.Error(), want) || deletes != 1 {
 					t.Fatalf("unsafe change: %v, calls %d", err, deletes)
 				}
@@ -375,7 +373,7 @@ func TestDeleteCascadeLargeClusterSkipsGraphBuild(t *testing.T) {
 	opts := topology.DefaultBuildOptions()
 	opts.IncludeReplicaSets = true
 	opts.IncludeSecrets = true
-	guarded, err := summaryCtxTopoMemo.Get(opts, func() (*topology.Topology, error) {
+	guarded, err := summaryCtxTopoMemo.GetScoped(k8s.GetResourceCache().Generation(), opts, func() (*topology.Topology, error) {
 		t.Fatal("preview did not memoize the guarded topology")
 		return nil, nil
 	})
@@ -391,10 +389,14 @@ func TestDeleteResourcePreviewSummaryAndDependentCounts(t *testing.T) {
 		replicaSets, pods int
 		propagation       metav1.DeletionPropagation
 		wantSummary       string
+		// Labelled pods with a controller owner, as real ones have, which the
+		// topology folds into a pod group past a handful per owner.
+		labelled bool
 	}{
-		{"deployment", 3, 12, metav1.DeletePropagationBackground, "Deletes Deployment demo/web; observed dependents: Pod: 12, ReplicaSet: 3 (15 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
-		{"truncated", 3, 105, metav1.DeletePropagationForeground, "Deletes Deployment demo/web; observed dependents: Pod: 105, ReplicaSet: 3 (108 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
-		{"orphan", 1, 1, metav1.DeletePropagationOrphan, "Deletes Deployment demo/web; observed related resources (owner-reference dependents will be orphaned): Pod: 1, ReplicaSet: 1 (2 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
+		{"deployment", 3, 12, metav1.DeletePropagationBackground, "Deletes Deployment demo/web; observed dependents: Pod: 12, ReplicaSet: 3 (15 total, not exhaustive); may wait on finalizers: example.com/cleanup", false},
+		{"truncated", 3, 105, metav1.DeletePropagationForeground, "Deletes Deployment demo/web; observed dependents: Pod: 105, ReplicaSet: 3 (108 total, not exhaustive); may wait on finalizers: example.com/cleanup", false},
+		{"grouped pods", 3, 12, metav1.DeletePropagationBackground, "Deletes Deployment demo/web; observed dependents: Pod: 12, ReplicaSet: 3 (15 total, not exhaustive); may wait on finalizers: example.com/cleanup", true},
+		{"orphan", 1, 1, metav1.DeletePropagationOrphan, "Deletes Deployment demo/web; observed related resources (owner-reference dependents will be orphaned): Pod: 1, ReplicaSet: 1 (2 total, not exhaustive); may wait on finalizers: example.com/cleanup", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setConnectedForTest(t)
@@ -408,7 +410,12 @@ func TestDeleteResourcePreviewSummaryAndDependentCounts(t *testing.T) {
 			}
 			for i := 0; i < tc.pods; i++ {
 				owner := i % tc.replicaSets
-				objects = append(objects, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("web-pod-%d", i), Namespace: "demo", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: fmt.Sprintf("web-rs-%d", owner), UID: types.UID(fmt.Sprintf("rs-%d", owner))}}}})
+				meta := metav1.ObjectMeta{Name: fmt.Sprintf("web-pod-%d", i), Namespace: "demo", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: fmt.Sprintf("web-rs-%d", owner), UID: types.UID(fmt.Sprintf("rs-%d", owner))}}}
+				if tc.labelled {
+					meta.Labels = map[string]string{"app": "web"}
+					meta.OwnerReferences[0].Controller = ptr.To(true)
+				}
+				objects = append(objects, &corev1.Pod{ObjectMeta: meta})
 			}
 			if err := k8s.InitTestResourceCache(kubefake.NewClientset(objects...)); err != nil {
 				t.Fatal(err)
@@ -553,5 +560,28 @@ func TestDeleteResourceRefusesUntilConnected(t *testing.T) {
 	}
 	if len(dyn.Actions()) != 0 {
 		t.Fatalf("disconnected delete accessed Kubernetes: %v", dyn.Actions())
+	}
+}
+
+func TestDeleteResourcePreviewSaysWhenAlreadyDeleting(t *testing.T) {
+	setConnectedForTest(t)
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "persistentvolumeclaims"}
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": "data", "namespace": "demo", "uid": "u", "resourceVersion": "1"}}}
+	obj.SetFinalizers([]string{"kubernetes.io/pvc-protection"})
+	since := metav1.NewTime(time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	obj.SetDeletionTimestamp(&since)
+	dyn := setupMCPDynamicResource(t, gvr, "PersistentVolumeClaimList", k8s.APIResource{Version: "v1", Kind: "PersistentVolumeClaim", Name: "persistentvolumeclaims", Namespaced: true}, obj).(*dynamicfake.FakeDynamicClient)
+	dyn.PrependReactor("delete", "persistentvolumeclaims", func(clienttesting.Action) (bool, runtime.Object, error) { return true, nil, nil })
+	res, _, err := handleDeleteResource(context.Background(), nil, deleteResourceInput{Kind: "PersistentVolumeClaim", Namespace: "demo", Name: "data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeToolResult(t, res)
+	if got["deletionTimestamp"] != "2026-10-18T09:00:00Z" {
+		t.Fatalf("preview hid the existing deletion: %+v", got)
+	}
+	summary, _ := got["summary"].(string)
+	if !strings.HasPrefix(summary, "Already deleting PersistentVolumeClaim demo/data since 2026-10-18T09:00:00Z") || !strings.HasSuffix(summary, "waiting on finalizers: kubernetes.io/pvc-protection; another DELETE won't remove them") {
+		t.Fatalf("summary = %q", summary)
 	}
 }

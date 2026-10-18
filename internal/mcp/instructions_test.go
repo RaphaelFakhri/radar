@@ -128,8 +128,6 @@ var instructionClaims = []struct{ tool, says, backedBy, param string }{
 	{tool: "get_neighborhood", says: "service routing): get_neighborhood", backedBy: "service routing"},
 	{tool: "get_neighborhood", says: "The graph around one object (owners, selectors, config references", backedBy: "targetPort/selector/endpoints problems, dependency timeouts, config/secret refs, owner chains"},
 	{tool: "get_cluster_audit", says: "get_cluster_audit is configuration posture", backedBy: "STATIC CONFIG POSTURE"},
-	{tool: "delete_resource", says: "delete_resource, manage_helm_release (preview first)", backedBy: "Mandatory preview", param: "confirm"},
-	{tool: "manage_helm_release", says: "delete_resource, manage_helm_release (preview first)", backedBy: "mandatory stored-manifest preview", param: "confirm"},
 	{tool: "manage_workload", says: "manage_workload to restart, scale or roll back", backedBy: "'rollback'"},
 }
 

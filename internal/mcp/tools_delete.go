@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/skyhook-io/radar/internal/auth"
@@ -57,6 +58,7 @@ type deleteResourceResult struct {
 	Propagation                metav1.DeletionPropagation    `json:"propagation"`
 	Confirm                    string                        `json:"confirm,omitempty"`
 	Finalizers                 *[]string                     `json:"finalizers,omitempty"`
+	DeletionTimestamp          string                        `json:"deletionTimestamp,omitempty"`
 	Cascade                    map[string]any                `json:"cascade,omitempty"`
 	Message                    string                        `json:"message"`
 	FinalizerGuidance          string                        `json:"finalizerGuidance,omitempty"`
@@ -151,8 +153,13 @@ func handleDeleteResource(ctx context.Context, req *mcp.CallToolRequest, input d
 		if approved.UID != current.UID {
 			return nil, nil, fmt.Errorf("deletion object replaced since preview (UID differs); run dry_run=true again and review the replacement")
 		}
-		if approved.Generation != current.Generation || !slices.Equal(approved.Finalizers, current.Finalizers) || approved.ResourceVersion != current.ResourceVersion {
-			return nil, nil, fmt.Errorf("deletion object changed since preview (generation, finalizers, or fallback resourceVersion differs); run dry_run=true again and review the new preview")
+		switch {
+		case !slices.Equal(approved.Finalizers, current.Finalizers):
+			return nil, nil, fmt.Errorf("deletion object changed since preview: its finalizers are now %v; inspect them, then run dry_run=true again and review the new preview", current.Finalizers)
+		case approved.Generation != current.Generation:
+			return nil, nil, fmt.Errorf("deletion object changed since preview: its spec changed (generation %d, previewed %d); run dry_run=true again and review the new preview", current.Generation, approved.Generation)
+		case approved.ResourceVersion != current.ResourceVersion:
+			return nil, nil, fmt.Errorf("deletion object changed since preview: its resourceVersion differs, and this kind has no generation to tell spec from status; run dry_run=true again and review the new preview")
 		}
 	}
 	targetBytes, err := json.Marshal(current)
@@ -195,6 +202,10 @@ func handleDeleteResource(ctx context.Context, req *mcp.CallToolRequest, input d
 		result.Cascade = deleteCascadePreview(ctx, obj, propagation)
 		result.Summary = deletePreviewSummary(obj, propagation, result.Cascade)
 		result.Message = "Deletion preview validated by the API server; no deletion was persisted. Review the cascade limits before confirming."
+		if ts := obj.GetDeletionTimestamp(); ts != nil {
+			result.DeletionTimestamp = ts.UTC().Format(time.RFC3339)
+			result.Message = "Already deleting; a confirmed DELETE is accepted but changes nothing while finalizers remain."
+		}
 		if len(obj.GetFinalizers()) > 0 {
 			result.FinalizerGuidance = "Finalizers may keep this object deleting while controllers finish cleanup. This tool never removes finalizers. Inspect cleanup before using patch_resource as a separate, explicit step; removing finalizers can orphan resources."
 		}
@@ -253,7 +264,7 @@ func deleteCascadePreview(ctx context.Context, obj *unstructured.Unstructured, p
 	opts := topology.DefaultBuildOptions()
 	opts.IncludeReplicaSets = true
 	opts.IncludeSecrets = true
-	topo, err := summaryCtxTopoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := summaryCtxTopoMemo.GetScoped(cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(k8s.NewTopologyResourceProvider(cache)).WithDynamic(dp).Build(opts)
 	})
 	if err != nil {
@@ -295,6 +306,10 @@ func deletePreviewSummary(obj *unstructured.Unstructured, propagation metav1.Del
 		name = obj.GetNamespace() + "/" + name
 	}
 	summary := fmt.Sprintf("Deletes %s %s", obj.GetKind(), name)
+	deleting := obj.GetDeletionTimestamp()
+	if deleting != nil {
+		summary = fmt.Sprintf("Already deleting %s %s since %s", obj.GetKind(), name, deleting.UTC().Format(time.RFC3339))
+	}
 	switch {
 	case obj.GetKind() == "Namespace" && obj.GetAPIVersion() == "v1":
 		summary += " and all namespace contents (count unknown)"
@@ -327,7 +342,10 @@ func deletePreviewSummary(obj *unstructured.Unstructured, propagation metav1.Del
 		namespaceFinalizers, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "finalizers")
 		finalizers = append(finalizers, namespaceFinalizers...)
 	}
-	if len(finalizers) > 0 {
+	switch {
+	case len(finalizers) > 0 && deleting != nil:
+		summary += "; waiting on finalizers: " + strings.Join(finalizers, ", ") + "; another DELETE won't remove them"
+	case len(finalizers) > 0:
 		summary += "; may wait on finalizers: " + strings.Join(finalizers, ", ")
 	}
 	return summary
