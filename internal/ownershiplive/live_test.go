@@ -117,6 +117,12 @@ func TestLiveParity(t *testing.T) {
 			continue
 		}
 		gvr := schema.GroupVersionResource{Group: r.Group, Version: r.Version, Resource: r.Name}
+		// A kind the API can't list, such as one whose conversion webhook is
+		// down, would never load; leave it out, as Radar can't collect it.
+		if _, err := dyn.Resource(gvr).List(context.Background(), metav1.ListOptions{Limit: 1}); err != nil {
+			t.Logf("not watching %v: listing it fails: %v", gvr, err)
+			continue
+		}
 		if err := dynamicCache.EnsureWatching(gvr); err != nil {
 			t.Logf("not watching %v: %v", gvr, err)
 			continue
