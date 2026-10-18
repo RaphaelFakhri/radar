@@ -155,6 +155,13 @@ func (p *listProgress) closeLocked() {
 
 // failure reports the store's list failure, if Radar no longer vouches for it.
 func (p *listProgress) failure(now time.Time, after time.Duration, reach *APIReachability) (ListFailure, bool) {
+	f, failing, _ := p.failureOf(now, after, reach)
+	return f, failing
+}
+
+// failureOf is failure that also reports whether the failure is the API
+// server being unreachable rather than the store's own lists failing.
+func (p *listProgress) failureOf(now time.Time, after time.Duration, reach *APIReachability) (ListFailure, bool, bool) {
 	rv := p.rv()
 	synced := p.synced()
 	p.mu.Lock()
@@ -163,7 +170,7 @@ func (p *listProgress) failure(now time.Time, after time.Duration, reach *APIRea
 		p.closeLocked()
 	}
 	if !p.since.IsZero() && !p.probedOK && now.Sub(p.since) >= after {
-		return ListFailure{Since: p.since, Cause: p.cause, Stale: synced}, true
+		return ListFailure{Since: p.since, Cause: p.cause, Stale: synced}, true, false
 	}
 	// While the API server is unreachable, a reflector between watches
 	// retries inside client-go and never reports, so the store is frozen
@@ -173,10 +180,10 @@ func (p *listProgress) failure(now time.Time, after time.Duration, reach *APIRea
 			p.reachEpoch, p.rvAtReach = epoch, rv
 		}
 		if rv == p.rvAtReach && now.Sub(since) >= after {
-			return ListFailure{Since: since, Cause: ListFailureUnreachable, Stale: synced}, true
+			return ListFailure{Since: since, Cause: ListFailureUnreachable, Stale: synced}, true, true
 		}
 	}
-	return ListFailure{}, false
+	return ListFailure{}, false, false
 }
 
 // startProbe reports whether the watchdog should probe now, and marks the
@@ -250,6 +257,10 @@ type APIReachability struct {
 	since time.Time
 	// epoch counts episodes, so a store can tell this one from the last.
 	epoch uint64
+	// loggedEpoch is the last episode logged; recoveryLogged whether its end
+	// was.
+	loggedEpoch    uint64
+	recoveryLogged bool
 }
 
 // ObserveRoundTrip records one HTTP exchange. A request its caller cancelled
@@ -272,6 +283,27 @@ func (a *APIReachability) ObserveRoundTrip(req *http.Request, resp *http.Respons
 	case a.since.IsZero():
 		a.since = time.Now()
 		a.epoch++
+		a.recoveryLogged = false
+	}
+}
+
+// logTransition logs once when the API server has been unreachable for
+// after, and once when it answers again. Every watchdog sharing a's clients
+// calls it; only the first to see a transition logs it.
+func (a *APIReachability) logTransition(now time.Time, after time.Duration) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch unreachable := !a.since.IsZero() && now.Sub(a.since) >= after; {
+	case unreachable && a.loggedEpoch != a.epoch:
+		a.loggedEpoch = a.epoch
+		log.Printf("WARNING: Radar has not reached the Kubernetes API server since %s; it no longer vouches for caches that have not updated since",
+			a.since.Format(time.RFC3339))
+	case a.since.IsZero() && a.loggedEpoch == a.epoch && a.epoch != 0 && !a.recoveryLogged:
+		a.recoveryLogged = true
+		log.Printf("Radar reaches the Kubernetes API server again")
 	}
 }
 
@@ -320,9 +352,11 @@ func runListWatchdog(stop <-chan struct{}, after time.Duration, reach *APIReacha
 			return
 		case now := <-ticker.C:
 			_, unreachable := reach.unreachableSince(now, 0)
+			reach.logTransition(now, after)
 			for _, p := range trackers() {
-				f, failing := p.failure(now, after, reach)
-				p.logTransition(f, failing)
+				// An unreachable API server is logged once, not per store.
+				f, failing, unreachableOnly := p.failureOf(now, after, reach)
+				p.logTransition(f, failing && !unreachableOnly)
 				// Probes would only fail while the API server is unreachable.
 				if unreachable || !p.startProbe(now, every) {
 					continue
