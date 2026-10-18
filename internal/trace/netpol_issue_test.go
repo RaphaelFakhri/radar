@@ -351,8 +351,11 @@ func TestApplyInClusterResultsSettlesOnlyBackendsItReached(t *testing.T) {
 		Subject: ResourceRef{Kind: "Ingress", Namespace: "shop", Name: "web"},
 		Downstream: []Hop{
 			{Resource: ResourceRef{Kind: "Ingress", Namespace: "shop", Name: "web"}, Edge: "entry:Ingress"},
-			{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "svc-a"}, Edge: "Ingress->Service", Findings: denyAll()},
-			{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods"},
+			{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "svc-a"}, Edge: "Ingress->Service", Findings: denyAll(),
+				Config: &HopConfig{Ports: []PortMap{{Port: 80, TargetPort: "8080"}}}},
+			{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods",
+				Meta:     map[string]any{"policyVerdict": "would-deny", "policyNames": []string{"deny-a"}, "policyPort": ":80", "policyDenyPort": int32(8080), "policyProtocol": "TCP"},
+				Findings: []Finding{{Code: codePolicyWouldDeny, Severity: SeverityWarning, Message: "A network rule here would block this traffic"}}},
 			{Resource: ResourceRef{Kind: "Service", Namespace: "shop", Name: "svc-b"}, Edge: "Ingress->Service", Findings: denyAll()},
 			{Resource: ResourceRef{Kind: "Pods", Namespace: "shop"}, Edge: "Service->Pods"},
 		},
@@ -371,5 +374,11 @@ func TestApplyInClusterResultsSettlesOnlyBackendsItReached(t *testing.T) {
 	}
 	if f := tr.Downstream[3].Findings[0]; f.Severity != SeverityInfo {
 		t.Errorf("svc-b deny-all = %s, want info after its in-cluster request got through", f.Severity)
+	}
+	if f := tr.Downstream[2].Findings[0]; f.Severity != SeverityWarning {
+		t.Errorf("svc-a pods prediction = %s, want the warning kept", f.Severity)
+	}
+	if f, _, ok := primaryProblemFinding(tr); !ok || f.Severity != SeverityWarning {
+		t.Errorf("primary finding = %+v (found %v), want one of svc-a's standing warnings", f, ok)
 	}
 }
