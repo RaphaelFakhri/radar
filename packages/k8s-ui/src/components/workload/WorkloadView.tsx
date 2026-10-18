@@ -1321,14 +1321,16 @@ export function WorkloadView({
         {effectiveTab === 'overview' && expandedSummary ? (
           <div className="h-full min-h-0 overflow-y-auto">{expandedSummary}</div>
         ) : effectiveTab === 'overview' && expandedOverview ? (
-          <div className="h-full min-h-0">
+          <div className="flex h-full min-h-0 flex-col">
             {hasOperationalIssues && renderOverviewLeadForState && (
-              <div className="px-4 pt-4">
+              <div className="shrink-0 px-4 pt-4">
                 {renderOverviewLeadForState({ kind, namespace, name })}
               </div>
             )}
-            {divergenceCard && <div className="px-4 pt-4">{divergenceCard}</div>}
-            {expandedOverview}
+            {/* The host overview fills the remaining height; the card is capped
+                and scrolls so a long candidate list cannot push it offscreen. */}
+            {divergenceCard && <div className="max-h-[40%] shrink-0 overflow-y-auto px-4 pt-4">{divergenceCard}</div>}
+            <div className="min-h-0 flex-1">{expandedOverview}</div>
           </div>
         ) : effectiveTab === 'spec' && specTab?.render && !resourceGone ? (
           <div className="h-full min-h-0 overflow-y-auto">{specTab.render()}</div>
