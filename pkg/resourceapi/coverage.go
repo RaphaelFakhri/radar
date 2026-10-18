@@ -40,8 +40,9 @@ const (
 )
 
 // Narrowing says why an implicitly broad request covers less than everything.
-// A request that names its namespaces or kinds is never narrowed: what of it
-// Radar could not read is a gap. The values are a separate enum from
+// Narrowing applies per dimension: namespaces the request names are never
+// narrowed, nor are kinds a search names, and what of them Radar could not
+// read is a gap. The values are a separate enum from
 // readreason.Action even where the spelling matches: narrowedBy user_access
 // says the answer covers only what the user may read, the action user_access
 // that the user's access has to change.
