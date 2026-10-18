@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -616,6 +617,10 @@ func gapReason(ctx context.Context, resource string, code readreason.Code) (why,
 		return fmt.Sprintf("Radar doesn't collect %s there", resource), collectionRemedy(resource) + notYourAccessClause(ctx)
 	case readreason.RadarForbidden:
 		return "Kubernetes refuses Radar's own identity there", identityRemedy(resource, " there", "list/watch") + notYourAccessClause(ctx)
+	case readreason.RadarCredentialsRejected:
+		// Recorded when Radar connected or met on this read: a reconnect
+		// re-checks Radar's access either way.
+		return "Kubernetes rejected Radar's own credentials there", "whoever runs Radar must check them; reconnecting Radar with POST /api/connection/retry makes it check its access again" + notYourAccessClause(ctx)
 	case readreason.KindSyncPending:
 		return fmt.Sprintf("Radar is still loading %s there", resource), ""
 	case readreason.KindSyncTimedOut:
@@ -808,7 +813,9 @@ type typedRead struct {
 //
 // Namespaces Radar doesn't collect are a gap when the request named them
 // (explicit); otherwise they narrow the read, like the --namespace-scope pin,
-// and collected is set to what remains.
+// and collected is set to what remains. A namespace whose credentials
+// Kubernetes rejected when the cache was built is a gap either way: Radar
+// meant to collect it.
 func resourceReadCache(ctx context.Context, kind, group string, namespaces []string, explicit bool) (*k8s.ResourceCache, *typedRead, error) {
 	gvr, builtin := k8s.BuiltinGVRAnyGroup(kind)
 	typed := builtin && (group == "" || group == gvr.Group) && k8s.TypedKindOwnsGroup(kind, gvr.Group)
@@ -827,22 +834,16 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 		return nil, nil, errNotConnected()
 	}
 	result := cache.PermissionResult()
-	if result != nil {
-		for ns, probeErr := range result.NamespaceProbeErrors[gvr.Resource] {
-			if namespaces != nil && !slices.Contains(namespaces, ns) {
-				continue
-			}
-			if apierrors.IsUnauthorized(probeErr) {
-				return nil, nil, collectorUnauthorizedError(gvr.Resource, probeErr)
-			}
-		}
-	}
+	rejected, rejectedCause := recordedCredentialRejections(result, gvr.Resource, namespaces)
 	a := cache.AssessKindRead(gvr.Resource, namespaces)
 	if a.Readiness == k8s.KindUnavailable {
+		if len(rejected) > 0 {
+			return nil, nil, errRecordedCredentialsRejected(gvr.Resource, rejected, rejectedCause)
+		}
 		if result != nil {
 			if scope, probed := result.Scopes[gvr.Resource]; probed && !scope.Enabled {
 				if apierrors.IsUnauthorized(result.ProbeErrors[gvr.Resource]) {
-					return nil, nil, collectorUnauthorizedError(gvr.Resource, result.ProbeErrors[gvr.Resource])
+					return nil, nil, errRecordedCredentialsRejected(gvr.Resource, nil, result.ProbeErrors[gvr.Resource])
 				}
 				where := " in the namespaces you need"
 				if clusterScoped, _, _ := k8s.ClassifyKindScope(kind, group); clusterScoped {
@@ -870,16 +871,18 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 		return nil, nil, plan.gaps.failure()
 	}
 	target := collectorTarget{resource: gvr.Resource, group: gvr.Group, action: "list/watch"}
-	uncovered := len(a.Uncovered) > 0 || (namespaces == nil && !a.AllNamespaces)
+	notCollected := slices.DeleteFunc(slices.Clone(a.Uncovered), func(ns string) bool { return slices.Contains(rejected, ns) })
+	uncovered := len(notCollected) > 0 || (namespaces == nil && !a.AllNamespaces)
 	switch {
-	case explicit && len(a.Uncovered) > 0:
-		plan.gaps.add(readreason.RadarNamespaceNotCollected, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil), a.Uncovered...)
+	case explicit && len(notCollected) > 0:
+		plan.gaps.add(readreason.RadarNamespaceNotCollected, coverageError(ctx, target, notCollected, cache.KindNamespaces(gvr.Resource), nil), notCollected...)
 	case uncovered:
-		plan.collected = slices.Concat(a.Read, a.Loading, a.Failed)
+		plan.collected = slices.Concat(a.Read, a.Loading, a.Failed, rejected)
 		slices.Sort(plan.collected)
-		plan.uncovered = a.Uncovered
+		plan.collected = slices.Compact(plan.collected)
+		plan.uncovered = notCollected
 		if len(plan.collected) == 0 {
-			plan.gaps.add(readreason.RadarNamespaceNotCollected, coverageError(ctx, target, a.Uncovered, cache.KindNamespaces(gvr.Resource), nil))
+			plan.gaps.add(readreason.RadarNamespaceNotCollected, coverageError(ctx, target, notCollected, cache.KindNamespaces(gvr.Resource), nil))
 		}
 	}
 	if len(a.Loading) > 0 {
@@ -887,6 +890,9 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 	}
 	if len(a.Failed) > 0 {
 		plan.gaps.add(readreason.KindSyncTimedOut, failed, a.Failed...)
+	}
+	if len(rejected) > 0 {
+		plan.gaps.add(readreason.RadarCredentialsRejected, errRecordedCredentialsRejected(gvr.Resource, rejected, rejectedCause), rejected...)
 	}
 	if len(a.Read) == 0 {
 		return nil, plan, plan.gaps.failure()
@@ -1373,13 +1379,55 @@ func fetchMCPDynamicResource(ctx context.Context, cache *k8s.ResourceCache, kind
 	return obj, err
 }
 
-func collectorUnauthorizedError(kind string, err error) error {
-	credentials := "kubeconfig credentials"
-	if k8s.IsInCluster() {
-		credentials = "service-account credentials"
+// recordedCredentialRejections returns the namespaces of the request (nil:
+// all) whose access probe Kubernetes answered with a 401 when this cache was
+// built, sorted, and the first one's error.
+func recordedCredentialRejections(result *k8s.PermissionCheckResult, resource string, namespaces []string) ([]string, error) {
+	if result == nil {
+		return nil, nil
+	}
+	errs := map[string]error{}
+	for ns, probeErr := range result.NamespaceProbeErrors[resource] {
+		if apierrors.IsUnauthorized(probeErr) && (namespaces == nil || slices.Contains(namespaces, ns)) {
+			errs[ns] = probeErr
+		}
+	}
+	rejected := slices.Sorted(maps.Keys(errs))
+	if len(rejected) == 0 {
+		return nil, nil
+	}
+	return rejected, errs[rejected[0]]
+}
+
+// errRecordedCredentialsRejected reports a 401 Radar recorded when it built
+// its cache, in namespaces (nil: for the kind as a whole). The cache keeps
+// that result until it is rebuilt, as a reconnect does, so retrying the
+// request alone changes nothing.
+func errRecordedCredentialsRejected(kind string, namespaces []string, err error) error {
+	where := ""
+	if len(namespaces) > 0 {
+		where = " in " + namespacePhrase(resourceapi.Names(namespaces, resourceapi.MCPSetLimit))
 	}
 	return &readError{code: readreason.RadarCredentialsRejected, err: &collectorError{
-		msg:   fmt.Sprintf("Kubernetes rejected Radar's own %s while it read %s, so Radar read nothing. Whoever runs Radar must refresh them, then retry.", credentials, kind),
+		msg:   fmt.Sprintf("Kubernetes rejected Radar's own %s when Radar connected and checked its access to %s%s, so Radar doesn't collect them. %s", radarCredentials(), kind, where, reconnectRemedy),
+		cause: err,
+	}}
+}
+
+// reconnectRemedy is the remedy for a credential rejection Radar recorded when
+// it built its cache: a retry of the request reads the same recorded result.
+const reconnectRemedy = "Whoever runs Radar must check those credentials, then reconnect Radar (POST /api/connection/retry); retrying the request alone won't help."
+
+func radarCredentials() string {
+	if k8s.IsInCluster() {
+		return "service-account credentials"
+	}
+	return "kubeconfig credentials"
+}
+
+func collectorUnauthorizedError(kind string, err error) error {
+	return &readError{code: readreason.RadarCredentialsRejected, err: &collectorError{
+		msg:   fmt.Sprintf("Kubernetes rejected Radar's own %s while it read %s, so Radar read nothing. Whoever runs Radar must refresh them, then retry.", radarCredentials(), kind),
 		cause: err,
 	}}
 }

@@ -1878,7 +1878,7 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: "pods", Namespace: "alpha", Name: "present"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") || strings.Contains(err.Error(), "alpha rejected token") {
+		if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") || strings.Contains(err.Error(), "alpha rejected token") || !strings.Contains(err.Error(), "reconnect Radar") {
 			t.Fatalf("%s: namespace credential rejection lost: %v", verb, err)
 		}
 		if cause := collectorCause(err); cause == nil || !strings.Contains(cause.Error(), "alpha rejected token") {
@@ -1889,20 +1889,47 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 	if err != nil || !containsName(extractText(t, result), "present") {
 		t.Fatalf("healthy namespace incorrectly denied: %v", err)
 	}
-	_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
-	if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
-		t.Fatalf("unscoped list must not omit a namespace whose credentials were rejected: %v", err)
-	}
+	// An unscoped list still reads the namespaces Radar collects; the one
+	// whose credentials were rejected is a gap, never silently omitted, and
+	// its remedy is a reconnect, since a retry reads the same recorded result.
 	for _, tc := range []struct {
-		name string
-		ctx  context.Context
-	}{{"auth disabled", context.Background()}, {"cluster-wide", withClusterAdmin(t, "credential-admin")}} {
+		name       string
+		ctx        context.Context
+		narrowedBy []string
+	}{
+		{"restricted", ctx, []string{"user_access"}},
+		{"auth disabled", context.Background(), []string{"namespace_collection"}},
+		{"cluster-wide", withClusterAdmin(t, "credential-admin"), []string{"namespace_collection"}},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := handleListResources(tc.ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
-			if err == nil || !strings.HasPrefix(err.Error(), "radar_credentials_rejected:") {
-				t.Fatalf("unrestricted list must not omit a namespace whose credentials were rejected: %v", err)
+			result, _, err := handleListResources(tc.ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
+			if err != nil {
+				t.Fatalf("a rejected namespace failed the whole list: %v", err)
 			}
+			rows, coverage := listBody(t, result)
+			if len(rows) != 1 || rows[0]["name"] != "present" {
+				t.Fatalf("rows = %v, want beta's pod", rows)
+			}
+			if coverage.Status != "partial" || !slices.Equal(coverage.Codes, []string{"radar_credentials_rejected"}) ||
+				!slices.Equal(coverage.GapNamespaces["radar_credentials_rejected"], []string{"alpha"}) ||
+				!slices.Equal(coverage.Read, []string{"beta"}) || !slices.Equal(coverage.Scope, []string{"alpha", "beta"}) ||
+				!slices.Equal(coverage.NarrowedBy, tc.narrowedBy) {
+				t.Fatalf("coverage = %+v, want alpha a credentials gap beside beta's rows, narrowed by %v", coverage, tc.narrowedBy)
+			}
+			if !strings.Contains(coverage.Summary, "POST /api/connection/retry") || strings.Contains(coverage.Next, "Retry") || strings.Contains(coverage.Summary, "alpha rejected token") {
+				t.Fatalf("summary %q / next %q: want the reconnect remedy, no retry, and no API server text", coverage.Summary, coverage.Next)
+			}
+			assertNoCollectorLeak(t, errors.New(coverage.Summary))
 		})
+	}
+	// A user who can't see alpha gets a complete answer that never names it.
+	betaOnly := withRestrictedUser(t, "beta-reader", []string{"beta"})
+	result, _, err = handleListResources(betaOnly, nil, listResourcesInput{Kind: "pods", Context: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, coverage := listBody(t, result); coverage.Status != "complete" || len(coverage.Codes) != 0 || strings.Contains(coverage.Summary, "alpha") {
+		t.Fatalf("coverage = %+v, want complete and alpha never named", coverage)
 	}
 }
 
