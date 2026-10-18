@@ -1,6 +1,7 @@
 import { GitCompare } from 'lucide-react'
 import type { ResourceRef, TemplateDivergence } from '../../types'
 import { ResourceRefBadge } from '../ui/drawer-components'
+import { formatRelativeAgeTime } from '../../utils/format'
 
 // Shows how a Pod (or a workload's Pods) differs from the template that
 // created it. The server only sends the field when something differs, so an
@@ -51,14 +52,20 @@ export function TemplateDivergenceCard({
         {sources.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-theme-text-tertiary">Could have changed it</span>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-col items-start gap-1.5">
               {sources.map((ref) => (
-                <ResourceRefBadge
-                  key={`${ref.group ?? ''}/${ref.kind}/${ref.namespace ?? ''}/${ref.name}`}
-                  resourceRef={{ kind: ref.kind, group: ref.group, namespace: ref.namespace ?? '', name: ref.name }}
-                  onClick={onNavigate}
-                  wrapAtSeparator
-                />
+                <span key={`${ref.group ?? ''}/${ref.kind}/${ref.namespace ?? ''}/${ref.name}`} className="inline-flex max-w-full items-center gap-1.5">
+                  <ResourceRefBadge
+                    resourceRef={{ kind: ref.kind, group: ref.group, namespace: ref.namespace ?? '', name: ref.name }}
+                    onClick={onNavigate}
+                    wrapAtSeparator
+                  />
+                  {ref.created && (
+                    <span className="shrink-0 text-[11px] text-theme-text-tertiary" title={ref.created}>
+                      created {formatRelativeAgeTime(ref.created)}
+                    </span>
+                  )}
+                </span>
               ))}
               {divergence.sourcesNotNamed ? <span className="self-center text-theme-text-tertiary">+{divergence.sourcesNotNamed} more</span> : null}
             </div>

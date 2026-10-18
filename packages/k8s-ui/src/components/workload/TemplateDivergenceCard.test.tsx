@@ -13,7 +13,7 @@ const workload = {
   baseline: 'ReplicaSet web-7c9',
   differences: ['containers[app].resources.limits.memory is 16Mi; template specifies 256Mi'],
   sources: ['Mutating webhook policy / mutate.example currently matches this Pod.', 'Writer and timing are unknown.'],
-  sourceRefs: [{ kind: 'MutatingWebhookConfiguration', group: 'admissionregistration.k8s.io', name: 'policy' }],
+  sourceRefs: [{ kind: 'MutatingWebhookConfiguration', group: 'admissionregistration.k8s.io', name: 'policy', created: new Date(Date.now() - 4 * 60_000).toISOString() }],
   sourceGaps: ['Some LimitRanges in the namespace are not readable by the caller and were not inspected.'],
   sourcesNotNamed: 4,
 }
@@ -33,6 +33,7 @@ describe('TemplateDivergenceCard', () => {
     expect(html).toContain('containers[app].resources.limits.memory is 16Mi; template specifies 256Mi')
     expect(html).toContain('Could have changed it')
     expect(html).toContain('policy')
+    expect(html).toContain('created 4m ago')
     expect(html).toContain('+4 more')
     expect(html).toContain('Some LimitRanges in the namespace are not readable')
     // The agent-facing sentences stay out of the human view.

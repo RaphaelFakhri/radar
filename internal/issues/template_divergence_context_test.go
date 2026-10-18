@@ -233,6 +233,9 @@ func TestPodTemplateWebhookCandidatesNameEveryMatchAndListLoopbackLast(t *testin
 	if !strings.Contains(message, "Also matching: MutatingWebhookConfiguration vpc-resource-mutating-webhook.") || len(report.refs) != 6 {
 		t.Fatalf("every match must be named: %s refs=%v", message, report.refs)
 	}
+	if refs := sourceRefs(report); len(refs) != 6 || refs[0].Created != "2026-05-10T19:27:50Z" {
+		t.Fatalf("candidate creation times not carried for the UI: %+v", refs)
+	}
 
 	_, coverage = NewCacheProvider().templateCandidates(pod, differences, podTemplateAccess{related: func(ref Ref) bool { return ref.Kind != "Namespace" && ref.Name != "cel-policy" }})
 	if !strings.Contains(strings.Join(coverage, " "), "not readable by the caller") {

@@ -732,7 +732,7 @@ template of their own ReplicaSet or Job, so a rolling update is not a
 difference; `diagnose` adds it for a Pod or Deployment. It is context, not
 proof: a `summary`, the `differences` (for a workload, `podsCompared`,
 `podsDiffering` and an `examplePod`), and `sources`, the same candidate list as
-the issue fact. StatefulSet and DaemonSet Pods are not compared. The resource
+the issue fact (`sourceRefs` names each candidate with its creation time). StatefulSet and DaemonSet Pods are not compared. The resource
 API (`/api/resources/{kind}/{namespace}/{name}`) returns the same field, and
 Radar's resource drawers show it.
 

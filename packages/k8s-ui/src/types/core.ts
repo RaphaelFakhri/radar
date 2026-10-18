@@ -773,7 +773,7 @@ export interface TemplateDivergence {
   baseline?: string
   differences: string[]
   sources?: string[]
-  sourceRefs?: { kind: string; group?: string; namespace?: string; name: string }[]
+  sourceRefs?: { kind: string; group?: string; namespace?: string; name: string; created?: string }[]
   sourceGaps?: string[]
   sourcesNotNamed?: number
 }

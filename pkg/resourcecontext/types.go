@@ -77,6 +77,13 @@ type ResourceContext struct {
 	Omitted            []OmittedField      `json:"omitted,omitempty"`
 }
 
+// TemplateSourceRef is a candidate object with when it was created (RFC 3339),
+// a fact for the reader to weigh; the list is not ordered by it.
+type TemplateSourceRef struct {
+	ContextRef
+	Created string `json:"created,omitempty"`
+}
+
 // TemplateDivergence reports differences between live Pods and the current
 // template of their immediate ReplicaSet or Job. For a Pod, PodsCompared is 1
 // and ExamplePod is empty. For a workload, the counts cover the current Pods
@@ -105,9 +112,9 @@ type TemplateDivergence struct {
 	// for a UI to link. SourceGaps are Sources' statements about candidate
 	// sources that could not be inspected. SourcesNotNamed counts matching
 	// candidates past the naming budget.
-	SourceRefs      []ContextRef `json:"sourceRefs,omitempty"`
-	SourceGaps      []string     `json:"sourceGaps,omitempty"`
-	SourcesNotNamed int          `json:"sourcesNotNamed,omitempty"`
+	SourceRefs      []TemplateSourceRef `json:"sourceRefs,omitempty"`
+	SourceGaps      []string            `json:"sourceGaps,omitempty"`
+	SourcesNotNamed int                 `json:"sourcesNotNamed,omitempty"`
 }
 
 // ContextTier signals how much enrichment is included. "basic" is the
