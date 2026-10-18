@@ -4,9 +4,9 @@ import type { ResourceRef, TemplateDivergence } from '../../types'
 import { ResourceRefBadge } from '../ui/drawer-components'
 import { formatRelativeAgeTime } from '../../utils/format'
 
-const RESOURCE_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.resources\.(limits|requests)\.(\S+) is (.+?); (?:template specifies (.+)|the template leaves it unset)$/
-const UNSET_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.resources\.(limits|requests)\.(\S+) is unset; template specifies (.+)$/
-const IMAGE_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.image is "(.+)"; template specifies "(.+)"$/
+const RESOURCE_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.resources\.(limits|requests)\.(\S+) is ([^;]+); (?:template specifies ([^;]+)|the template leaves it unset)$/
+const UNSET_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.resources\.(limits|requests)\.(\S+) is unset; template specifies ([^;]+)$/
+const IMAGE_PATH = /^(?:containers|initContainers)\[[^\]]+\]\.image is "([^"]+)"; template specifies "([^"]+)"$/
 const MORE_DIFFERENCES = /^(\d+) more differences not listed$/
 
 // Short form of one difference for the collapsed line, e.g.
