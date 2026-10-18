@@ -201,6 +201,9 @@ func TestRequestDeadlines_StallsEndSlowTransfersFinish(t *testing.T) {
 		if !errors.Is(err, errRequestEnded) {
 			t.Fatalf("err = %v, want a stall", err)
 		}
+		if n := strings.Count(err.Error(), errRequestEnded.Error()); n != 1 {
+			t.Fatalf("the cause should appear once, got %q", err)
+		}
 		if d := time.Since(start); d < 150*time.Millisecond || d > 2*time.Second {
 			t.Fatalf("ended after %v, want about the 200ms idle timeout", d)
 		}

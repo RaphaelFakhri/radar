@@ -131,6 +131,9 @@ func (t *requestDeadlineRoundTripper) RoundTrip(req *http.Request) (*http.Respon
 // that caused it, so logs and diagnostics say why the read ended. The original
 // error is kept as text only, so the result is not a timeout to client-go.
 func endCause(ctx context.Context, err error) error {
+	if errors.Is(err, errRequestEnded) {
+		return err
+	}
 	if cause := context.Cause(ctx); errors.Is(cause, errRequestEnded) {
 		return fmt.Errorf("%w (%v)", cause, err)
 	}
