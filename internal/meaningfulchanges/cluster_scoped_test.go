@@ -277,7 +277,10 @@ func TestRuleScope(t *testing.T) {
 		{"explicit cluster", rule(scope(admissionv1.ClusterScope), []string{""}, "pods"), false, false},
 		{"wildcard resources", rule(scope(admissionv1.AllScopes), []string{""}, "*"), true, false},
 		{"unknown resource", rule(nil, []string{"example.test"}, "widgets"), false, true},
-		{"wildcard group naming nodes", rule(nil, []string{"*"}, "nodes"), false, true},
+		{"wildcard group naming nodes", rule(nil, []string{"*"}, "nodes"), false, false},
+		{"wildcard group and resource (Gatekeeper)", rule(nil, []string{"*"}, "*"), true, false},
+		{"wildcard group naming pods", rule(nil, []string{"*"}, "pods"), true, false},
+		{"wildcard group naming an unknown resource", rule(nil, []string{"*"}, "widgets"), false, true},
 	} {
 		namespaced, unknown := ruleScope(tc.rule)
 		if namespaced != tc.namespaced || unknown != tc.unknown {

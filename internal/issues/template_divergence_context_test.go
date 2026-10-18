@@ -85,6 +85,8 @@ func TestPodTemplateContextComparisonStaysQuietOnAdmissionDefaults(t *testing.T)
 		{"resource removed", func(p *corev1.Pod) {
 			delete(p.Spec.Containers[0].Resources.Limits, corev1.ResourceCPU)
 		}, false, []string{"containers[app].resources.limits.cpu is unset; template specifies 500m"}},
+		{"digest pinned onto the same tag", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "nginx:1.27@sha256:" + strings.Repeat("a", 64) }, false, nil},
+		{"digest pinned onto another tag", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "nginx:1.28@sha256:" + strings.Repeat("a", 64) }, false, []string{`containers[app].image is "nginx:1.28@sha256:` + strings.Repeat("a", 64) + `"; template specifies "nginx:1.27"`}},
 		{"image replaced", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "registry.example/nginx@sha256:abc" }, false, []string{`containers[app].image is "registry.example/nginx@sha256:abc"; template specifies "nginx:1.27"`}},
 		{"placement and runtime", func(p *corev1.Pod) {
 			p.Spec.NodeSelector = map[string]string{"pool": "spot"}
@@ -104,6 +106,14 @@ func TestPodTemplateContextComparisonStaysQuietOnAdmissionDefaults(t *testing.T)
 				t.Fatalf("differences=%q want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPodTemplateContextKeepsIstioAutoImageQuiet(t *testing.T) {
+	template := corev1.PodSpec{Containers: []corev1.Container{{Name: "istio-proxy", Image: "auto"}}}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "istio-proxy", Image: "docker.io/istio/proxyv2:1.24.0"}}}}
+	if got := comparePodTemplateContext(pod, &template, false); len(got) != 0 {
+		t.Fatalf("Istio's auto image placeholder reported: %+v", got)
 	}
 }
 
@@ -127,7 +137,7 @@ func TestPodTemplateCandidatesDiscloseUncachedLimitRanges(t *testing.T) {
 	}
 	omitted := []templateDifference{{path: "containers[app].resources.limits.memory", resource: corev1.ResourceMemory, resourceKind: "limits", templateMissing: true}}
 	_, coverage := NewCacheProvider().templateCandidates(templateTestPod(), omitted, podTemplateAccess{cluster: func(string, string) bool { return false }})
-	if !strings.Contains(strings.Join(coverage, " "), "LimitRange defaults were not inspected") {
+	if !strings.Contains(strings.Join(coverage, " "), "LimitRange defaults were not inspected: Radar does not cache LimitRanges") {
 		t.Fatalf("uncached LimitRanges not disclosed: %v", coverage)
 	}
 }

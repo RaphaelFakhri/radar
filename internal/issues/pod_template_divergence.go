@@ -278,7 +278,7 @@ func comparePodTemplateContext(pod *corev1.Pod, template *corev1.PodSpec, resize
 				continue
 			}
 			path := fmt.Sprintf("%s[%s]", set.path, live.Name)
-			if before.Image != "" && !sameTemplateImage(before.Image, live.Image) {
+			if before.Image != "" && !sameContextImage(before.Image, live.Image) {
 				differences = append(differences, templateDifference{path: path + ".image", message: fmt.Sprintf("%s.image is %q; template specifies %q", path, live.Image, before.Image)})
 			}
 			if !resized {
@@ -386,6 +386,21 @@ func resourceDifference(container, kind string, key corev1.ResourceName, before,
 		message = fmt.Sprintf("%s is %s; template specifies %s", path, live.String(), before.String())
 	}
 	return templateDifference{path: path, resource: key, resourceKind: kind, value: live, templateMissing: !present, message: message}
+}
+
+// sameContextImage is sameTemplateImage plus two admission rewrites that
+// keep the image the template asked for: a digest pinned onto the same
+// repository and tag (Kyverno verifyImages, repo:v1 → repo:v1@sha256:…), and
+// Istio's "auto" placeholder, which its injector replaces with the proxy
+// image.
+func sameContextImage(template, live string) bool {
+	if template == "auto" || sameTemplateImage(template, live) {
+		return true
+	}
+	if pinned, _, ok := strings.Cut(live, "@sha256:"); ok {
+		return sameTemplateImage(template, pinned)
+	}
+	return false
 }
 
 func sameTemplateImage(a, b string) bool {

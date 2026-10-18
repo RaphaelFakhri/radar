@@ -739,7 +739,8 @@ the issue fact. StatefulSet and DaemonSet Pods are not compared.
   the runtime class.
 - Quiet: what admission adds routinely (injected containers, volumes and env,
   added tolerations, extended resources, limit-to-request copies, a defaulted
-  priority class), and resource values while a resize is in progress.
+  priority class, a digest pinned onto the template's tag, Istio's `auto`
+  image), and resource values while a resize is in progress.
 
 With `context=none`, `get_resource` returns a one-line divergence note in
 top-level `warnings`, outside the returned object.

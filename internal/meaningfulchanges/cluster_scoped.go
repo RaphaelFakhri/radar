@@ -240,8 +240,9 @@ func webhookScopes(kind string, item *unstructured.Unstructured) []webhookScope 
 // whether that could not be established. The rule's scope narrows the
 // resources it lists but never widens them: a rule naming only cluster-scoped
 // resources (nodes, say) reaches no namespace whatever its scope. A wildcard
-// group, a wildcard resource outside the core group, or a resource discovery
-// cannot place leaves the answer unknown.
+// group is judged by the core group (Gatekeeper's ["*"]/["*"] covers Pods); a
+// wildcard resource in a named non-core group, or a resource discovery cannot
+// place, leaves the answer unknown.
 func ruleScope(rule admissionv1.RuleWithOperations) (namespaced, unknown bool) {
 	if rule.Scope != nil && *rule.Scope == admissionv1.ClusterScope {
 		return false, false
@@ -251,12 +252,16 @@ func ruleScope(rule admissionv1.RuleWithOperations) (namespaced, unknown bool) {
 		base, _, _ := strings.Cut(resource, "/")
 		for _, group := range rule.APIGroups {
 			switch {
-			case base == "*" && group == "":
-				// The core group holds Pods.
+			case base == "*" && (group == "" || group == "*"):
+				// Both include the core group, which holds Pods.
 				return true, false
-			case base == "*" || group == "*" || discovery == nil:
+			case base == "*" || discovery == nil:
 				unknown = true
 				continue
+			case group == "*":
+				// A named resource under every group: the core group decides
+				// for the resources that matter most here (Pods, Services…).
+				group = ""
 			}
 			info, ok := discovery.GetResourceWithGroup(base, group)
 			switch {
