@@ -12,30 +12,28 @@ import (
 )
 
 const (
-	// DefaultRequestIdleTimeout ends a read when no response bytes have
+	// requestIdleTimeout ends a read when no response bytes have
 	// arrived for this long. A transfer that keeps delivering bytes, however
 	// slowly, is never cut.
-	DefaultRequestIdleTimeout = time.Minute
-	// DefaultResponseHeaderTimeout bounds the wait for response headers: the
+	requestIdleTimeout = time.Minute
+	// responseHeaderTimeout bounds the wait for response headers: the
 	// apiserver can take a while to start answering a large LIST.
-	DefaultResponseHeaderTimeout = 3 * time.Minute
-	// DefaultRequestCeiling bounds a whole non-watch read, only to stop a
+	responseHeaderTimeout = 3 * time.Minute
+	// requestCeiling bounds a whole non-watch read, only to stop a
 	// request that keeps trickling bytes forever.
-	DefaultRequestCeiling = 15 * time.Minute
-	// DefaultWatchDeadlineGrace is added to a watch's timeoutSeconds. The
+	requestCeiling = 15 * time.Minute
+	// watchDeadlineGrace is added to a watch's timeoutSeconds. The
 	// apiserver ends such a watch itself after timeoutSeconds, so the client
 	// deadline only fires when the connection died without a reset — for
 	// example a proxy whose upstream dropped silently.
-	DefaultWatchDeadlineGrace = time.Minute
+	watchDeadlineGrace = time.Minute
 )
 
 // WrapRequestDeadlines returns a rest.Config WrapTransport that ends
 // informer-style GETs whose connection stalls. serverPath is the path part of
 // the config's Host (for example "/k8s/clusters/c-1" behind a proxy, usually
 // empty); it is stripped before a request path is classified, so a prefix that
-// looks like an API path can't change the classification. idle is the idle
-// timeout (see DefaultRequestIdleTimeout); 0 or less returns the transport
-// unchanged.
+// looks like an API path can't change the classification.
 //
 // rest.Config.Timeout cannot do this job: it becomes http.Client.Timeout and
 // would also end every long-lived watch, log stream and exec session. Without
@@ -43,27 +41,24 @@ const (
 // reflector forever and its store silently stops updating.
 //
 // A non-watch GET ends when its headers take longer than
-// DefaultResponseHeaderTimeout (or idle, if longer), when no body bytes arrive
-// for idle, or after DefaultRequestCeiling (or idle, if longer) in total. A watch with
-// timeoutSeconds ends at timeoutSeconds plus DefaultWatchDeadlineGrace; it is
-// never idle-timed, because a healthy watch can go quiet. Each HTTP attempt
-// gets its own bounds; client-go may retry an attempt. Exempt: non-GET
-// requests, protocol upgrades (exec/attach/port-forward), follow=true log
-// streams, the apiserver's long-running subresources (log, exec, attach,
+// responseHeaderTimeout, when no body bytes arrive for
+// requestIdleTimeout, or after requestCeiling in total. A watch
+// with timeoutSeconds ends at timeoutSeconds plus watchDeadlineGrace;
+// it is never idle-timed, because a healthy watch can go quiet. Each HTTP
+// attempt gets its own bounds; client-go may retry an attempt. Exempt:
+// non-GET requests, protocol upgrades (exec/attach/port-forward), follow=true
+// log streams, the apiserver's long-running subresources (log, exec, attach,
 // portforward, proxy), and watches without timeoutSeconds.
-func WrapRequestDeadlines(serverPath string, idle time.Duration) func(http.RoundTripper) http.RoundTripper {
+func WrapRequestDeadlines(serverPath string) func(http.RoundTripper) http.RoundTripper {
 	serverPath = strings.TrimRight(serverPath, "/")
 	return func(rt http.RoundTripper) http.RoundTripper {
-		if idle <= 0 {
-			return rt
-		}
 		return &requestDeadlineRoundTripper{
 			next:          rt,
 			serverPath:    serverPath,
-			idle:          idle,
-			headerTimeout: max(DefaultResponseHeaderTimeout, idle),
-			ceiling:       max(DefaultRequestCeiling, idle),
-			watchGrace:    DefaultWatchDeadlineGrace,
+			idle:          requestIdleTimeout,
+			headerTimeout: responseHeaderTimeout,
+			ceiling:       requestCeiling,
+			watchGrace:    watchDeadlineGrace,
 		}
 	}
 }

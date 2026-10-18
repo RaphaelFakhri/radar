@@ -64,7 +64,7 @@ func TestRequestDeadlineClassify(t *testing.T) {
 			for k, v := range tc.header {
 				req.Header[k] = v
 			}
-			rt := WrapRequestDeadlines(tc.server, time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+			rt := WrapRequestDeadlines(tc.server)(http.DefaultTransport).(*requestDeadlineRoundTripper)
 			bounded, watch := rt.classify(req)
 			got := watch
 			if bounded && watch == 0 {
@@ -107,7 +107,7 @@ func TestRequestDeadlines_PrefixedServerURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultServerUrlFor: %v", err)
 	}
-	rt := WrapRequestDeadlines(serverURL.Path, time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt := WrapRequestDeadlines(serverURL.Path)(http.DefaultTransport).(*requestDeadlineRoundTripper)
 	rt.headerTimeout = 100 * time.Millisecond
 	cfg.Transport = rt
 	client := kubernetes.NewForConfigOrDie(cfg)
@@ -128,7 +128,8 @@ func TestRequestDeadlines_PrefixedServerURL(t *testing.T) {
 
 // testRoundTripper is the production wrapper with short bounds.
 func testRoundTripper(idle, header, ceiling time.Duration) *requestDeadlineRoundTripper {
-	rt := WrapRequestDeadlines("", idle)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt := WrapRequestDeadlines("")(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt.idle = idle
 	rt.headerTimeout = header
 	rt.ceiling = ceiling
 	return rt
@@ -280,17 +281,6 @@ func TestRequestDeadlines_QuietWatchIsNotIdleTimed(t *testing.T) {
 	}
 }
 
-func TestRequestDeadlines_ZeroIdleDisables(t *testing.T) {
-	base := http.DefaultTransport
-	if got := WrapRequestDeadlines("", 0)(base); got != base {
-		t.Fatalf("idle 0 must return the transport unchanged, got %T", got)
-	}
-	rt := WrapRequestDeadlines("", 5*time.Minute)(base).(*requestDeadlineRoundTripper)
-	if rt.headerTimeout != 5*time.Minute || rt.ceiling != DefaultRequestCeiling {
-		t.Fatalf("a long idle timeout must raise the header bound with it: header=%v ceiling=%v", rt.headerTimeout, rt.ceiling)
-	}
-}
-
 // A watch that outlives its timeoutSeconds plus grace is ended with an error
 // client-go passes on instead of retrying, so the reflector lists again rather
 // than silently re-watching a dead path.
@@ -311,7 +301,7 @@ func TestRequestDeadlines_DeadWatchSurfacesAsError(t *testing.T) {
 		<-r.Context().Done() // headers, then nothing
 	}))
 	defer srv.Close()
-	rt := WrapRequestDeadlines("", time.Minute)(http.DefaultTransport).(*requestDeadlineRoundTripper)
+	rt := WrapRequestDeadlines("")(http.DefaultTransport).(*requestDeadlineRoundTripper)
 	rt.watchGrace = 200 * time.Millisecond
 	cfg := &rest.Config{Host: srv.URL, Transport: rt}
 	client := kubernetes.NewForConfigOrDie(cfg)
