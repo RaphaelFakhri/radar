@@ -46,6 +46,9 @@ func handleManageHelmRelease(ctx context.Context, req *mcp.CallToolRequest, inpu
 	if !dryRun && input.Confirm == "" {
 		return nil, nil, fmt.Errorf("confirm is required; run dry_run=true and review the preview first")
 	}
+	if err := requireConnected(); err != nil {
+		return nil, nil, err
+	}
 	if err := helm.CheckHelmWrite(ctx, namespace); err != nil {
 		return nil, nil, err
 	}

@@ -89,6 +89,7 @@ func TestHelmConfirmationDigestAndConsumption(t *testing.T) {
 }
 
 func TestManageHelmWriteGateBeforePreviewAndExecution(t *testing.T) {
+	setConnectedForTest(t)
 	var checks int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/subjectaccessreviews") {
@@ -134,6 +135,37 @@ func TestManageHelmWriteGateBeforePreviewAndExecution(t *testing.T) {
 	for _, want := range []string{`outcome="preview_failed"`, `outcome="failed"`, "revision=0 no_hooks=true keep_history=true"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("audit missing %s: %s", want, output.String())
+		}
+	}
+}
+
+func TestManageHelmReleaseRefusesUntilConnected(t *testing.T) {
+	previous := k8s.GetConnectionStatus()
+	t.Cleanup(func() { k8s.SetConnectionStatus(previous) })
+	no := false
+	for _, tc := range []struct {
+		status k8s.ConnectionStatus
+		want   string
+	}{
+		{k8s.ConnectionStatus{State: k8s.StateConnecting}, "cluster_connecting: Cluster is still connecting, please retry shortly"},
+		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "dial tcp: i/o timeout"}, "not connected to cluster: dial tcp: i/o timeout"},
+	} {
+		k8s.SetConnectionStatus(tc.status)
+		for _, action := range []string{"uninstall", "rollback"} {
+			for _, execute := range []bool{false, true} {
+				input := manageHelmReleaseInput{Action: action, Namespace: "store", Name: "demo"}
+				if action == "rollback" {
+					input.Revision = 1
+				}
+				if execute {
+					input.DryRun = &no
+					input.Confirm = "unverified-token"
+				}
+				result, _, err := handleManageHelmRelease(context.Background(), nil, input)
+				if result != nil || err == nil || err.Error() != tc.want {
+					t.Fatalf("%s %s execute=%v: result=%v err=%v, want %q", tc.status.State, action, execute, result, err, tc.want)
+				}
+			}
 		}
 	}
 }

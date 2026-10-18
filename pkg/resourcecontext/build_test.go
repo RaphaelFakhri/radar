@@ -68,6 +68,7 @@ func (m mockServiceBackends) PodsForServiceSelector(namespace string, selector l
 }
 
 type mockResourceProvider struct {
+	ingresses    []*networkingv1.Ingress
 	pods         []*corev1.Pod
 	deploys      []*appsv1.Deployment
 	replicaSets  []*appsv1.ReplicaSet
@@ -88,7 +89,7 @@ func (m mockResourceProvider) StatefulSets() ([]*appsv1.StatefulSet, error) {
 func (m mockResourceProvider) ReplicaSets() ([]*appsv1.ReplicaSet, error)  { return m.replicaSets, nil }
 func (m mockResourceProvider) Jobs() ([]*batchv1.Job, error)               { return m.jobs, nil }
 func (m mockResourceProvider) CronJobs() ([]*batchv1.CronJob, error)       { return m.cronJobs, nil }
-func (m mockResourceProvider) Ingresses() ([]*networkingv1.Ingress, error) { return nil, nil }
+func (m mockResourceProvider) Ingresses() ([]*networkingv1.Ingress, error) { return m.ingresses, nil }
 func (m mockResourceProvider) ConfigMaps() ([]*corev1.ConfigMap, error)    { return nil, nil }
 func (m mockResourceProvider) Secrets() ([]*corev1.Secret, error)          { return nil, nil }
 func (m mockResourceProvider) PersistentVolumeClaims() ([]*corev1.PersistentVolumeClaim, error) {
@@ -2246,5 +2247,162 @@ func TestBuild_NodeAssignedPodsBounded(t *testing.T) {
 	}
 	if rc.ReferencedBy.Items[0].Name != "pod-01" {
 		t.Fatalf("unstable order: %+v", rc.ReferencedBy.Items)
+	}
+}
+
+func TestBuildCrossNamespaceGraphDependenciesAreAuthorized(t *testing.T) {
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+		"metadata": map[string]any{"name": "app", "namespace": "team"},
+	}}
+	topo := &topology.Topology{
+		Nodes: []topology.Node{
+			{ID: "helmrelease/team/app", Kind: topology.KindHelmRelease, Name: "app", Data: map[string]any{"namespace": "team", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
+			{ID: "helmchart/shared/chart/source.toolkit.fluxcd.io", Kind: "HelmChart", Name: "chart", Data: map[string]any{"namespace": "shared", "apiVersion": "source.toolkit.fluxcd.io/v1"}},
+			{ID: "helmrepository/shared/repo/source.toolkit.fluxcd.io", Kind: "HelmRepository", Name: "repo", Data: map[string]any{"namespace": "shared", "apiVersion": "source.toolkit.fluxcd.io/v1"}},
+		},
+		Edges: []topology.Edge{
+			{ID: "chart", Source: "helmchart/shared/chart/source.toolkit.fluxcd.io", Target: "helmrelease/team/app", Type: topology.EdgeConfigures},
+			{ID: "source", Source: "helmrepository/shared/repo/source.toolkit.fluxcd.io", Target: "helmchart/shared/chart/source.toolkit.fluxcd.io", Type: topology.EdgeConfigures},
+		},
+	}
+	allowed := Build(context.Background(), obj, Options{Topology: topo})
+	if len(allowed.Dependencies) != 1 || allowed.Dependencies[0].Namespace != "shared" || allowed.Dependencies[0].Group != "source.toolkit.fluxcd.io" {
+		t.Fatalf("cross-namespace dependency lost: %+v", allowed)
+	}
+	chart := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmChart", "metadata": map[string]any{"namespace": "shared", "name": "chart"}}}
+	chartContext := Build(context.Background(), chart, Options{Topology: topo})
+	if chartContext.Owner != nil || len(chartContext.Dependencies) != 1 || chartContext.Dependencies[0].Kind != "HelmRepository" || chartContext.Dependencies[0].Namespace != "shared" {
+		t.Fatalf("generated chart source context lost or presented as owner: %+v", chartContext)
+	}
+
+	denied := Build(context.Background(), obj, Options{Topology: topo, AccessChecker: denyChecker{group: "source.toolkit.fluxcd.io", kind: "HelmChart", namespace: "shared"}})
+	if len(denied.Dependencies) != 0 {
+		t.Fatalf("denied target leaked: %+v", denied)
+	}
+	for _, entry := range denied.Omitted {
+		if entry.Field == "dependencies" && entry.Reason == OmittedRBACDenied {
+			return
+		}
+	}
+	t.Fatalf("denied target lacks omission: %+v", denied)
+}
+
+func TestFluxConfigurationEdgesPreserveResourceContext(t *testing.T) {
+	topo := &topology.Topology{}
+	for _, ref := range []struct{ group, kind, ns, name string }{
+		{"kustomize.toolkit.fluxcd.io", "Kustomization", "team", "config"},
+		{"kustomize.toolkit.fluxcd.io", "Kustomization", "other", "shared-consumer"},
+		{"helm.toolkit.fluxcd.io", "HelmRelease", "team", "app"},
+		{"source.toolkit.fluxcd.io", "HelmChart", "shared", "chart"},
+		{"source.toolkit.fluxcd.io", "HelmRepository", "shared", "repo"},
+		{"source.toolkit.fluxcd.io", "GitRepository", "shared", "git"},
+	} {
+		topo.Nodes = append(topo.Nodes, topology.Node{ID: strings.ToLower(ref.kind) + "/" + ref.ns + "/" + ref.name + "/" + ref.group, Kind: topology.NodeKind(ref.kind), Name: ref.name, Data: map[string]any{"namespace": ref.ns, "apiVersion": ref.group + "/v1"}})
+	}
+	for _, pair := range [][2]int{{0, 5}, {1, 5}, {2, 3}, {2, 4}, {3, 4}} {
+		topo.Edges = append(topo.Edges, topology.Edge{Source: topo.Nodes[pair[0]].ID, Target: topo.Nodes[pair[1]].ID, Type: topology.EdgeUses})
+	}
+	upstream := *topo
+	upstream.Edges = make([]topology.Edge, len(topo.Edges))
+	for i, edge := range topo.Edges {
+		upstream.Edges[i] = topology.Edge{Source: edge.Target, Target: edge.Source, Type: topology.EdgeConfigures}
+	}
+	for _, node := range topo.Nodes {
+		obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": node.Data["apiVersion"], "kind": string(node.Kind), "metadata": map[string]any{"namespace": node.Data["namespace"], "name": node.Name}}}
+		before := Build(context.Background(), obj, Options{Topology: topo})
+		after := Build(context.Background(), obj, Options{Topology: &upstream})
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("%s context changed:\nbefore=%+v\nafter=%+v", node.ID, before, after)
+		}
+	}
+}
+
+// groupingServiceBackends also implements ServiceBackendGrouper, recording the
+// Pods it was asked to group.
+type groupingServiceBackends struct {
+	mockServiceBackends
+	grouping ServiceBackendGrouping
+	grouped  *[]string
+}
+
+func (g groupingServiceBackends) GroupServiceBackends(_ *corev1.Service, pods []*corev1.Pod) ServiceBackendGrouping {
+	for _, p := range pods {
+		*g.grouped = append(*g.grouped, p.Name)
+	}
+	return g.grouping
+}
+
+func TestBuild_Service_WorkloadBreakdown(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "frontend", Namespace: "prod"},
+		Spec:       corev1.ServiceSpec{Selector: map[string]string{"tier": "web"}},
+	}
+	web := map[string]string{"tier": "web"}
+	workloads := []ServiceBackendWorkload{
+		{ContextRef: ContextRef{Kind: "Deployment", Group: "apps", Namespace: "prod", Name: "frontend"}, Pods: 1, Ready: 1},
+		{ContextRef: ContextRef{Kind: "Deployment", Group: "apps", Namespace: "prod", Name: "search"}, Pods: 1, Ready: 1},
+	}
+	message := "Service frontend routes to 2 different applications (frontend, search); search's pods don't declare port 5000"
+	build := func(ac RefAccessChecker, grouping ServiceBackendGrouping) (*ResourceContext, []string) {
+		var grouped []string
+		rc := Build(context.Background(), svc, Options{
+			Tier:          TierBasic,
+			AccessChecker: ac,
+			ServiceBackends: groupingServiceBackends{
+				mockServiceBackends: mockServiceBackends{
+					readyPod("frontend-1", "prod", web, true),
+					readyPod("search-1", "prod", web, true),
+				},
+				grouping: grouping,
+				grouped:  &grouped,
+			},
+		})
+		return rc, grouped
+	}
+
+	rc, grouped := build(allowAllChecker{}, ServiceBackendGrouping{Workloads: workloads, MixedBackends: message})
+	if len(grouped) != 2 {
+		t.Fatalf("grouped pods = %v, want both visible pods", grouped)
+	}
+	s := rc.ServiceSummary
+	if len(s.Workloads) != 2 || s.Workloads[1].Name != "search" || s.MixedBackends != message {
+		t.Fatalf("ServiceSummary = %+v", s)
+	}
+	if len(s.Warnings) != 1 || s.Warnings[0] != ServiceWarningMixedBackends {
+		t.Fatalf("Warnings = %+v, want [%s]", s.Warnings, ServiceWarningMixedBackends)
+	}
+
+	// A canary: two workloads, no warning.
+	rc, _ = build(allowAllChecker{}, ServiceBackendGrouping{Workloads: workloads})
+	if len(rc.ServiceSummary.Workloads) != 2 || len(rc.ServiceSummary.Warnings) != 0 || rc.ServiceSummary.MixedBackends != "" {
+		t.Fatalf("canary ServiceSummary = %+v", rc.ServiceSummary)
+	}
+
+	// One workload: nothing to break down.
+	rc, _ = build(allowAllChecker{}, ServiceBackendGrouping{Workloads: workloads[:1]})
+	if rc.ServiceSummary.Workloads != nil {
+		t.Fatalf("single-workload ServiceSummary = %+v", rc.ServiceSummary)
+	}
+
+	// Pod access doesn't extend to the Deployments behind them.
+	rc, _ = build(denyChecker{group: "apps", kind: "Deployment", namespace: "prod"}, ServiceBackendGrouping{Workloads: workloads, MixedBackends: message})
+	if rc.ServiceSummary.Workloads != nil || len(rc.ServiceSummary.Warnings) != 0 || rc.ServiceSummary.MixedBackends != "" {
+		t.Fatalf("denied ServiceSummary = %+v", rc.ServiceSummary)
+	}
+	denied := false
+	for _, o := range rc.Omitted {
+		if o.Field == "serviceSummary.workloads" && o.Reason == OmittedRBACDenied {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Fatalf("omitted = %+v, want serviceSummary.workloads rbac_denied", rc.Omitted)
+	}
+
+	// Pods the caller can't read are never grouped.
+	_, grouped = build(denyChecker{group: "", kind: "Pod", namespace: "prod"}, ServiceBackendGrouping{Workloads: workloads})
+	if len(grouped) != 0 {
+		t.Fatalf("grouped hidden pods: %v", grouped)
 	}
 }

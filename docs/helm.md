@@ -25,7 +25,7 @@ The drawer includes:
 - Resources: live status for resources rendered by the current release.
 - Hooks: hook events, path, weight, status, run times, delete policies, output-log policies, and diagnostics for failed/running hooks.
 
-Compare opens a full-page workspace instead of rendering inside the drawer. The drawer links to Compare from history rows and operation banners when Radar can identify a useful revision pair.
+Compare opens as a full page instead of rendering inside the drawer. The drawer links to Compare from history rows and operation banners when Radar can identify a useful revision pair.
 
 ## Operation Insight
 
@@ -122,7 +122,10 @@ Use `issues` for currently broken native Helm releases: active failed and stuck 
 preview. Omit `dry_run` (or set it to `true`) to inspect current status, release
 manifest resources, action hooks, and history policy. Pass `dry_run=false` and the
 returned `confirm` token only after showing the plan to the user and obtaining
-explicit approval. Uninstall with history purge is irreversible. Tokens expire after five
+explicit approval. On a Diagnose Apply turn, confirmation of an exact fix already
+authorizes preview-then-confirm for that fix; the agent must stop if the preview
+expands its scope or reveals an owner that would revert it. See the confirmed-fix
+rule in [MCP](mcp.md). Uninstall with history purge is irreversible. Tokens expire after five
 minutes and bind the caller, cluster context, release snapshot, and action options.
 The current and target Helm records are rechecked before execution. A confirmation
 is consumed when an action starts. REST and MCP uninstall/rollback share an

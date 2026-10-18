@@ -286,15 +286,6 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) App
 		timeline.ResetMetricsForContextSwitch()
 	}, func() error {
 		if err := timeline.ReinitStore(timelineStoreCfg); err != nil {
-			// PostgreSQL deliberately does not degrade to memory: an operator who
-			// pointed Radar at an external database must not silently get an
-			// in-memory timeline that vanishes on restart. Every other backend
-			// keeps the historical behaviour — warn and continue degraded rather
-			// than fail the whole subsystem bring-up, which would also take down
-			// cluster browsing.
-			if timelineStoreCfg.Type == timeline.StoreTypePostgres {
-				return err
-			}
 			log.Printf("Warning: timeline init failed, continuing degraded: %v", err)
 		}
 		return nil
@@ -302,6 +293,7 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) App
 
 	// Initialize Prometheus metrics client (must come before SetManualURL)
 	prometheuspkg.Initialize(k8s.GetClientInterface(), k8s.GetConfig(), k8s.GetContextName())
+	prometheuspkg.RegisterRediscoverySignals()
 
 	if cfg.PrometheusURL != "" {
 		if err := validateStartupPrometheusURL(cfg.PrometheusURL); err != nil {
@@ -571,7 +563,11 @@ func CreateServer(cfg AppConfig) *server.Server {
 		serverCfg.MCPInvestigationHandler = mcppkg.NewInvestigationHandler(evidenceRefs)
 	}
 
-	return server.New(serverCfg)
+	srv := server.New(serverCfg)
+	if cfg.MCPEnabled {
+		mcppkg.SetRelationshipTopologySource(srv.RelationshipTopology)
+	}
+	return srv
 }
 
 // InitializeCluster connects to the cluster and initializes all subsystems.

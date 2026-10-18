@@ -72,6 +72,9 @@ type deleteDependentCounts struct {
 }
 
 func handleDeleteResource(ctx context.Context, req *mcp.CallToolRequest, input deleteResourceInput) (*mcp.CallToolResult, any, error) {
+	if err := requireConnected(); err != nil {
+		return nil, nil, err
+	}
 	kind, group := strings.TrimSpace(input.Kind), strings.TrimSpace(input.Group)
 	namespace, name := strings.TrimSpace(input.Namespace), strings.TrimSpace(input.Name)
 	if kind == "" || name == "" {
@@ -268,7 +271,7 @@ func deleteCascadePreview(ctx context.Context, obj *unstructured.Unstructured, p
 		return result
 	}
 	result["coverage"] = "partial"
-	result["reason"] = "Observed caller-readable dependents from cached topology; counts are not exhaustive."
+	result["reason"] = "Observed caller-readable related resources from cached topology; counts are not exhaustive and do not predict garbage collection or controller pruning."
 	for _, ref := range preview.Dependents {
 		gvr, _, err := resolveMutationGVR(ref.Kind, ref.Group)
 		if err != nil || !canReadInNamespace(ctx, gvr.Group, gvr.Resource, ref.Namespace, "get") {
@@ -315,7 +318,7 @@ func deletePreviewSummary(obj *unstructured.Unstructured, propagation metav1.Del
 		}
 		effect := "observed dependents"
 		if propagation == metav1.DeletePropagationOrphan {
-			effect = "orphans observed dependents"
+			effect = "observed related resources (owner-reference dependents will be orphaned)"
 		}
 		summary += fmt.Sprintf("; %s: %s (%d total, not exhaustive)", effect, strings.Join(parts, ", "), counts.Total)
 	}
