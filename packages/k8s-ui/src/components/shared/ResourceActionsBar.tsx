@@ -792,7 +792,7 @@ function FluxActions({ disabledReasons, resource, data, onReconcile, isReconcili
   return (
     <>
       {onReconcile && (
-        <Tooltip preserveWords content={disabledReasons?.reconcile || (isSuspended ? 'Cannot reconcile while suspended' : undefined)} disabled={!disabledReasons?.reconcile && !isSuspended} delay={150}>
+        <Tooltip preserveWords content={disabledReasons?.reconcile || (isSuspended ? 'Cannot reconcile while suspended' : 'Trigger reconciliation')} delay={150}>
           <button
             onClick={() => !disabledReasons?.reconcile && onReconcile({
               kind: resource.kind,
@@ -810,7 +810,7 @@ function FluxActions({ disabledReasons, resource, data, onReconcile, isReconcili
       )}
 
       {hasSource && onSyncWithSource && (
-        <Tooltip preserveWords content={disabledReasons?.['sync-with-source'] || (isSuspended ? 'Cannot sync while suspended' : undefined)} disabled={!disabledReasons?.['sync-with-source'] && !isSuspended} delay={150}>
+        <Tooltip preserveWords content={disabledReasons?.['sync-with-source'] || (isSuspended ? 'Cannot sync while suspended' : 'Fetch latest from source, then reconcile')} delay={150}>
           <button
             onClick={() => !disabledReasons?.['sync-with-source'] && onSyncWithSource({
               kind: resource.kind,
@@ -885,7 +885,7 @@ function ArgoActions({ disabledReasons, resource, data, onSync, isSyncing, onRef
   return (
     <>
       {onSync && (
-        <Tooltip preserveWords content={disabledReasons?.sync} disabled={!disabledReasons?.sync} delay={150}>
+        <Tooltip preserveWords content={disabledReasons?.sync || 'Sync application'} delay={150}>
           <button
             onClick={() => !disabledReasons?.sync && onSync({
               namespace: resource.namespace,
@@ -902,7 +902,7 @@ function ArgoActions({ disabledReasons, resource, data, onSync, isSyncing, onRef
       )}
 
       {onRefresh && (
-        <Tooltip preserveWords content={disabledReasons?.refresh} disabled={!disabledReasons?.refresh} delay={150}>
+        <Tooltip preserveWords content={disabledReasons?.refresh || 'Refresh (re-read from git)'} delay={150}>
           <button
             onClick={() => !disabledReasons?.refresh && onRefresh({
               namespace: resource.namespace,

@@ -119,3 +119,34 @@ func TestManageGitOpsReportsUpstreamSourcePermissionDenied(t *testing.T) {
 		})
 	}
 }
+
+// A sync-with-source can patch the source and then be refused on the target.
+// The structured denial must still say the source was reconciled.
+func TestManageGitOpsDenialAfterSourcesReconciledKeepsNote(t *testing.T) {
+	ks := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "metadata": map[string]any{"name": "demo", "namespace": "apps"}, "spec": map[string]any{"sourceRef": map[string]any{"kind": "GitRepository", "name": "repo"}}}}
+	repo := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository", "metadata": map[string]any{"name": "repo", "namespace": "apps"}}}
+	gvr := schema.GroupVersionResource{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Resource: "kustomizations"}
+	dyn := setupMCPDynamicResource(t, gvr, "KustomizationList", k8s.APIResource{Group: gvr.Group, Version: gvr.Version, Kind: "Kustomization", Name: gvr.Resource, Namespaced: true}, ks, repo)
+	sourcePatched := false
+	dyn.(*dynamicfake.FakeDynamicClient).PrependReactor("patch", "gitrepositories", func(ktesting.Action) (bool, runtime.Object, error) {
+		sourcePatched = true
+		return true, repo, nil
+	})
+	dyn.(*dynamicfake.FakeDynamicClient).PrependReactor("patch", "kustomizations", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "demo", errors.New(`User "opaque-user" cannot patch resource "kustomizations"`))
+	})
+	result, _, err := handleManageGitOps(context.Background(), nil, manageGitOpsInput{Action: "sync-with-source", Tool: "fluxcd", Kind: "kustomization", Namespace: "apps", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeToolResult(t, result)
+	if !sourcePatched || !result.IsError || body["error_code"] != "rbac_denied" {
+		t.Fatalf("sourcePatched=%v result=%+v", sourcePatched, body)
+	}
+	if note, _ := body["note"].(string); !strings.Contains(note, "sources were reconciled") {
+		t.Fatalf("denial lost the partial-write note: %+v", body)
+	}
+	if strings.Contains(body["error"].(string), "opaque-user") {
+		t.Fatalf("denial leaked the apiserver user: %+v", body)
+	}
+}

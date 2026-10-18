@@ -516,3 +516,51 @@ func TestGitOpsCapabilitiesExternalArtifact(t *testing.T) {
 		})
 	}
 }
+
+// Flux generates an inline chart's HelmChart. Before it exists, or when its
+// read fails for another reason, only sync-with-source is affected.
+func TestGitOpsCapabilitiesHelmChartNotReadyAffectsOnlySyncWithSource(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		chartErr    error
+		unsupported bool
+	}{
+		{name: "not created yet", unsupported: true},
+		{name: "read failed", chartErr: apierrors.NewInternalError(errors.New("etcd timeout"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hr := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+				"metadata": map[string]any{"name": "web", "namespace": "apps"},
+				"spec":     map[string]any{"chart": map[string]any{"spec": map[string]any{"chart": "web", "sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}}}},
+			}}
+			client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), hr)
+			if tc.chartErr != nil {
+				client.PrependReactor("get", "helmcharts", func(ktesting.Action) (bool, runtime.Object, error) {
+					return true, nil, tc.chartErr
+				})
+			}
+			actions, err := gitOpsCapabilities(context.Background(), client, "helmreleases", "apps", "web", func(context.Context, authv1.ResourceAttributes) (bool, error) {
+				return true, nil
+			})
+			if err != nil {
+				t.Fatalf("capabilities failed for the whole object: %v", err)
+			}
+			for _, action := range []string{"reconcile", "suspend", "resume"} {
+				if got := actions[action]; got.Allowed == nil || !*got.Allowed {
+					t.Fatalf("%s lost its answer: %+v", action, got)
+				}
+			}
+			sync := actions["sync-with-source"]
+			if sync.Allowed != nil || sync.Unsupported != tc.unsupported {
+				t.Fatalf("sync-with-source = %+v", sync)
+			}
+			if tc.unsupported && !strings.Contains(sync.Reason, "Flux hasn't created HelmChart apps/apps-web yet") {
+				t.Fatalf("missing chart reason = %q", sync.Reason)
+			}
+			if !tc.unsupported && sync.Reason != unknownPermissionReason {
+				t.Fatalf("failed read reason = %q", sync.Reason)
+			}
+		})
+	}
+}

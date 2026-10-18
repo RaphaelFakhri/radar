@@ -17,7 +17,6 @@ const ARGO_ACTION_LABELS: Record<string, string> = {
   suspend: 'change auto-sync',
   resume: 'change auto-sync',
   rollback: 'roll back',
-  validate: 'validate',
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +290,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
   const allActionsRestricted = rolePermissions.length > 0 && rolePermissions.every(permission => permission.allowed === false)
   const deniedPermissions = uniqueGitOpsPermissions(rolePermissions.filter(permission => permission.allowed === false).flatMap(permission => permission.denied ?? []))
   const deniedArgoActions = [...new Set(Object.entries(ARGO_ACTION_LABELS)
+    .filter(([action]) => action !== 'terminate' || argo?.isRunning)
     .filter(([action]) => props.actionPermissions?.[action]?.allowed === false && !props.actionPermissions[action].unsupported)
     .map(([, label]) => label))]
   const argoDenialReason = deniedArgoActions.length > 0
@@ -403,7 +403,7 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
                       {props.isCloudDeployment && isArgoApp && <p>For Radar Cloud owners using the default roles, run <code>helm upgrade</code> on the Radar chart to apply the Argo CD write grant. One-click upgrades update only the image.</p>}
                       <p>{props.isCloudDeployment && isArgoApp ? 'For other roles, an admin can grant access with' : 'An admin can grant access with'} a RoleBinding{deniedGrants.length > 0 ? ' allowing:' : '.'}</p>
                       {deniedGrants.length > 0 && <ul className="list-disc space-y-1 pl-4">
-                        {deniedGrants.slice(0, 4).map(grant => <li key={grant}>{grant.split(' ').map((word, index) => <span key={index}><span className="whitespace-nowrap">{word}</span>{' '}</span>)}</li>)}
+                        {deniedGrants.slice(0, 4).map(grant => <li key={grant}>{grant.split(' ').map((word, index) => <span key={index}><span className="inline-block max-w-full [overflow-wrap:anywhere]">{word}</span>{' '}</span>)}</li>)}
                         {deniedGrants.length > 4 && <li>And {deniedGrants.length - 4} more denied permission{deniedGrants.length === 5 ? '' : 's'}.</li>}
                       </ul>}
                       <div className="flex flex-wrap gap-3">

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	authv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -19,6 +20,8 @@ import (
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/gitops"
 )
+
+const unknownPermissionReason = "Couldn't check your permissions — retrying"
 
 // gitOpsPermission is one API operation an action performs. Source marks a
 // Flux source the action reconciles alongside its target.
@@ -146,7 +149,7 @@ func gitOpsCapabilities(ctx context.Context, client dynamic.Interface, kind, nam
 		if entry.Kind == "Kustomization" || entry.Kind == "HelmRelease" {
 			required["sync-with-source"] = []gitOpsPermission{read, patch}
 			if obj != nil {
-				_, err := gitops.FluxSyncSources(obj, func(target gitops.FluxSyncTarget) (*unstructured.Unstructured, error) {
+				chain, err := gitops.FluxSyncSources(obj, func(target gitops.FluxSyncTarget) (*unstructured.Unstructured, error) {
 					read := on("get", target.Entry, target.Namespace, target.Name, true)
 					required["sync-with-source"] = append(required["sync-with-source"], read, on("patch", target.Entry, target.Namespace, target.Name, true))
 					if target.Entry.Kind != "HelmChart" {
@@ -166,11 +169,21 @@ func gitOpsCapabilities(ctx context.Context, client dynamic.Interface, kind, nam
 					}
 					return chart, err
 				}, k8s.ServedGVR)
-				if errors.Is(err, gitops.ErrSyncWithSourceUnsupported) {
+				// A source problem affects only sync-with-source; reconcile, suspend
+				// and resume keep their own answers.
+				switch {
+				case errors.Is(err, gitops.ErrSyncWithSourceUnsupported):
 					delete(required, "sync-with-source")
 					actions["sync-with-source"] = gitOpsActionCapability{Unsupported: true, Reason: err.Error() + "."}
-				} else if err != nil {
-					return nil, err
+				case apierrors.IsNotFound(err) && len(chain) > 0:
+					// Flux generates an inline chart's HelmChart; until it does,
+					// there is no source to reconcile.
+					delete(required, "sync-with-source")
+					link := chain[0]
+					actions["sync-with-source"] = gitOpsActionCapability{Unsupported: true, Reason: fmt.Sprintf("Flux hasn't created %s %s/%s yet, so there's no source to reconcile.", link.Entry.Kind, link.Namespace, link.Name)}
+				case err != nil:
+					delete(required, "sync-with-source")
+					actions["sync-with-source"] = gitOpsActionCapability{Reason: unknownPermissionReason}
 				}
 			}
 		}
@@ -196,7 +209,7 @@ func gitOpsCapabilities(ctx context.Context, client dynamic.Interface, kind, nam
 		case !allowed:
 			actions[action] = gitOpsActionCapability{Allowed: &allowed, Denied: denied}
 		case unknown:
-			actions[action] = gitOpsActionCapability{Reason: "Couldn't check your permissions — retrying"}
+			actions[action] = gitOpsActionCapability{Reason: unknownPermissionReason}
 		default:
 			actions[action] = gitOpsActionCapability{Allowed: &allowed}
 		}

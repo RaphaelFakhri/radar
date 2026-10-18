@@ -92,7 +92,7 @@ describe('GitOps permission gates on rendered controls', () => {
     expect(html).toContain('Some actions restricted for your role')
     expect(doc.body.textContent).toContain("Sync with source also reconciles GitRepository gaps-r4-source/repo — your role can't read or patch it.")
     expect(html).not.toContain('per-action reason')
-    expect(html).toContain('class="whitespace-nowrap">gaps-r4-source</span>')
+    expect(html).toContain('class="inline-block max-w-full [overflow-wrap:anywhere]">gaps-r4-source</span>')
   })
   it('merges every denied operation into one sentence and says when all actions are restricted', () => {
     const appGet = { ...appPatch, verb: 'get' }
@@ -107,6 +107,13 @@ describe('GitOps permission gates on rendered controls', () => {
     expect(doc.body.textContent).not.toContain('Radar reads it with its own access')
     expect(html).not.toContain('sync reason')
     expect([...doc.querySelectorAll('li')].map(item => item.textContent!.trim())).toEqual(['patch applications.argoproj.io in argocd', 'get applications.argoproj.io in argocd'])
+  })
+  it('words the full backend denial without validate, and names terminate only while a sync runs', () => {
+    const all = Object.fromEntries(['sync', 'refresh', 'terminate', 'suspend', 'resume', 'rollback', 'validate'].map(action => [action, argoDenial]))
+    const idle = new DOMParser().parseFromString(renderToString(<GitOpsDetailLayout {...base} actionPermissions={all} />), 'text/html')
+    expect(idle.body.textContent).toContain("Your role can't sync, refresh, change auto-sync or roll back for this Application.")
+    const running = new DOMParser().parseFromString(renderToString(<GitOpsDetailLayout {...base} argo={{ ...base.argo!, isRunning: true }} actionPermissions={all} />), 'text/html')
+    expect(running.body.textContent).toContain("Your role can't sync, refresh, terminate a sync, change auto-sync or roll back for this Application.")
   })
   it('names only denied Argo actions and combines both auto-sync directions', () => {
     const html = renderToString(<GitOpsDetailLayout {...base}

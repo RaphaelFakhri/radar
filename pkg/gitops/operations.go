@@ -64,6 +64,10 @@ var (
 	ErrResourceSuspended = errors.New("resource is suspended")
 	// ErrSyncWithSourceUnsupported means there is no reconcilable source. HTTP 400.
 	ErrSyncWithSourceUnsupported = errors.New("sync with source is not supported for this resource")
+	// ErrSourcesReconciled marks a sync-with-source whose sources were patched
+	// before the target's own patch failed, so callers can say so alongside a
+	// structured denial.
+	ErrSourcesReconciled = errors.New("its sources were reconciled")
 )
 
 type syncWithSourceUnsupported string
@@ -942,8 +946,8 @@ func SyncFluxWithSource(ctx context.Context, dynClient dynamic.Interface, kind, 
 		}
 	}
 	if err := mergePatch(ctx, dynClient, entry.GVR, namespace, name, reconcilePatch); err != nil {
-		return OperationResult{}, fmt.Errorf("failed to reconcile %s %s/%s (note: its sources were reconciled): %w",
-			entry.Kind, namespace, name, err)
+		return OperationResult{}, fmt.Errorf("failed to reconcile %s %s/%s (note: %w): %w",
+			entry.Kind, namespace, name, ErrSourcesReconciled, err)
 	}
 
 	steps := make([]string, 0, len(chain))
