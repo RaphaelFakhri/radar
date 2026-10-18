@@ -361,6 +361,29 @@ func TestObjectOfAKindWhoseCredentialsWereRejected(t *testing.T) {
 	}
 }
 
+// A stopped cache no longer follows the cluster, so a read after the stop is
+// a connection change, not a kind Radar leaves out.
+func TestObjectReadAfterTheCachesStopped(t *testing.T) {
+	f := newFixture(t, k8score.CacheConfig{}, nil)
+	if err := f.caches.Dynamic.EnsureWatching(widgets); err != nil {
+		t.Fatal(err)
+	}
+	if !f.caches.Dynamic.WaitForSync(widgets, 5*time.Second) {
+		t.Fatal("widgets did not sync")
+	}
+	r := ref("example.io", "Widget", "alpha", "w1")
+	s := begin(t, f.source())
+	if got := s.Object(r); got.State != ownership.Present {
+		t.Fatalf("%v before the stop = %v %+v", r, got.State, got.Gap)
+	}
+	f.caches.Dynamic.Stop()
+	got := s.Object(r)
+	want := ownership.Gap{Kind: r.GroupKind(), Namespace: r.Namespace, Reason: readreason.ConnectionChanged}
+	if got.State != ownership.Unavailable || got.Gap != want {
+		t.Fatalf("%v after the stop = %v %+v; want unavailable %+v", r, got.State, got.Gap, want)
+	}
+}
+
 func TestObjectIsUnavailableWhileItsStoreLoads(t *testing.T) {
 	var holdWidgets atomic.Bool
 	var widgetLists atomic.Int32
@@ -674,9 +697,8 @@ func TestReasonsForEveryCacheState(t *testing.T) {
 		want readreason.Code
 	}{
 		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnwatched, ReasonCode: "not_observed"}, readreason.RadarKindNotCollected},
-		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnwatched, ReasonCode: "cache_stopped"}, readreason.RadarKindNotCollected},
+		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnwatched, ReasonCode: "cache_stopped"}, readreason.ConnectionChanged},
 		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationDeferred, ReasonCode: "eager_watch_pending"}, readreason.KindSyncPending},
-		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationDeferred, ReasonCode: "watch_start_failed"}, readreason.RadarKindNotCollected},
 		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationDeferred, ReasonCode: "scope_probe_incomplete"}, readreason.ReadError},
 		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationDeferred}, readreason.RadarKindNotCollected},
 		{k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing, ReasonCode: "initial_sync"}, readreason.KindSyncPending},

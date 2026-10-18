@@ -282,8 +282,6 @@ func dynamicReason(o k8score.DynamicResourceObservation) readreason.Code {
 		switch o.ReasonCode {
 		case "eager_watch_pending":
 			return readreason.KindSyncPending
-		case "watch_start_failed":
-			return readreason.RadarKindNotCollected
 		case "scope_probe_incomplete":
 			// The probe for where Radar may watch never finished.
 			return readreason.ReadError
@@ -297,6 +295,12 @@ func dynamicReason(o k8score.DynamicResourceObservation) readreason.Code {
 	case k8score.DynamicObservationSynced:
 		// It finished loading after the read.
 		return readreason.KindSyncPending
+	case k8score.DynamicObservationUnwatched:
+		if o.ReasonCode == "cache_stopped" {
+			// The connection was switched or closed after the session began.
+			return readreason.ConnectionChanged
+		}
+		return readreason.RadarKindNotCollected
 	default:
 		return readreason.RadarKindNotCollected
 	}
