@@ -96,12 +96,15 @@ type Detection struct {
 	Reason                     string
 	Message                    string
 	RawMessage                 string
-	Age                        string // human-readable
-	AgeSeconds                 int64  // for sorting
-	Duration                   string // how long the problem has persisted
-	DurationSeconds            int64
-	OnsetAt                    time.Time
-	ResourceCreatedAt          time.Time
+	// MessageSource is issuesapi.MessageSourceRadar when Message is Radar's
+	// own summary rather than text from Kubernetes or a controller.
+	MessageSource     string
+	Age               string // human-readable
+	AgeSeconds        int64  // for sorting
+	Duration          string // how long the problem has persisted
+	DurationSeconds   int64
+	OnsetAt           time.Time
+	ResourceCreatedAt time.Time
 	// OnsetUnknown is set when the snapshot proves the issue exists but carries
 	// no defensible evidence for when the failing state began. Resource age may
 	// still be populated independently.
@@ -118,6 +121,11 @@ type Detection struct {
 	// RestartLoop is set on a Pod crashloop row emitted because a container is
 	// in an active restart loop (see activeRestartLoop). Nil otherwise.
 	RestartLoop *issuesapi.RestartLoop
+	// AffectedRefs names resources a detection on another subject affects
+	// (the Services, workloads and Pods a NetworkPolicy isolates), so the issue
+	// also shows up on those resources. Ordered most to least important; the
+	// issues layer caps them.
+	AffectedRefs []issuesapi.Ref `json:"-"`
 	// RequiredReads names the inventories a detection read beyond its own
 	// resource whose access is checked per kind, such as a Secret's history.
 	// A caller who can't make them gets Degraded instead, or nothing when
@@ -744,6 +752,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			problems = append(problems, detectServiceBackendProblems(cache, svc, podsByNamespace[svc.Namespace], now)...)
 		}
 	}
+	problems = append(problems, detectNetworkPolicyDenyAllIngress(cache, namespace, podsByNamespace, now)...)
 
 	// HPA problems
 	if hpaLister := cache.HorizontalPodAutoscalers(); hpaLister != nil {
@@ -1318,6 +1327,23 @@ func detectServiceBackendProblems(cache *ResourceCache, svc *corev1.Service, pod
 			"No selected pod declares a container port with this name",
 			"svc:unresolved-targetport",
 		))
+	}
+	if backends := AnalyzeServiceBackends(cache, svc, selected); backends.Mismatched() {
+		det := serviceBackendDetection(svc, ageDur, "warning", ServiceMixedBackendsReason, backends.Problem(svc.Name), ServiceMixedBackendsFingerprint)
+		det.Cause = backends.Cause()
+		det.Action = "If only one of these workloads should receive this traffic, narrow the Service selector to labels only its pods carry, or remove the matching label from the other workload's pod template."
+		// The workload names and their ports come from the Pods, and from the
+		// ReplicaSets behind them for a Deployment or Rollout.
+		det.RequiredReads = []issuesapi.EvidenceRead{{Resource: "pods", Namespace: svc.Namespace, Verb: "list"}}
+		if backends.ResolvedThroughReplicaSets {
+			det.RequiredReads = append(det.RequiredReads, issuesapi.EvidenceRead{Group: "apps", Resource: "replicasets", Namespace: svc.Namespace, Verb: "list"})
+		}
+		det.Degraded = &issuesapi.DegradedFinding{
+			Message: fmt.Sprintf("Service %s routes to pods of more than one %s", svc.Name, backends.Noun()),
+			Cause:   fmt.Sprintf("The Service selector matches pods of more than one %s, so part of its traffic reaches pods that may not serve it.", backends.Noun()),
+			Action:  det.Action,
+		}
+		problems = append(problems, det)
 	}
 	return problems
 }
