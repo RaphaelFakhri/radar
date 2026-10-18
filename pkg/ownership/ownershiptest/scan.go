@@ -39,8 +39,9 @@ type scanSession struct {
 	byRef      map[resourceid.Ref]Object
 	byKind     map[resourceid.GroupKind][]Object
 	dependents []dependentKind
-	// ambiguousKinds are the kinds two resources of one group serve.
-	ambiguousKinds map[resourceid.GroupKind]bool
+	// ambiguousKinds are the kinds two resources of one group serve, with the
+	// scopes in which one of them serves the kind with delete, list and watch.
+	ambiguousKinds map[resourceid.GroupKind]ambiguity
 }
 
 func (s scanSession) Catalog() *ownership.Catalog { return s.catalog }
@@ -57,22 +58,45 @@ func (s scanSession) scope(gk resourceid.GroupKind) (namespaced, served bool) {
 	return false, false
 }
 
+// ambiguity is where the garbage collector acts on an ambiguous kind.
+type ambiguity struct {
+	namespaced, clusterScoped bool
+}
+
 // findAmbiguous returns the kinds two resources of their group serve.
-func (s scanSession) findAmbiguous() map[resourceid.GroupKind]bool {
+func (s scanSession) findAmbiguous() map[resourceid.GroupKind]ambiguity {
 	resources := map[resourceid.GroupKind]string{}
-	out := map[resourceid.GroupKind]bool{}
+	ambiguous := map[resourceid.GroupKind]bool{}
 	for _, r := range s.w.Resources {
 		gk := resourceid.GroupKind{Group: r.Group, Kind: r.Kind}
 		if seen, ok := resources[gk]; ok && seen != r.Resource {
-			out[gk] = true
+			ambiguous[gk] = true
 		}
 		resources[gk] = r.Resource
+	}
+	out := map[resourceid.GroupKind]ambiguity{}
+	for gk := range ambiguous {
+		out[gk] = ambiguity{}
+	}
+	for _, r := range s.w.Resources {
+		gk := resourceid.GroupKind{Group: r.Group, Kind: r.Kind}
+		a, ok := out[gk]
+		if !ok || !slices.Contains(r.Verbs, "delete") || !slices.Contains(r.Verbs, "list") || !slices.Contains(r.Verbs, "watch") {
+			continue
+		}
+		if r.Namespaced {
+			a.namespaced = true
+		} else {
+			a.clusterScoped = true
+		}
+		out[gk] = a
 	}
 	return out
 }
 
 func (s scanSession) ambiguous(gk resourceid.GroupKind) bool {
-	return s.ambiguousKinds[gk]
+	_, ok := s.ambiguousKinds[gk]
+	return ok
 }
 
 // heldReason says why Radar doesn't hold a kind's objects in namespace ("" for
@@ -222,8 +246,10 @@ func (s scanSession) OwnerCandidates(uid types.UID, domain ownership.Domain, lim
 			}
 		}
 	}
-	if searches {
-		for gk := range s.ambiguousKinds {
+	for gk, a := range s.ambiguousKinds {
+		event := gk.Kind == "Event" && (gk.Group == "" || gk.Group == "events.k8s.io")
+		namespacedSearched := domain.AllNamespaces || len(domain.Namespaces) > 0
+		if !event && (a.namespaced && namespacedSearched || a.clusterScoped && domain.ClusterScoped) {
 			gap(gk, "", readreason.ReadError)
 		}
 	}

@@ -121,6 +121,22 @@ func TestSourceConformsOnTheFixture(t *testing.T) {
 		w.Partial = true
 		conform(t, w)
 	})
+	t.Run("ambiguous kinds", func(t *testing.T) {
+		w := ownershiptest.Fixture()
+		gc := []string{"delete", "get", "list", "watch"}
+		w.Resources = append(w.Resources,
+			// Collected through either of two namespaced resources.
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Doohickey", Resource: "doohickeys", Namespaced: true, Verbs: gc},
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Doohickey", Resource: "moredoohickeys", Namespaced: true, Verbs: gc},
+			// Collected only through its cluster-scoped resource.
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Whatsit", Resource: "whatsits", Namespaced: true, Verbs: []string{"get"}},
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Whatsit", Resource: "clusterwhatsits", Verbs: gc},
+			// Served only to answer queries, as aggregated APIs do.
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Report", Resource: "reports", Namespaced: true},
+			ownership.ServedResource{Group: "example.io", Version: "v1", Kind: "Report", Resource: "clusterreports"},
+		)
+		conform(t, w)
+	})
 }
 
 func TestSourceConformsOnGeneratedWorlds(t *testing.T) {

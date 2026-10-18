@@ -41,8 +41,19 @@ type Catalog struct {
 	dependents []Kind
 	// ambiguous are the kinds two resources of one group serve: a reference
 	// names a kind, not a resource, so it can't say which it means.
-	ambiguous []resourceid.GroupKind
-	complete  bool
+	ambiguous []AmbiguousKind
+	// ambiguousDependents are those of them the garbage collector may act on.
+	ambiguousDependents []AmbiguousKind
+	complete            bool
+}
+
+// AmbiguousKind is a kind two resources of one group serve.
+type AmbiguousKind struct {
+	resourceid.GroupKind
+	// Namespaced and ClusterScoped say whether a resource of that scope serves
+	// the kind with delete, list and watch: the garbage collector acts on the
+	// kind's objects there, so they may be dependents.
+	Namespaced, ClusterScoped bool
 }
 
 // NewCatalog builds a catalog from discovery's resources. complete says
@@ -58,7 +69,14 @@ func NewCatalog(resources []ServedResource, complete bool) *Catalog {
 	for gk, served := range byKind {
 		resource := served[0].Resource
 		if slices.ContainsFunc(served, func(r ServedResource) bool { return r.Resource != resource }) {
-			c.ambiguous = append(c.ambiguous, gk)
+			a := AmbiguousKind{GroupKind: gk}
+			for _, r := range served {
+				if hasVerbs(r.Verbs, "delete", "list", "watch") {
+					a.Namespaced = a.Namespaced || r.Namespaced
+					a.ClusterScoped = a.ClusterScoped || !r.Namespaced
+				}
+			}
+			c.ambiguous = append(c.ambiguous, a)
 			continue
 		}
 		kind := Kind{GroupKind: gk, Resource: resource}
@@ -71,7 +89,12 @@ func NewCatalog(resources []ServedResource, complete bool) *Catalog {
 		kind.Versions = slices.Compact(kind.Versions)
 		c.kinds[gk] = kind
 	}
-	slices.SortFunc(c.ambiguous, compareGroupKinds)
+	slices.SortFunc(c.ambiguous, func(a, b AmbiguousKind) int { return compareGroupKinds(a.GroupKind, b.GroupKind) })
+	for _, a := range c.ambiguous {
+		if (a.Namespaced || a.ClusterScoped) && !IsEvent(a.GroupKind) {
+			c.ambiguousDependents = append(c.ambiguousDependents, a)
+		}
+	}
 	for gk, k := range c.kinds {
 		if k.GarbageCollected && !IsEvent(gk) {
 			c.dependents = append(c.dependents, k)
@@ -103,15 +126,21 @@ func (c *Catalog) Kind(gk resourceid.GroupKind) (Kind, bool) {
 
 // Ambiguous reports whether two resources of gk's group serve gk.
 func (c *Catalog) Ambiguous(gk resourceid.GroupKind) bool {
-	_, found := slices.BinarySearchFunc(c.ambiguous, gk, compareGroupKinds)
+	_, found := slices.BinarySearchFunc(c.ambiguous, gk, func(a AmbiguousKind, gk resourceid.GroupKind) int {
+		return compareGroupKinds(a.GroupKind, gk)
+	})
 	return found
 }
 
-// AmbiguousKinds returns the kinds two resources of one group serve, sorted
-// by group and kind. They are in no other answer of the catalog. The slice is
-// the catalog's own and must not be modified.
-func (c *Catalog) AmbiguousKinds() []resourceid.GroupKind {
-	return c.ambiguous
+// AmbiguousDependentKinds returns the ambiguous kinds whose objects may be
+// dependents the garbage collector acts on, sorted by group and kind, without
+// Events. A search for dependents can't read them as one resource's, so it
+// leaves them unread. An ambiguous kind no resource serves with delete, list
+// and watch has no dependents to miss, as with the kinds aggregated APIs serve
+// only to answer queries. The slice is the catalog's own and must not be
+// modified.
+func (c *Catalog) AmbiguousDependentKinds() []AmbiguousKind {
+	return c.ambiguousDependents
 }
 
 // Serves reports whether version is a version serving gk.

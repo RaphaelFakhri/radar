@@ -58,9 +58,9 @@ func (s *session) OwnerCandidates(uid types.UID, domain ownership.Domain, limit 
 			s.dynamicCandidates(q, kind)
 		}
 	}
-	if searches {
-		for _, gk := range s.catalog.AmbiguousKinds() {
-			q.gap(gk, "", readreason.ReadError)
+	for _, a := range s.catalog.AmbiguousDependentKinds() {
+		if a.Namespaced && domain.Searches(true) || a.ClusterScoped && domain.Searches(false) {
+			q.gap(a.GroupKind, "", readreason.ReadError)
 		}
 	}
 	slices.SortFunc(q.found, func(a, b candidate) int { return compareRefs(a.ref, b.ref) })

@@ -172,6 +172,35 @@ func TestOwnerCandidatesReportAnAmbiguousKind(t *testing.T) {
 	if none := s.OwnerCandidates("uid-deploy", ownership.Domain{}, 0); len(none.Gaps) != 0 {
 		t.Fatalf("a search of nothing reports gaps: %+v", none.Gaps)
 	}
+	if clusterOnly := s.OwnerCandidates("uid-deploy", ownership.Domain{ClusterScoped: true}, 0); hasGap(clusterOnly, ownership.Gap{Kind: widgetKind, Reason: readreason.ReadError}) {
+		t.Fatalf("a cluster-scoped search reports the namespaced Widget: %+v", clusterOnly.Gaps)
+	}
+}
+
+// Kueue's visibility API serves PendingWorkloadsSummary through two query
+// resources nothing can list or watch; it holds no dependents to miss.
+func TestOwnerCandidatesIgnoreAnAmbiguousKindNothingCollects(t *testing.T) {
+	f := newFixture(t, k8score.CacheConfig{}, func(f *fixture) {
+		fd := f.typed.Discovery().(*fakediscovery.FakeDiscovery)
+		fd.Resources = append(fd.Resources, &metav1.APIResourceList{GroupVersion: "visibility.kueue.x-k8s.io/v1beta2", APIResources: []metav1.APIResource{
+			{Name: "clusterqueues", Kind: "PendingWorkloadsSummary"},
+			{Name: "localqueues", Kind: "PendingWorkloadsSummary", Namespaced: true},
+		}})
+	})
+	f.watch(t, widgets)
+	s := begin(t, f.source())
+	summary := resourceid.GroupKind{Group: "visibility.kueue.x-k8s.io", Kind: "PendingWorkloadsSummary"}
+	if !s.Catalog().Ambiguous(summary) {
+		t.Fatal("scenario: PendingWorkloadsSummary must be ambiguous")
+	}
+	for _, domain := range []ownership.Domain{ownership.Everywhere(), ownership.InNamespace("alpha"), {ClusterScoped: true}} {
+		got := s.OwnerCandidates("uid-deploy", domain, 0)
+		for _, g := range got.Gaps {
+			if g.Kind == summary {
+				t.Fatalf("search of %+v reports %+v; nothing can collect a summary", domain, g)
+			}
+		}
+	}
 }
 
 // A search while a cluster-wide watch takes over from namespace ones must
