@@ -167,6 +167,7 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 		return target, readErrorf(readreason.UserPermissionCheckFailed, "Radar couldn't check which namespaces you can access, so it read nothing.")
 	}
 	allowed := pkgauth.FilterNamespacesForUser(clamped, user, perms)
+	unrestricted := pkgauth.FilterNamespacesForUser(nil, user, perms) == nil
 	if allowed != nil && len(allowed) == 0 {
 		// A namespace the caller named and can't see may not exist either;
 		// the code doesn't say which. Unscoped, clamped is the
@@ -187,11 +188,22 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 		}
 		return target, readErrorf(readreason.UserNoNamespaceAccess, "You can't access any namespace in this request's scope, so Radar read nothing. %s %s", withCloudRole(ctx, "A cluster admin can grant access"), namespaceAccessRule)
 	}
+	// Only a caller who can see every namespace learns that one doesn't
+	// exist; anyone else was answered above without telling the two apart.
+	if target.explicit && unrestricted {
+		if missing := missingNamespaces(clamped); len(missing) > 0 && len(missing) == len(clamped) {
+			scope := fmt.Sprintf("Namespace %q doesn't exist in this cluster", missing[0])
+			if len(missing) > 1 {
+				scope = fmt.Sprintf("Namespaces %q don't exist in this cluster", namespaceForError(missing))
+			}
+			return target, &readError{code: readreason.NamespaceNotFound, err: fmt.Errorf("%s, so there is nothing to read there.", scope), next: "Call list_namespaces to see the namespaces that exist."}
+		}
+	}
 	// Every narrowing that applied to a request that named no namespace, as
 	// REST and search report it: the caller's access when it is restricted,
 	// and the pin.
 	if !target.explicit {
-		if pkgauth.FilterNamespacesForUser(nil, user, perms) != nil {
+		if !unrestricted {
 			target.narrowedBy = append(target.narrowedBy, resourceapi.NarrowedByUserAccess)
 		}
 		if clamped != nil {
@@ -200,6 +212,23 @@ func resolveReadTarget(ctx context.Context, requested []string) (readTarget, err
 	}
 	target.namespaces = allowed
 	return target, nil
+}
+
+// missingNamespaces returns the namespaces Radar knows don't exist: its
+// Namespace informer has synced and holds none by that name. Without a synced
+// informer, none is known to be missing.
+func missingNamespaces(namespaces []string) []string {
+	cache := k8s.GetResourceCache()
+	if cache == nil || cache.Namespaces() == nil || !cache.IsKindReady("namespaces") {
+		return nil
+	}
+	var missing []string
+	for _, ns := range namespaces {
+		if _, err := cache.Namespaces().Get(ns); apierrors.IsNotFound(err) {
+			missing = append(missing, ns)
+		}
+	}
+	return missing
 }
 
 // narrowedToCollection is t narrowed to what plan's kind is collected in. A
@@ -1057,15 +1086,12 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 		return false, readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing (%w).", kind, readErr)
 	}
 	if errors.Is(readErr, k8s.ErrDynamicNotReady) {
-		if k8s.GetConnectionStatus().State == k8s.StateConnecting {
-			return false, readErrorf(readreason.KindSyncPending, "Radar is still connecting to the cluster, so it can't read %s yet (%w).", kind, readErr)
-		}
-		if ok && dynamicCache != nil {
+		if ok && dynamicCache != nil && k8s.GetConnectionStatus().State != k8s.StateConnecting {
 			if observation := dynamicCache.Observation(gvr); observation.State == k8score.DynamicObservationDeferred && observation.ReasonCode == "watch_start_failed" {
 				return false, readErrorf(readreason.KindWatchStartFailed, "Radar's watch for %s failed to start, so it can't answer.", kind)
 			}
 		}
-		return false, readErrorf(readreason.RadarKindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist (%w). Whoever runs Radar must check that its identity can list/watch %s.", kind, readErr, kind)
+		return false, errDynamicUnavailable(kind, readErr)
 	}
 	direct := ok && directRead(gvr, verb)
 	if apierrors.IsForbidden(readErr) && ok && dynamicCache != nil && !direct && namespace != "" {
@@ -1123,14 +1149,36 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 var dynamicSyncWait = 3 * time.Second
 
 func discoveredGVR(kind, group string) (schema.GroupVersionResource, bool) {
-	discovery := k8s.GetResourceDiscovery()
-	if discovery == nil {
-		return schema.GroupVersionResource{}, false
-	}
+	return gvrIn(k8s.GetResourceDiscovery(), kind, group)
+}
+
+func gvrIn(discovery *k8s.ResourceDiscovery, kind, group string) (schema.GroupVersionResource, bool) {
 	if group != "" {
 		return discovery.GetGVRWithGroup(kind, group)
 	}
 	return discovery.GetGVR(kind)
+}
+
+// refreshDiscoveryForKind refreshes discovery when it can't resolve kind, so
+// a custom resource installed since the last refresh is read rather than
+// reported as kind_unknown.
+func refreshDiscoveryForKind(kind, group string) {
+	if _, ok := dynamicReadGVR(kind, group); ok {
+		return
+	}
+	k8s.GetResourceDiscovery().LookupRefreshingOnMiss(func(d *k8s.ResourceDiscovery) (schema.GroupVersionResource, bool) {
+		return gvrIn(d, kind, group)
+	})
+}
+
+// errDynamicUnavailable reports a read that needs API discovery or the
+// dynamic cache while Radar has neither: still connecting, or they failed to
+// start.
+func errDynamicUnavailable(kind string, cause error) error {
+	if k8s.GetConnectionStatus().State == k8s.StateConnecting {
+		return readErrorf(readreason.KindSyncPending, "Radar is still connecting to the cluster, so it can't read %s yet (%w).", kind, cause)
+	}
+	return readErrorf(readreason.ReadError, "Radar's support for this cluster's API resources didn't start, so it can't read %s (%w).", kind, cause)
 }
 
 func dynamicReadGVR(kind, group string) (schema.GroupVersionResource, bool) {

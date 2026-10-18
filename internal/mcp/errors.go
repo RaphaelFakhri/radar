@@ -24,10 +24,14 @@ func errNotConnected() error {
 		case "auth":
 			return readErrorf(readreason.ClusterDisconnected, "not connected to cluster: %s. Radar re-checks in the background and reconnects automatically once credentials are refreshed; POST /api/connection/retry forces an immediate check", status.Error)
 		}
-		return readErrorf(readreason.ClusterDisconnected, "not connected to cluster: %s", status.Error)
+		return readErrorf(readreason.ClusterDisconnected, "not connected to cluster: %s. %s", status.Error, restoreConnection)
 	}
-	return readErrorf(readreason.ClusterDisconnected, "not connected to cluster")
+	return readErrorf(readreason.ClusterDisconnected, "not connected to cluster. %s", restoreConnection)
 }
+
+// restoreConnection is the remedy when Radar does not recover on its own:
+// outside credential failures, a retry is what reconnects.
+const restoreConnection = "Whoever runs Radar must restore its connection to the cluster (network, API endpoint or credentials); POST /api/connection/retry forces an immediate check"
 
 // requireConnected gates tools that read stores the cache feeds, such as the
 // change timeline: before the cluster has connected they are empty, and an

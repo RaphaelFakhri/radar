@@ -142,7 +142,7 @@ func TestResourceReadsReadyContract(t *testing.T) {
 					}
 				}
 			}
-			if err := k8s.InitTestResourceCache(fake.NewClientset(typedObjects...)); err != nil {
+			if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces(typedObjects...)...)); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
@@ -177,7 +177,9 @@ func TestResourceReadsReadyContract(t *testing.T) {
 					if populated && !containsName(body, "present") {
 						t.Fatalf("missing populated row: %s", body)
 					}
-					if rows, _ := completeListBody(t, result); !populated && len(rows) != 0 {
+					// The fixture's namespaces exist, so only the Namespace kind
+					// has rows in an otherwise empty cluster.
+					if rows, _ := completeListBody(t, result); !populated && b.Kind != "Namespace" && len(rows) != 0 {
 						t.Fatalf("a genuine empty list is complete and empty, got %s", body)
 					}
 					result, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: b.Kind, Group: b.Group, Namespace: ns, Name: "present", Context: "none"})
@@ -311,7 +313,7 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 	for _, denied := range []bool{false, true} {
 		t.Run(fmt.Sprintf("collectorDenied=%v", denied), func(t *testing.T) {
-			if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+			if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
@@ -707,7 +709,7 @@ func setupCoverageRuleFixture(t *testing.T, class coverageClass) (kind string, p
 		t.Cleanup(k8s.ResetTestState)
 		return "services", func() {}
 	}
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -936,7 +938,7 @@ func setupListCoverageFixture(t *testing.T, class coverageClass, limited bool, o
 		t.Cleanup(k8s.ResetTestState)
 		return "services"
 	}
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1261,7 +1263,7 @@ func TestResourceReadsDynamicStallIsPerNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1299,7 +1301,7 @@ func TestResourceReadsColdDynamicKinds(t *testing.T) {
 	for _, b := range kinds {
 		for _, verb := range []string{"list", "get"} {
 			t.Run(b.Kind+"/"+verb, func(t *testing.T) {
-				if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+				if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(k8s.ResetTestState)
@@ -1422,7 +1424,7 @@ func TestResourceReadsNamespaceDenialAttribution(t *testing.T) {
 }
 
 func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1473,7 +1475,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 }
 
 func TestResourceReadsDynamicUnauthorizedPrefix(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1511,7 +1513,7 @@ func TestResourceReadsDynamicUnauthorizedIsNotMissingCoverage(t *testing.T) {
 		{"namespace rejection with readable fallback", "beta", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+			if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
@@ -1563,7 +1565,7 @@ func TestResourceReadsCollectorCoverageRespectsGroupCollision(t *testing.T) {
 }
 
 func TestResourceReadsColdDynamicUnderNamespacePin(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1628,7 +1630,7 @@ func TestResourceReadsRestrictedDirectLists(t *testing.T) {
 		{Kind: "Endpoints", Resource: "endpoints", Version: "v1"},
 	} {
 		t.Run(b.Kind, func(t *testing.T) {
-			if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+			if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
@@ -1688,7 +1690,7 @@ func TestResourceReadsUnrestrictedDirectListsFallBackToCandidates(t *testing.T) 
 		} {
 			for _, caller := range []string{"auth disabled", "cluster-wide"} {
 				t.Run(b.Kind+"/"+tc.name+"/"+caller, func(t *testing.T) {
-					if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+					if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 						t.Fatal(err)
 					}
 					t.Cleanup(k8s.ResetTestState)
@@ -1825,7 +1827,7 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 func TestResourceReadsDynamicCallerNamespaceOutsideCandidates(t *testing.T) {
 	for _, prewarm := range []bool{false, true} {
 		t.Run(fmt.Sprintf("prewarm=%v", prewarm), func(t *testing.T) {
-			if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+			if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
@@ -1927,7 +1929,7 @@ func TestDiagnoseRejectsUnobservedTypedTargets(t *testing.T) {
 }
 
 func TestDiagnoseRejectsUnsyncedDynamicTargets(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -1966,7 +1968,7 @@ func TestDiagnoseRejectsUnsyncedDynamicTargets(t *testing.T) {
 }
 
 func TestReadDynamicScopeRereadsOnlyBeforeSync(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -2097,14 +2099,62 @@ func TestResourceReadsNoNamespaceKindResolution(t *testing.T) {
 		}
 	}
 	k8s.ResetTestDynamicState()
-	_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Name: "present"})
-	if err == nil || !strings.HasPrefix(err.Error(), "kind_sync_pending:") {
-		t.Fatalf("uninitialized discovery: %v", err)
+	// Without discovery, a connecting Radar is still loading; a connected one
+	// failed to start it, which says nothing about Radar's access.
+	for state, want := range map[k8s.ConnectionState]string{k8s.StateConnecting: "kind_sync_pending:", k8s.StateConnected: "read_error:"} {
+		k8s.SetConnectionStatus(k8s.ConnectionStatus{State: state})
+		_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Name: "present"})
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Fatalf("%s without discovery: %v", state, err)
+		}
+		_, err = checkDynamicResourceRead(context.Background(), "widgets", "example.test", "alpha", "list", k8s.ErrDynamicNotReady)
+		if err == nil || !strings.HasPrefix(err.Error(), want) || strings.Contains(err.Error(), "list/watch") {
+			t.Fatalf("%s dynamic read without discovery: %v", state, err)
+		}
+	}
+}
+
+// A caller who can see every namespace is told a named namespace doesn't
+// exist, rather than that it's empty. A caller limited to some namespaces is
+// not told which, and without a synced Namespace informer Radar can't tell.
+func TestResourceReadsNamespaceNotFound(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	for name, ctx := range map[string]context.Context{"local": context.Background(), "cluster admin": withClusterAdmin(t, "admin")} {
+		for _, verb := range []string{"list", "get"} {
+			var err error
+			if verb == "list" {
+				_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "pods", Namespace: "typo"})
+			} else {
+				_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: "pods", Namespace: "typo", Name: "web"})
+			}
+			var re *readError
+			if !errors.As(err, &re) || re.code != readreason.NamespaceNotFound || !strings.Contains(err.Error(), `Namespace "typo" doesn't exist`) || re.next == "" {
+				t.Fatalf("%s %s: %v", name, verb, err)
+			}
+		}
+	}
+	if _, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "pods", Namespace: "beta"}); err != nil {
+		t.Fatalf("existing namespace: %v", err)
+	}
+	_, _, err := handleListResources(withRestrictedUser(t, "dev", []string{"alpha"}), nil, listResourcesInput{Kind: "pods", Namespace: "typo"})
+	if err == nil || !strings.HasPrefix(err.Error(), "user_namespace_not_visible:") {
+		t.Fatalf("restricted caller: %v", err)
+	}
+
+	k8s.ResetTestState()
+	if err := k8s.InitScopedTestResourceCache(fake.NewClientset(), map[string]k8score.ResourceScope{"pods": {Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if k8s.GetResourceCache().Namespaces() != nil {
+		t.Fatal("fixture must not collect namespaces")
+	}
+	if _, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "pods", Namespace: "typo"}); err != nil {
+		t.Fatalf("without a namespace informer: %v", err)
 	}
 }
 
 func TestResourceReadsNonWatchableKindIsNotSupported(t *testing.T) {
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestState)
@@ -2152,7 +2202,7 @@ func TestGetResourceRejectsExtrasFetchedAfterASwitch(t *testing.T) {
 	k8s.ResetTestState()
 	t.Cleanup(k8s.ResetTestState)
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web", UID: "web-uid"}}
-	if err := k8s.InitTestResourceCache(fake.NewClientset(dep)); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces(dep)...)); err != nil {
 		t.Fatal(err)
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
@@ -2191,7 +2241,7 @@ func TestTypedReadRejectsRetainedPreviousCache(t *testing.T) {
 		t.Fatal("current cache rejected")
 	}
 	k8s.ResetResourceCache()
-	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+	if err := k8s.InitTestResourceCache(fake.NewClientset(fixtureNamespaces()...)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := k8s.FetchResource(previous, "pods", "alpha", "old"); err != nil {
@@ -2430,4 +2480,14 @@ func TestListNamesRadarCloudOwnerOnlyForDenials(t *testing.T) {
 			t.Fatalf("%s isn't the caller's access to widen: %q / %q", code, why, who)
 		}
 	}
+}
+
+// fixtureNamespaces returns objects plus a Namespace for each namespace the
+// resource-read fixtures place objects in, as a real cluster has one: Radar
+// reads a namespace its synced Namespace informer lacks as nonexistent.
+func fixtureNamespaces(objects ...runtime.Object) []runtime.Object {
+	for _, name := range []string{"alpha", "beta", "gamma", "shop", "kube-system"} {
+		objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	}
+	return objects
 }

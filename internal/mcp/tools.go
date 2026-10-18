@@ -858,6 +858,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 	started := currentReadCache()
 	kind := resourceKindName(strings.ToLower(input.Kind), input.Group)
 	group := input.Group
+	refreshDiscoveryForKind(kind, group)
 	var requested []string
 	if input.Namespace != "" {
 		requested = []string{input.Namespace}
@@ -1173,6 +1174,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	started := currentReadCache()
 	kind := resourceKindName(strings.ToLower(input.Kind), input.Group)
 	group := input.Group
+	refreshDiscoveryForKind(kind, group)
 	namespace := input.Namespace
 	name := input.Name
 	clusterScoped, gvrGroup, gvrResource := k8s.ClassifyKindScope(kind, group)
@@ -1196,7 +1198,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 			}
 			if !known {
 				if discovery == nil {
-					return nil, nil, readErrorf(readreason.KindSyncPending, "Radar is still discovering this cluster's resource kinds, so it can't resolve %q yet.", kind)
+					return nil, nil, errDynamicUnavailable(kind, fmt.Errorf("%w: resource discovery", k8s.ErrDynamicNotReady))
 				}
 				return nil, nil, readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing.", kind)
 			}

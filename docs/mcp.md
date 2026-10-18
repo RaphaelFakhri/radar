@@ -591,6 +591,7 @@ otherwise the code says why it couldn't look.
 | `user_forbidden` | Your own RBAC denies the exact operation. | Your access |
 | `user_no_namespace_access` | Your access reaches no namespace in the request's scope (Radar checks list Pods or Deployments there). | Your access |
 | `user_namespace_not_visible` | A namespace you named is not among those you can see, or does not exist; the code doesn't say which. | Check the name, or your access |
+| `namespace_not_found` | A namespace you named doesn't exist. Only a caller who can see every namespace is told this, and only when Radar collects Namespaces. | Check the name; `list_namespaces` lists them |
 | `user_permission_check_failed` | Radar could not complete your permission check. | Retry |
 | `radar_forbidden` | Kubernetes refused Radar's service account or kubeconfig identity. | Radar's access — granting yours does not help |
 | `radar_credentials_rejected` | Kubernetes rejected Radar's credentials on this read. If they stay rejected, Radar's connection goes down and reads report `cluster_disconnected`. | Refresh Radar's credentials |
@@ -600,7 +601,7 @@ otherwise the code says why it couldn't look.
 | `kind_watch_start_failed` | The kind's watch failed to start. | Retry — a read naming the kind starts it again |
 | `radar_kind_not_watched` | Radar has no watch for the kind. | Radar's collection configuration |
 | `kind_not_watchable` | The API can't be list/watched. | Use another tool; retrying won't help |
-| `kind_unknown` | The kind isn't in the catalog or discovery. | Check spelling, `group`, and installation |
+| `kind_unknown` | The kind isn't in the catalog or discovery. Before answering this, Radar refreshes discovery (at most every 30 seconds), so a custom resource installed since the last refresh resolves. | Check spelling, `group`, and installation |
 | `outside_namespace_pin` | The namespace is outside Radar's `--namespace-scope` pin. | Use the pinned namespace |
 | `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace` |
 | `object_not_found` | The object is absent from a namespace Radar read in full. | — it is an answer |
