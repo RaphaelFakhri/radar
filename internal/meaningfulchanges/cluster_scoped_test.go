@@ -311,8 +311,13 @@ func TestClusterScopedForNamespaceDisclosesEvictedHistoryAndUncachedKinds(t *tes
 		t.Fatalf("watch: %v", err)
 	}
 	got := ClusterScopedForNamespace(context.Background(), "shop", NamespaceLabels{Known: true}, time.Hour, nil, false)
-	if !strings.Contains(got.Incomplete, "older events were evicted") {
+	if !strings.Contains(got.Incomplete, "Radar has evicted older change history") {
 		t.Fatalf("evicted history not disclosed: %+v", got)
+	}
+	// The oldest retained event here is a ConfigMap in another namespace; its
+	// time must not reach a caller who asked about webhooks.
+	if oldest := timeline.GetStore().Stats().OldestEvent.UTC().Format(time.RFC3339); strings.Contains(got.Incomplete, oldest) {
+		t.Fatalf("eviction note exposes another kind's event time %s: %s", oldest, got.Incomplete)
 	}
 	if !strings.Contains(got.Incomplete, "Current ValidatingWebhookConfigurations are not cached") || strings.Contains(got.Incomplete, "Current MutatingWebhookConfigurations") {
 		t.Fatalf("per-kind cache coverage: %+v", got)
@@ -322,7 +327,7 @@ func TestClusterScopedForNamespaceDisclosesEvictedHistoryAndUncachedKinds(t *tes
 	// startup-only notes: history recorded since the start was still lost.
 	timeline.SetObservationStartForTest(now.Add(-10 * time.Minute))
 	quiet := ClusterScopedForNamespace(context.Background(), "shop", NamespaceLabels{Known: true}, time.Hour, nil, true)
-	if !strings.Contains(quiet.Incomplete, "older events were evicted") || !strings.Contains(quiet.Incomplete, "Radar has recorded changes only since") || !quiet.Informative() {
+	if !strings.Contains(quiet.Incomplete, "Radar has evicted older change history") || !strings.Contains(quiet.Incomplete, "Radar has recorded changes only since") || !quiet.Informative() {
 		t.Fatalf("eviction after a recent start hidden on the quiet view: %+v", quiet)
 	}
 }
