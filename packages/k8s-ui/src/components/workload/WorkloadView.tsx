@@ -936,11 +936,14 @@ export function WorkloadView({
     if (shouldCommitFallback && activeTab !== 'overview') onTabChange?.('overview', { replace: true })
   }, [activeTab, onTabChange, shouldCommitFallback])
   const expandedOverview = expanded ? renderExpandedOverview?.({ kind, apiKind, namespace, name, resource }) : null
+  const divergenceKey = `${group ?? ''}/${kind}/${namespace}/${name}`
   const divergenceCard = templateDivergence ? (
+    // Keyed by resource so navigating within the drawer reads that resource's open state.
     <TemplateDivergenceCard
+      key={divergenceKey}
       divergence={templateDivergence}
       namespace={namespace}
-      resourceKey={`${group ?? ''}/${kind}/${namespace}/${name}`}
+      resourceKey={divergenceKey}
       onNavigate={onNavigateToResource ? (ref) => onNavigateToResource(refToSelectedResource(ref)) : undefined}
     />
   ) : null
