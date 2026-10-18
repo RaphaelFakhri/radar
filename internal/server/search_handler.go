@@ -41,7 +41,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// constrains the post-hoc match() filter.
 	//
 	// globalNs=1 scans the user's full RBAC ceiling, scoped only by the query's
-	// own `ns:` tokens — the omnibar sets it for a deliberately broad ⌘K lookup.
+	// own `ns:` tokens — the omnibar (⌘K) and Radar Hub's fleet search set it
+	// for a deliberately broad lookup.
 	// It skips parseNamespacesForUser's --namespace-scope clamp: the scope
 	// becomes a hard namespace filter below, so clamping it to the pinned
 	// namespace would drop every cluster-scoped hit (Nodes, PVs, ...) that the
