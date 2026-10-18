@@ -24,6 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery"
+	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
@@ -293,7 +295,7 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 		input listResourcesInput
 		want  string
 	}{
-		{listResourcesInput{Kind: "nodes"}, "radar_kind_not_watched: "},
+		{listResourcesInput{Kind: "nodes"}, "radar_kind_not_collected: "},
 		{listResourcesInput{Kind: "services", Namespace: "beta"}, "radar_namespace_not_collected: "},
 	} {
 		_, _, err := handleListResources(context.Background(), nil, tc.input)
@@ -2490,4 +2492,68 @@ func fixtureNamespaces(objects ...runtime.Object) []runtime.Object {
 		objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
 	}
 	return objects
+}
+
+// Discovery that failed for an API group can't rule a kind out: a get naming
+// that group says the API isn't answering, and an unqualified kind says it may
+// exist behind one, instead of suggesting a misspelling.
+func TestKindUnknownWithPartialDiscovery(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	fd := fake.NewClientset().Discovery().(*fakediscovery.FakeDiscovery)
+	fd.Resources = []*metav1.APIResourceList{{GroupVersion: "example.test/v1", APIResources: []metav1.APIResource{{Name: "widgets", Kind: "Widget", Namespaced: true, Verbs: metav1.Verbs{"get", "list", "watch"}}}}}
+	fd.PrependReactor("get", "resource", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{{Group: "broken.test", Version: "v1"}: apierrors.NewServiceUnavailable("aggregated API down")}}
+	})
+	restore, err := k8s.SetTestResourceDiscovery(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	for _, tc := range []struct{ kind, group, want, mention string }{
+		{"gadgets", "broken.test", "read_error:", `API group "broken.test"`},
+		{"gadgets", "", "kind_unknown:", "may exist behind an API that isn't answering"},
+		{"gadgets", "fine.test", "kind_unknown:", ""},
+	} {
+		_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: tc.kind, Group: tc.group, Name: "x"})
+		if err == nil || !strings.HasPrefix(err.Error(), tc.want) || !strings.Contains(err.Error(), tc.mention) {
+			t.Fatalf("%s/%s: %v", tc.kind, tc.group, err)
+		}
+		if tc.group == "fine.test" && strings.Contains(err.Error(), "isn't answering") {
+			t.Fatalf("a group that discovered fine must not be hedged: %v", err)
+		}
+	}
+
+	// A refresh that returns nothing leaves the kinds held out of date, so a
+	// miss is a failed read to retry, until a good refresh clears it.
+	healthy := fake.NewClientset().Discovery().(*fakediscovery.FakeDiscovery)
+	healthy.Resources = fd.Resources
+	failing := true
+	healthy.PrependReactor("get", "group", func(ktesting.Action) (bool, runtime.Object, error) {
+		if failing {
+			return true, nil, errors.New("discovery unavailable")
+		}
+		return false, nil, nil
+	})
+	failing = false
+	restore2, err := k8s.SetTestResourceDiscovery(healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore2)
+	failing = true
+	if err := k8s.GetResourceDiscovery().Refresh(); err == nil {
+		t.Fatal("refresh should fail")
+	}
+	_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "gadgets", Group: "fine.test", Name: "x"})
+	if err == nil || !strings.HasPrefix(err.Error(), "read_error:") || !strings.Contains(err.Error(), "last discovery refresh failed") {
+		t.Fatalf("after a failed refresh: %v", err)
+	}
+	failing = false
+	if err := k8s.GetResourceDiscovery().Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "gadgets", Group: "fine.test", Name: "x"})
+	if err == nil || strings.Contains(err.Error(), "refresh failed") {
+		t.Fatalf("a good refresh must clear the hedge: %v", err)
+	}
 }

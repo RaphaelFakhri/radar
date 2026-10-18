@@ -16,7 +16,7 @@
   "outside_namespace_selection": "change_request",
   "radar_credentials_rejected": "radar_config",
   "radar_forbidden": "radar_config",
-  "radar_kind_not_watched": "radar_config",
+  "radar_kind_not_collected": "radar_config",
   "radar_namespace_not_collected": "radar_config",
   "read_error": "retry",
   "user_forbidden": "user_access",

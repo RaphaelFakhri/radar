@@ -856,7 +856,7 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 				return nil, nil, readErrorf(readreason.RadarForbidden, "Kubernetes doesn't allow %s to list/watch %s, so Radar has none to show and can't say which exist. %s.%s", collectorName(), name, upperFirst(identityRemedy(name, where, "list/watch")), notYourAccess(ctx))
 			}
 		}
-		return nil, nil, errKindNotWatched(qualifiedResource(gvr.Group, gvr.Resource))
+		return nil, nil, errKindNotCollected(qualifiedResource(gvr.Group, gvr.Resource))
 	}
 	pending := errKindLoading(gvr.Resource)
 	failed := errKindLoadFailed(gvr.Resource)
@@ -934,8 +934,8 @@ func errKindLoadFailed(resource string) error {
 	return readErrorf(readreason.KindSyncTimedOut, "Radar's load of %s didn't finish in time, so it can't answer yet. It keeps trying; if this persists, whoever runs Radar should check its cluster connection and list/watch permissions.", resource)
 }
 
-func errKindNotWatched(resource string) error {
-	return readErrorf(readreason.RadarKindNotWatched, "Radar isn't collecting %s, so it can't list them or say which exist. Whoever runs Radar must check that its identity can list/watch %s and that Radar is set to collect them.", resource, resource)
+func errKindNotCollected(resource string) error {
+	return readErrorf(readreason.RadarKindNotCollected, "Radar isn't collecting %s, so it can't list them or say which exist. Whoever runs Radar must check that its identity can list/watch %s and that Radar is set to collect them.", resource, resource)
 }
 
 // coverageError reports requested namespaces Radar's collector could not
@@ -1083,7 +1083,7 @@ func checkDynamicResourceReadFrom(ctx context.Context, kind, group, namespace, v
 		return false, readErr
 	}
 	if errors.Is(readErr, k8s.ErrUnknownDynamicKind) {
-		return false, readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing (%w).", kind, readErr)
+		return false, errKindUnknown(kind, group, readErr)
 	}
 	if errors.Is(readErr, k8s.ErrDynamicNotReady) {
 		if ok && dynamicCache != nil && k8s.GetConnectionStatus().State != k8s.StateConnecting {
@@ -1169,6 +1169,30 @@ func refreshDiscoveryForKind(kind, group string) {
 	k8s.GetResourceDiscovery().LookupRefreshingOnMiss(func(d *k8s.ResourceDiscovery) (schema.GroupVersionResource, bool) {
 		return gvrIn(d, kind, group)
 	})
+}
+
+// errKindUnknown reports a kind discovery doesn't resolve. Discovery that
+// failed can't rule a kind out: when the named group failed, or the last
+// refresh returned nothing so the kinds held are out of date, it is a failed
+// read to retry; when an unnamed kind may be in a group that failed, the
+// answer says so.
+func errKindUnknown(kind, group string, cause error) error {
+	why := ""
+	if cause != nil {
+		why = fmt.Sprintf(" (%v)", cause)
+	}
+	if d := k8s.GetResourceDiscovery(); d != nil && d.ResourceDiscovery != nil {
+		if group != "" && d.GroupHadPartialDiscovery(group) {
+			return readErrorf(readreason.ReadError, "Kubernetes didn't answer discovery for API group %q, so Radar can't resolve %q in it and read nothing%s.", group, kind, why)
+		}
+		if d.LastRefreshFailed() {
+			return readErrorf(readreason.ReadError, "Radar's last discovery refresh failed, so it can't tell whether a resource kind named %q exists here and read nothing%s.", kind, why)
+		}
+		if group == "" && d.HasPartialDiscovery() {
+			return readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing%s. Discovery of some API groups failed, so it may exist behind an API that isn't answering.", kind, why)
+		}
+	}
+	return readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing%s.", kind, why)
 }
 
 // errDynamicUnavailable reports a read that needs API discovery or the

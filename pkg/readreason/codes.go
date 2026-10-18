@@ -52,9 +52,10 @@ const (
 	// KindWatchStartFailed: the kind's watch failed to start. A request that names
 	// the kind starts it again.
 	KindWatchStartFailed Code = "kind_watch_start_failed"
-	// RadarKindNotWatched: Radar has no watch for the kind, and nothing more precise
-	// is known.
-	RadarKindNotWatched Code = "radar_kind_not_watched"
+	// RadarKindNotCollected: Radar's setup leaves the kind out, so it can't say
+	// which exist. Whoever runs Radar can include it, if Radar's identity may
+	// list and watch it.
+	RadarKindNotCollected Code = "radar_kind_not_collected"
 	// KindUnknown: neither the built-in catalog nor discovery resolves the kind.
 	KindUnknown Code = "kind_unknown"
 	// KindNotWatchable: the API cannot be list/watched, so Radar cannot collect
@@ -135,7 +136,7 @@ var actions = map[Code]Action{
 	KindSyncPending:            ActionRetry,
 	KindSyncTimedOut:           ActionWait,
 	KindWatchStartFailed:       ActionRequestKind,
-	RadarKindNotWatched:        ActionRadarConfig,
+	RadarKindNotCollected:      ActionRadarConfig,
 	KindUnknown:                ActionChangeRequest,
 	KindNotWatchable:           ActionChangeRequest,
 	OutsideNamespacePin:        ActionChangeRequest,
@@ -194,7 +195,7 @@ var precedence = []Code{
 	KindSyncPending, UserPermissionCheckFailed, KindWatchStartFailed,
 	UserForbidden, UserNoNamespaceAccess, UserNamespaceNotVisible, NamespaceNotFound,
 	OutsideNamespacePin, OutsideNamespaceSelection,
-	RadarCredentialsRejected, RadarForbidden, RadarKindNotWatched,
+	RadarCredentialsRejected, RadarForbidden, RadarKindNotCollected,
 	KindSyncTimedOut, RadarNamespaceNotCollected, FilterEvalFailed, ReadError,
 	ObjectNotFound,
 }

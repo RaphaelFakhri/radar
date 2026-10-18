@@ -1946,8 +1946,9 @@ const (
 	// KindReady: the informer's store is complete; serve normally.
 	KindReady
 	// KindFailed: the deferred-sync deadline fired with this kind still
-	// unsynced — terminal for this cache generation. Callers should return a
-	// terminal error, not "retry shortly".
+	// unsynced. The informer keeps retrying and the kind reads KindReady once
+	// it syncs, so callers say the load is overdue, not that it has failed for
+	// good, and suggest a later retry rather than "retry shortly".
 	KindFailed
 )
 

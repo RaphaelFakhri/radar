@@ -1042,6 +1042,11 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 	} else if unrestrictedAll && found && dynamicCache != nil {
 		if err := dynamicCache.EnsureWatching(gvr); err != nil {
+			// The probe behind the error may have run against caches a
+			// context switch has since replaced.
+			if k8s.GetDynamicResourceCache() != dynamicCache || currentReadCache() != cache {
+				return nil, nil, errConnectionChanged()
+			}
 			_, err = checkDynamicResourceRead(ctx, kind, group, "", "list", err)
 			return nil, nil, err
 		}
@@ -1200,7 +1205,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 				if discovery == nil {
 					return nil, nil, errDynamicUnavailable(kind, fmt.Errorf("%w: resource discovery", k8s.ErrDynamicNotReady))
 				}
-				return nil, nil, readErrorf(readreason.KindUnknown, "Radar doesn't know a resource kind named %q in this cluster, so it read nothing.", kind)
+				return nil, nil, errKindUnknown(kind, group, nil)
 			}
 			return nil, nil, &readError{code: readreason.NamespaceRequired, err: fmt.Errorf("%s live in namespaces, so get_resource needs one.", upperFirst(kind)),
 				next: fmt.Sprintf("Call get_resource again with namespace set. If you don't know it, call search with query %q to find it.", "kind:"+kind+" "+name)}

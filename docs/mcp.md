@@ -599,9 +599,9 @@ otherwise the code says why it couldn't look.
 | `kind_sync_pending` | The kind is still loading. | Retry shortly |
 | `kind_sync_timed_out` | The kind's initial load missed its deadline; Radar keeps trying. | Retry later; if it persists, Radar's connection or list/watch access |
 | `kind_watch_start_failed` | The kind's watch failed to start. | Retry — a read naming the kind starts it again |
-| `radar_kind_not_watched` | Radar has no watch for the kind. | Radar's collection configuration |
+| `radar_kind_not_collected` | Radar's setup leaves the kind out. | Radar's collection configuration |
 | `kind_not_watchable` | The API can't be list/watched. | Use another tool; retrying won't help |
-| `kind_unknown` | The kind isn't in the catalog or discovery. Before answering this, Radar refreshes discovery (at most every 30 seconds), so a custom resource installed since the last refresh resolves. | Check spelling, `group`, and installation |
+| `kind_unknown` | The kind isn't in the catalog or discovery. Before answering this, Radar refreshes discovery (at most every 30 seconds), so a custom resource installed since the last refresh resolves. When discovery failed for the group the request named, or Radar's last discovery refresh failed outright, the answer is `read_error` instead: the kind may exist behind an API that isn't answering. | Check spelling, `group`, and installation |
 | `outside_namespace_pin` | The namespace is outside Radar's `--namespace-scope` pin. | Use the pinned namespace |
 | `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace` |
 | `object_not_found` | The object is absent from a namespace Radar read in full. | — it is an answer |
