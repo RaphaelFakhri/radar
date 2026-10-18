@@ -127,7 +127,7 @@ func TestResourceReadsStaleTypedNamespace(t *testing.T) {
 		return k8s.GetResourceCache().AssessKindRead("configmaps", []string{"alpha", "beta"}).Complete
 	})
 
-	list := func(namespace string) (*wireCoverage, []map[string]any, error) {
+	list := func(namespace string) (*listWireCoverage, []map[string]any, error) {
 		result, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "ConfigMap", Namespace: namespace, Context: "none"})
 		if err != nil {
 			return nil, nil, err
