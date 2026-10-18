@@ -113,11 +113,12 @@ type listProgress struct {
 	probing   bool
 	lastProbe time.Time
 	logged    bool
-	// seenRV and rvChangedAt record the last resource version change the
-	// watchdog saw, which tells a store still updating apart from a frozen one
-	// while the whole API server is unreachable.
-	seenRV      string
-	rvChangedAt time.Time
+	// reachEpoch and rvAtReach hold the resource version the store had when
+	// it was first looked at during the API server's current unreachable
+	// episode. A store whose version moves after that is still updating,
+	// through a watch that outlived the failure.
+	reachEpoch uint64
+	rvAtReach  string
 }
 
 func newListProgress(label string, rv func() string, synced func() bool, probe func(context.Context) error) *listProgress {
@@ -147,22 +148,9 @@ func (p *listProgress) observe(err error, now time.Time) {
 	p.cause = classifyListFailure(err)
 }
 
-// refresh notices resource version progress. Callers hold p.mu.
-func (p *listProgress) refreshLocked(rv string, now time.Time) {
-	if rv != p.seenRV {
-		p.seenRV, p.rvChangedAt = rv, now
-	}
-	if !p.since.IsZero() && rv != p.sinceRV {
-		p.closeLocked()
-	}
-}
-
 func (p *listProgress) closeLocked() {
-	if p.logged {
-		log.Printf("Informer %s is listing again; Radar vouches for its cache again", p.label)
-	}
 	p.since, p.sinceRV, p.cause = time.Time{}, "", ""
-	p.probedOK, p.distrust, p.logged = false, false, false
+	p.probedOK, p.distrust = false, false
 }
 
 // failure reports the store's list failure, if Radar no longer vouches for it.
@@ -171,15 +159,22 @@ func (p *listProgress) failure(now time.Time, after time.Duration, reach *APIRea
 	synced := p.synced()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.refreshLocked(rv, now)
+	if !p.since.IsZero() && rv != p.sinceRV {
+		p.closeLocked()
+	}
 	if !p.since.IsZero() && !p.probedOK && now.Sub(p.since) >= after {
 		return ListFailure{Since: p.since, Cause: p.cause, Stale: synced}, true
 	}
 	// While the API server is unreachable, a reflector between watches
 	// retries inside client-go and never reports, so the store is frozen
-	// unless its resource version has moved since.
-	if since, ok := reach.unreachableSince(now, after); ok && p.rvChangedAt.Before(since) {
-		return ListFailure{Since: since, Cause: ListFailureUnreachable, Stale: synced}, true
+	// unless its resource version moves.
+	if epoch, since, open := reach.episode(); open {
+		if p.reachEpoch != epoch {
+			p.reachEpoch, p.rvAtReach = epoch, rv
+		}
+		if rv == p.rvAtReach && now.Sub(since) >= after {
+			return ListFailure{Since: since, Cause: ListFailureUnreachable, Stale: synced}, true
+		}
 	}
 	return ListFailure{}, false
 }
@@ -219,10 +214,18 @@ func (p *listProgress) probeSkipped() {
 	p.probing, p.lastProbe = false, time.Time{}
 }
 
-// logTransition logs once when Radar stops vouching for the store.
-func (p *listProgress) logTransition(f ListFailure) {
+// logTransition logs once when Radar stops vouching for the store, and once
+// when it vouches again.
+func (p *listProgress) logTransition(f ListFailure, failing bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !failing {
+		if p.logged {
+			p.logged = false
+			log.Printf("Informer %s is current again; Radar vouches for its cache again", p.label)
+		}
+		return
+	}
 	if p.logged {
 		return
 	}
@@ -245,6 +248,8 @@ func (p *listProgress) logTransition(f ListFailure) {
 type APIReachability struct {
 	mu    sync.Mutex
 	since time.Time
+	// epoch counts episodes, so a store can tell this one from the last.
+	epoch uint64
 }
 
 // ObserveRoundTrip records one HTTP exchange. A request its caller cancelled
@@ -266,7 +271,18 @@ func (a *APIReachability) ObserveRoundTrip(req *http.Request, resp *http.Respons
 		a.since = time.Time{}
 	case a.since.IsZero():
 		a.since = time.Now()
+		a.epoch++
 	}
+}
+
+// episode reports the open episode, if any.
+func (a *APIReachability) episode() (epoch uint64, since time.Time, open bool) {
+	if a == nil {
+		return 0, time.Time{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.epoch, a.since, !a.since.IsZero()
 }
 
 func (a *APIReachability) unreachableSince(now time.Time, after time.Duration) (time.Time, bool) {
@@ -305,9 +321,8 @@ func runListWatchdog(stop <-chan struct{}, after time.Duration, reach *APIReacha
 		case now := <-ticker.C:
 			_, unreachable := reach.unreachableSince(now, 0)
 			for _, p := range trackers() {
-				if f, failing := p.failure(now, after, reach); failing {
-					p.logTransition(f)
-				}
+				f, failing := p.failure(now, after, reach)
+				p.logTransition(f, failing)
 				// Probes would only fail while the API server is unreachable.
 				if unreachable || !p.startProbe(now, every) {
 					continue

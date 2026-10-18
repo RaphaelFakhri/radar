@@ -143,21 +143,26 @@ func TestListProgressEpisodes(t *testing.T) {
 		rv = "10"
 		reach := &APIReachability{}
 		p := newP()
-		p.failure(t0, after, reach) // the watchdog sees the store at rv 10
-		reach.since = t0.Add(time.Second)
-		if failing(p, t0.Add(after)) {
+		reach.since, reach.epoch = t0, 1
+		// The first look in the episode records where the store stood, even
+		// if its version moved just before the API server went away.
+		if _, ok := p.failure(t0.Add(time.Second), after, reach); ok {
 			t.Fatal("unreachable before the threshold")
 		}
-		f, ok := p.failure(t0.Add(time.Second+after), after, reach)
-		if !ok || f.Cause != ListFailureUnreachable || !f.Since.Equal(t0.Add(time.Second)) {
+		f, ok := p.failure(t0.Add(after), after, reach)
+		if !ok || f.Cause != ListFailureUnreachable || !f.Since.Equal(t0) {
 			t.Fatalf("failure = %+v, %v", f, ok)
 		}
 		// A store whose watch still delivers is not frozen.
-		moving := newP()
 		rv = "12"
-		moving.failure(t0.Add(time.Second+after), after, reach)
-		if _, ok := moving.failure(t0.Add(2*after), after, reach); ok {
+		if _, ok := p.failure(t0.Add(after+time.Second), after, reach); ok {
 			t.Fatal("a store still updating read as frozen")
+		}
+		// A new episode takes a new snapshot.
+		reach.since, reach.epoch = t0.Add(2*after), 2
+		p.failure(t0.Add(2*after), after, reach)
+		if _, ok := p.failure(t0.Add(3*after), after, reach); !ok {
+			t.Fatal("a store frozen in a second episode read as updating")
 		}
 	})
 }
