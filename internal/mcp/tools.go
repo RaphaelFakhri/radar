@@ -1129,9 +1129,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	var resourceCtx *resourcecontext.ResourceContext
 	var warnings []string
 	if !skipContext {
-		// Stale Secret env goes in the top-level staleEnv field below, which
-		// survives context=none, so it isn't repeated in appReferences.
-		resourceCtx = buildMCPResourceContextWithStaleChecks(ctx, rawObj, kind, namespace, name, resourcecontext.TierBasic, nil, issueSummary)
+		resourceCtx = buildMCPResourceContext(ctx, rawObj, kind, namespace, name, resourcecontext.TierBasic, issueSummary)
 
 		// State-derived advisory warnings (deletionTimestamp, external manager,
 		// terminating namespace, workload health-condition history, PVC stuck
@@ -1243,7 +1241,7 @@ func recentChangesSourceTracked(gvk schema.GroupVersionKind) bool {
 	return meaningfulchanges.TrackedKindForGroup(gvk.Kind, gvk.Group)
 }
 
-// buildMCPResourceContextWithStaleChecks assembles the resourceContext section for MCP
+// buildMCPResourceContext assembles the resourceContext section for MCP
 // get_resource. Mirrors the REST handler's buildAIResourceContext: pre-
 // computes IssueSummary + AuditSummary in the caller, threads the
 // PolicyReport index when Kyverno is installed, hands a request-scoped
@@ -1251,9 +1249,19 @@ func recentChangesSourceTracked(gvk schema.GroupVersionKind) bool {
 // fallback resolve Relationships via topology.GetRelationshipsWithObject
 // (which applies KindForGVK so cross-group CRDs map to the right
 // topology node).
-//
-// staleChecks feeds appReferences.staleSecretEnv; diagnose passes its Pods'
-// checks, and get_resource passes nil because it reports them in staleEnv.
+func buildMCPResourceContext(ctx context.Context, obj runtime.Object, kind, namespace, name string, tier resourcecontext.ContextTier, issueSummary *resourcecontext.IssueSummary) *resourcecontext.ResourceContext {
+	return buildMCPResourceContextWithStaleChecks(
+		ctx,
+		obj,
+		kind,
+		namespace,
+		name,
+		tier,
+		k8s.FindStaleSecretEnvChecksForObject(ctx, k8s.GetResourceCache(), obj),
+		issueSummary,
+	)
+}
+
 func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Object, kind, namespace, name string, tier resourcecontext.ContextTier, staleChecks []k8s.StaleSecretEnvCheck, issueSummary *resourcecontext.IssueSummary) *resourcecontext.ResourceContext {
 	if obj == nil {
 		return nil

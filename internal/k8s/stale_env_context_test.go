@@ -111,13 +111,14 @@ func TestFindStaleEnvConsumersOfSecret(t *testing.T) {
 	})
 
 	t.Run("every rotated envFrom key is reported, past the diagnose per-container cap", func(t *testing.T) {
-		pod := staleSecretEnvPod("catalog", startedAt, true, corev1.EnvVar{Name: "K1", Value: "pinned"})
+		pod := staleSecretEnvPod("catalog", startedAt, true, corev1.EnvVar{Name: "K1", Value: "pinned"}, corev1.EnvVar{Name: "K2", Value: "$(K2)?sslmode=require"})
 		pod.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "db-conn"}}}}
 		keys := []string{"K1", "K2", "K3", "K4", "K5", "K6", "K7"}
 		cache := envHistoryTestCache(t, pod, secret.DeepCopy())
 		setEnvHistoryEvents(t, secretHistoryEvent(changedAt, "shop", "db-conn", "data (modified keys)", keys))
 		facts := FindStaleEnvConsumersOf(context.Background(), cache, "Secret", "shop", "db-conn")
-		// K1 is pinned by an explicit env entry, which overrides envFrom.
+		// K1 is pinned by an explicit env entry, which overrides envFrom; K2 expands
+		// $(K2), so it still depends on the Secret value.
 		if len(facts) != len(keys)-1 {
 			t.Fatalf("got %d facts, want %d: %+v", len(facts), len(keys)-1, facts)
 		}
@@ -182,6 +183,17 @@ func TestFindStaleEnvConfigMap(t *testing.T) {
 		facts := FindStaleEnvConsumersOf(context.Background(), cache, "ConfigMap", "shop", "settings")
 		if len(facts) != 1 || facts[0].Env != "MODE" || facts[0].ReferenceKind != "envFrom" {
 			t.Fatalf("want only MODE flagged: %+v", facts)
+		}
+	})
+
+	t.Run("change inside a JSON array value is flagged", func(t *testing.T) {
+		withArray := configMap.DeepCopy()
+		withArray.Data["origins"] = `["a","c"]`
+		pod := staleSecretEnvPod("catalog", startedAt, true, configMapKeyEnv("ORIGINS", "origins"))
+		cache := envHistoryTestCache(t, pod, withArray)
+		setEnvHistoryEvents(t, envHistoryEvent(changedAt, "ConfigMap", "shop", "settings", "data.origins[1]", "b", "c"))
+		if facts := FindStaleEnvForPods(context.Background(), cache, []*corev1.Pod{pod}); len(facts) != 1 || facts[0].Key != "origins" {
+			t.Fatalf("array element change not flagged: %+v", facts)
 		}
 	})
 

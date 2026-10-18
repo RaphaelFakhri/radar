@@ -55,9 +55,6 @@ func TestGetResourceStaleEnv(t *testing.T) {
 				if strings.Contains(staleEnv, `"key":`) || strings.Contains(body, "diagnose-secret-sentinel") {
 					t.Fatalf("managedFields fallback claimed a key or leaked a value: %s", body)
 				}
-				if strings.Contains(body, `"staleSecretEnv"`) {
-					t.Fatalf("stale Secret env repeated in resourceContext: %s", body)
-				}
 			})
 		}
 	}

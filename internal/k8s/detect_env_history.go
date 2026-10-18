@@ -1127,12 +1127,13 @@ func findStaleSecretEnvChecksWithManagedFieldsUpTo(cache *ResourceCache, pods []
 }
 
 // envFromKeyOverridden reports whether the env var that container.EnvFrom[index]
-// supplies is set by something that wins over it: an explicit env entry, or a
-// later envFrom source that currently has the same key.
+// supplies is set by something that wins over it: an explicit env entry that
+// doesn't expand $(variable), or a later envFrom source that currently has the
+// same key.
 func envFromKeyOverridden(cache *ResourceCache, namespace string, container corev1.Container, index int, variable string) bool {
 	for _, env := range container.Env {
 		if env.Name == variable {
-			return true
+			return !strings.Contains(env.Value, "$("+variable+")")
 		}
 	}
 	for _, later := range container.EnvFrom[index+1:] {
