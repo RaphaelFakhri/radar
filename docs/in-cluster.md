@@ -481,6 +481,8 @@ You see what you have access to — Radar doesn't require cluster-admin. Whateve
 
 A namespace-scoped ServiceAccount (RoleBinding without a ClusterRole) is fully supported — Radar detects this at startup and works within the permitted namespace.
 
+**Request deadlines.** Each read request Radar makes with its own identity has a client-side deadline: 2 minutes, or a watch's own `timeoutSeconds` plus 1 minute. A request that stalls without a connection reset, for example through a proxy whose upstream dropped silently, ends at that deadline, and the informer lists again instead of freezing that kind's cache. Log streams, exec, attach, port-forward and API-server proxy requests have no deadline. The 2-minute limit is twice the apiserver's own default `--request-timeout` (60 seconds), which already bounds how long a list may run on the server.
+
 **RBAC granularity (auth enabled):**
 
 - Namespaced resources (Pods, Deployments, Services, …) are filtered by namespace: read access is granted in any namespace where the user has list-pods or list-deployments. **Secrets are gated independently** — a user sees Secret objects (including Helm release storage) only in namespaces where their own RBAC grants `list secrets`, even when they have broader access in that namespace. RBAC objects and webhook configurations are likewise re-checked per user. Other cached resource types are visible within a namespace once the user has workload-read access there.
