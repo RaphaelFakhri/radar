@@ -287,8 +287,13 @@ func TestAdmissionBlocker_OnlyClaimsRecordedOrder(t *testing.T) {
 		appendChange(t, store, timeline.TimelineEvent{Timestamp: at, Kind: "ResourceQuota", APIVersion: "v1", Namespace: "shop", Name: "compute", EventType: timeline.EventTypeAdd})
 		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "web", quotaMsg, at)}}
 		attachIssueChangeCorrelation(context.Background(), &resp)
-		if iss := resp.Issues[0]; len(iss.CorrelatedChanges) != 2 || strings.Contains(iss.TimingSummary, "changed last") || iss.IssueTiming == "" {
-			t.Fatalf("same-second changes ordered: %+v", iss)
+		iss := resp.Issues[0]
+		want := "ResourceQuota compute was created at " + utc(at) + " and Deployment web was created at " + utc(at) + ", in the same second: Radar can't tell which changed last."
+		if len(iss.CorrelatedChanges) != 2 || !strings.HasSuffix(iss.TimingSummary, want) {
+			t.Fatalf("same-second changes:\n got %q\nwant suffix %q", iss.TimingSummary, want)
+		}
+		if iss.IssueTiming != "started_at_resource_creation" {
+			t.Fatalf("a tie withdrew at-creation timing: %q", iss.IssueTiming)
 		}
 	})
 
@@ -312,7 +317,7 @@ func TestAdmissionBlocker_OnlyClaimsRecordedOrder(t *testing.T) {
 		cm := []issuesapi.RecentChange{{Kind: "ConfigMap", Namespace: "shop", Name: "web-config", ChangeType: "update", Timestamp: now.Add(-2 * time.Minute).Format(time.RFC3339)}}
 		ev := admissionBlockerForIssue(context.Background(), &issuesapi.Issue{Category: issuesapi.CategoryQuotaExceeded, Kind: "Deployment", Namespace: "shop", Name: "web", Message: quotaMsg}, time.Hour)
 		subject := append(cm, issuesapi.RecentChange{Kind: "Deployment", Namespace: "shop", Name: "web", ChangeType: "add", Timestamp: now.Add(-20 * time.Minute).Format(time.RFC3339)})
-		sentence, policyLast := admissionChangeOrder(&issuesapi.Issue{Kind: "Deployment", Name: "web"}, ev, subject, true, time.Hour)
+		sentence, policyLast := admissionChangeOrder(&issuesapi.Issue{Kind: "Deployment", Name: "web"}, ev, subject, true, true, time.Hour)
 		if !policyLast || !strings.HasSuffix(sentence, "the ResourceQuota changed last.") {
 			t.Fatalf("a ConfigMap edit decided the order: %q", sentence)
 		}
@@ -350,6 +355,62 @@ func TestAdmissionBlocker_OnlyClaimsRecordedOrder(t *testing.T) {
 		}
 		if iss.IssueTiming != "started_at_resource_creation" {
 			t.Fatalf("an update withdrew at-creation timing: %q", iss.IssueTiming)
+		}
+	})
+}
+
+// Radar restarted a few minutes before the rejection (the kind bench restarts
+// it per trial): the store holds both sides' changes, so the quota is linked
+// and the order stated, before the five minutes a "no recent changes" claim
+// needs. The message is the client-go aggregated form seen on kind.
+func TestAdmissionBlocker_YoungStore(t *testing.T) {
+	kindMsg := `(combined from similar events): Error creating: pods "search-7d996cf85b-hpdb9" is forbidden: failed quota: memory-limit-quota: must specify memory for: hotel-reserv-search`
+	now := time.Now().Truncate(time.Second)
+
+	t.Run("both sides recorded", func(t *testing.T) {
+		initAdmissionCache(t)
+		store := initCorrelationStore(t)
+		timeline.SetObservationStartForTest(now.Add(-170 * time.Second))
+		deployAt, quotaAt := now.Add(-23*time.Second), now.Add(-10*time.Second)
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: deployAt, Kind: "Deployment", APIVersion: "apps/v1", Namespace: "shop", Name: "search", EventType: timeline.EventTypeAdd})
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: quotaAt, Kind: "ResourceQuota", APIVersion: "v1", Namespace: "shop", Name: "memory-limit-quota", EventType: timeline.EventTypeAdd})
+
+		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "search", kindMsg, quotaAt.Add(3*time.Second))}}
+		attachIssueChangeCorrelation(context.Background(), &resp)
+		iss := resp.Issues[0]
+		if len(iss.CorrelatedChanges) != 2 || iss.CorrelatedChanges[0].Kind != "ResourceQuota" {
+			t.Fatalf("want quota + deployment refs, got %+v", iss.CorrelatedChanges)
+		}
+		want := "ResourceQuota memory-limit-quota was created at " + utc(quotaAt) + ", after Deployment search was created at " + utc(deployAt) + ": the ResourceQuota changed last."
+		if iss.TimingSummary != want {
+			t.Fatalf("timing_summary:\n got %q\nwant %q", iss.TimingSummary, want)
+		}
+		if iss.NoRecentChanges != nil {
+			t.Fatalf("no_recent_changes on a young store: %+v", iss.NoRecentChanges)
+		}
+	})
+
+	t.Run("one side unrecorded", func(t *testing.T) {
+		// The Deployment predates Radar's start, so it has no record. A young
+		// store can't say it didn't change: the quota informer may still have
+		// been filling. The quota is linked; no order is stated.
+		initAdmissionCache(t)
+		store := initCorrelationStore(t)
+		timeline.SetObservationStartForTest(now.Add(-170 * time.Second))
+		quotaAt := now.Add(-10 * time.Second)
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: quotaAt, Kind: "ResourceQuota", APIVersion: "v1", Namespace: "shop", Name: "memory-limit-quota", EventType: timeline.EventTypeAdd})
+
+		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "search", kindMsg, quotaAt.Add(3*time.Second))}}
+		attachIssueChangeCorrelation(context.Background(), &resp)
+		iss := resp.Issues[0]
+		if len(iss.CorrelatedChanges) != 1 || iss.CorrelatedChanges[0].Kind != "ResourceQuota" {
+			t.Fatalf("want the quota ref, got %+v", iss.CorrelatedChanges)
+		}
+		if strings.Contains(iss.TimingSummary, "changed last") || strings.Contains(iss.TimingSummary, "no recorded change") {
+			t.Fatalf("absence claimed on a young store: %q", iss.TimingSummary)
+		}
+		if iss.IssueTiming != "started_at_resource_creation" {
+			t.Fatalf("timing changed without an order: %q", iss.IssueTiming)
 		}
 	})
 }

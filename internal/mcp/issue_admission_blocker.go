@@ -162,9 +162,10 @@ func admissionBlockerForIssue(ctx context.Context, iss *issuesapi.Issue, window 
 // states which side changed last, and withdraws a "started at resource
 // creation" timing that the policy change contradicts. subject holds the
 // workload side's visible changes; subjectComplete says an empty subject list
-// is a true "no recorded change". It returns false, leaving the issue
-// untouched, when neither side has a visible change.
-func attachAdmissionBlocker(iss *issuesapi.Issue, ev *admissionBlockerEvidence, subject []issuesapi.RecentChange, subjectComplete bool, window time.Duration) bool {
+// is a true "no recorded change". absenceKnown says Radar has observed long
+// enough for a side with no recorded change to count as unchanged. It returns
+// false, leaving the issue untouched, when neither side has a visible change.
+func attachAdmissionBlocker(iss *issuesapi.Issue, ev *admissionBlockerEvidence, subject []issuesapi.RecentChange, subjectComplete, absenceKnown bool, window time.Duration) bool {
 	refs := append([]issuesapi.RecentChange{}, ev.changes[:min(len(ev.changes), admissionBlockerMaxChanges)]...)
 	refs = append(refs, subject[:min(len(subject), correlationChangeCap-len(refs))]...)
 	if len(refs) == 0 {
@@ -172,7 +173,7 @@ func attachAdmissionBlocker(iss *issuesapi.Issue, ev *admissionBlockerEvidence, 
 	}
 	iss.CorrelatedChanges = refs
 
-	sentence, policyChangedLast := admissionChangeOrder(iss, ev, subject, subjectComplete, window)
+	sentence, policyChangedLast := admissionChangeOrder(iss, ev, subject, subjectComplete, absenceKnown, window)
 	if sentence == "" {
 		return true
 	}
@@ -199,7 +200,10 @@ func attachAdmissionBlocker(iss *issuesapi.Issue, ev *admissionBlockerEvidence, 
 // admissionChangeOrder states which side of an admission rejection changed
 // last, from recorded changes only. Empty when neither side has a recorded
 // change, or when the side without one may have changes Radar did not see.
-func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, subject []issuesapi.RecentChange, subjectComplete bool, windowDur time.Duration) (string, bool) {
+// When both sides have one, each record shows that side was being watched by
+// then, so the order holds however young the store is; a side with none
+// counts as unchanged only when absenceKnown.
+func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, subject []issuesapi.RecentChange, subjectComplete, absenceKnown bool, windowDur time.Duration) (string, bool) {
 	workload := iss.Kind + " " + iss.Name
 	// The workload object only, as in newestWorkloadChange.
 	var newestSubject *issuesapi.RecentChange
@@ -218,7 +222,8 @@ func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, su
 		// there would reverse it.
 		policy := ev.changes[0]
 		if changeTime(policy).Equal(changeTime(*newestSubject)) {
-			return "", false // whole-second timestamps can't order them
+			// Change times are whole seconds.
+			return fmt.Sprintf("%s and %s, in the same second: Radar can't tell which changed last.", describeChange(policy), describeChange(*newestSubject)), false
 		}
 		if changeTime(policy).After(changeTime(*newestSubject)) {
 			if !subjectComplete {
@@ -230,10 +235,10 @@ func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, su
 			return "", false
 		}
 		return fmt.Sprintf("%s, after %s: the workload changed last.", describeChange(*newestSubject), describeChange(policy)), false
-	case len(ev.changes) > 0 && subjectComplete:
+	case len(ev.changes) > 0 && subjectComplete && absenceKnown:
 		policy := ev.changes[0]
 		return fmt.Sprintf("%s; %s has no recorded change in the last %s: the %s changed last.", describeChange(policy), workload, window, policy.Kind), true
-	case newestSubject != nil && ev.complete:
+	case newestSubject != nil && ev.complete && absenceKnown:
 		return fmt.Sprintf("%s; %s: the workload changed last.", describeChange(*newestSubject), ev.unchanged(window)), false
 	}
 	return "", false

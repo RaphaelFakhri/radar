@@ -362,6 +362,11 @@ func TestClassifyAdmissionFailure(t *testing.T) {
 		{`Error creating job: admission webhook "jobs.example.com" denied the request: nope`, "WebhookDenied", true},
 		{`Error creating job: Internal error occurred: failed calling webhook "jobs.example.com": context deadline exceeded`, "WebhookUnavailable", true},
 		{`some unrelated message`, "", false},
+		// client-go's event aggregation prefixes a burst of similar events.
+		{`(combined from similar events): Error creating: admission webhook "vpod.example.com" denied the request: nope`, "WebhookDenied", true},
+		{`(combined from similar events): Error creating: admission webhook "policy.example.com" denied the request: exceeded quota`, "WebhookDenied", true},
+		{`(combined from similar events): Error creating: Internal error occurred: failed calling webhook "validate.example.com": failed to call webhook: Post "https://policy-webhook.hooks.svc:443/validate?timeout=10s": no endpoints available for service "policy-webhook"`, "WebhookUnavailable", true},
+		{`(combined from similar events): Error creating: pods "x" is forbidden: failed quota: memory-limit-quota: must specify memory for: app`, "QuotaExceeded", true},
 	}
 	for _, c := range cases {
 		reason, ok := classifyAdmissionFailure(c.msg)
@@ -531,6 +536,8 @@ func TestParseAdmissionBlocker(t *testing.T) {
 		{"limit range", `pods "api-x" is forbidden: maximum memory usage per Container is 512Mi, but limit is 1Gi`, AdmissionBlocker{Kind: "LimitRange"}, true},
 		{"webhook denial", `pod creation blocked: Error creating: admission webhook "deny-root.policy.example.com" denied the request: runAsNonRoot is required`, AdmissionBlocker{WebhookName: "deny-root.policy.example.com"}, true},
 		{"webhook call failure", `Internal error occurred: failed calling webhook "inject.mesh.example.com": Post "https://mesh.mesh-system.svc:443/inject": no endpoints available for service "mesh"`, AdmissionBlocker{WebhookName: "inject.mesh.example.com"}, true},
+		{"aggregated webhook denial", `pod creation blocked: (combined from similar events): Error creating: admission webhook "deny-root.policy.example.com" denied the request: runAsNonRoot is required`, AdmissionBlocker{WebhookName: "deny-root.policy.example.com"}, true},
+		{"aggregated failed quota", `pod creation blocked: (combined from similar events): Error creating: pods "search-x" is forbidden: failed quota: memory-limit-quota: must specify memory for: hotel-reserv-search`, AdmissionBlocker{Kind: "ResourceQuota", Name: "memory-limit-quota"}, true},
 		{"pod security names no object", `pods "x" is forbidden: violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false`, AdmissionBlocker{}, false},
 		{"not an admission failure", `object is being deleted: replicasets.apps "x" already exists`, AdmissionBlocker{}, false},
 	}

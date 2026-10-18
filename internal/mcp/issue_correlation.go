@@ -35,15 +35,16 @@ const (
 	correlationFieldLimit = 5
 )
 
-// correlationMinObservation is the least watch time that justifies a "no
-// recent changes" claim. Below it (fresh start, recent restart) the marker is
-// omitted entirely — a 90-second-old store asserting anything about the past
-// hour would be fiction.
+// correlationMinObservation is the least watch time that justifies a claim
+// resting on the absence of a change: the no_recent_changes marker, or an
+// admission order inferred from one side having no recorded change. Below it
+// (fresh start, recent restart) deferred informers may still be filling, so
+// only recorded changes are reported.
 const correlationMinObservation = 5 * time.Minute
 
 // correlationWindow returns the truthful claim window: the default lookback
 // clamped to how long this process's store has actually been observing.
-// Returns 0 when observation is too short to claim anything.
+// Returns 0 when no store is observing.
 func correlationWindow() time.Duration {
 	window := meaningfulchanges.DefaultSince
 	start := timeline.ObservationStart()
@@ -52,9 +53,6 @@ func correlationWindow() time.Duration {
 	}
 	if observed := time.Since(start); observed < window {
 		window = observed
-	}
-	if window < correlationMinObservation {
-		return 0
 	}
 	return window
 }
@@ -72,7 +70,7 @@ func correlationWindow() time.Duration {
 func attachIssueChangeCorrelation(ctx context.Context, resp *issues.ListResponse) {
 	window := correlationWindow()
 	if window == 0 {
-		return // not enough observation to claim anything, in either direction
+		return // no store observing
 	}
 	checked := 0
 	for _, severity := range []issuesapi.Severity{issuesapi.SeverityCritical, issuesapi.SeverityWarning} {
@@ -142,8 +140,9 @@ func correlateIssue(ctx context.Context, iss *issuesapi.Issue, window time.Durat
 	// all are unknown, not "no changes".
 	subjectComplete := subjectTracked && !result.FetchSaturated && !rbacHidden && !sourcesWithheld &&
 		correlationHistoryComplete(obj, iss.Namespace, result.History)
+	absenceKnown := window >= correlationMinObservation
 	if blocker := admissionBlockerForIssue(ctx, iss, window); blocker != nil &&
-		attachAdmissionBlocker(iss, blocker, changes, subjectComplete, window) {
+		attachAdmissionBlocker(iss, blocker, changes, subjectComplete, absenceKnown, window) {
 		iss.CorrelatedChangesIncomplete = result.FetchSaturated || blocker.saturated
 		return
 	}
@@ -151,7 +150,7 @@ func correlateIssue(ctx context.Context, iss *issuesapi.Issue, window time.Durat
 		return
 	}
 	if len(changes) == 0 {
-		if !subjectComplete {
+		if !subjectComplete || !absenceKnown {
 			return
 		}
 		iss.NoRecentChanges = &issuesapi.NoRecentChangesMarker{

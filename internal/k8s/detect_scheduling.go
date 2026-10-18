@@ -1241,12 +1241,14 @@ func replicaSetDeploymentOwnerName(rs *appsv1.ReplicaSet) (string, bool) {
 // Returns ok=false for FailedCreate messages that aren't admission denials
 // (e.g. transient "object is being deleted") so we don't over-report.
 func classifyAdmissionFailure(msg string) (string, bool) {
+	// client-go's event aggregation prefixes a burst of similar events.
+	msg = strings.TrimPrefix(strings.TrimSpace(msg), "(combined from similar events): ")
 	lower := strings.ToLower(msg)
-	if admissionWebhookCallFailurePattern.MatchString(strings.TrimSpace(msg)) {
+	if admissionWebhookCallFailurePattern.MatchString(msg) {
 		return "WebhookUnavailable", true
 	}
 	switch {
-	case admissionWebhookDenialPattern.MatchString(strings.TrimSpace(msg)):
+	case admissionWebhookDenialPattern.MatchString(msg):
 		return "WebhookDenied", true
 	case strings.Contains(lower, "exceeded quota"), strings.Contains(lower, "failed quota"):
 		return "QuotaExceeded", true
