@@ -28,6 +28,7 @@ import (
 )
 
 func TestDeleteResourceMandatoryPreviewAndPreconditions(t *testing.T) {
+	setConnectedForTest(t)
 	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "held", "namespace": "demo", "uid": "uid-1", "resourceVersion": "42"}}}
 	obj.SetFinalizers([]string{"example.com/cleanup"})
@@ -117,6 +118,7 @@ func TestDeleteResourceMandatoryPreviewAndPreconditions(t *testing.T) {
 }
 
 func TestDeleteResourcePreviewDenialAndRace(t *testing.T) {
+	setConnectedForTest(t)
 	for _, reason := range []string{"denial", "race"} {
 		t.Run(reason, func(t *testing.T) {
 			gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
@@ -212,6 +214,7 @@ func TestDeleteCascadeWithholdsUnreadableDependents(t *testing.T) {
 }
 
 func TestDeleteResourceGenerationBinding(t *testing.T) {
+	setConnectedForTest(t)
 	for _, change := range []string{"status", "spec", "finalizers", "finalizer order", "replacement"} {
 		t.Run(change, func(t *testing.T) {
 			gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
@@ -272,6 +275,7 @@ func TestDeleteResourceGenerationBinding(t *testing.T) {
 }
 
 func TestDeleteResourceAudit(t *testing.T) {
+	setConnectedForTest(t)
 	var output bytes.Buffer
 	previous := log.Writer()
 	log.SetOutput(&output)
@@ -381,6 +385,7 @@ func TestDeleteCascadeLargeClusterSkipsGraphBuild(t *testing.T) {
 }
 
 func TestDeleteResourcePreviewSummaryAndDependentCounts(t *testing.T) {
+	setConnectedForTest(t)
 	for _, tc := range []struct {
 		name              string
 		replicaSets, pods int
@@ -389,9 +394,10 @@ func TestDeleteResourcePreviewSummaryAndDependentCounts(t *testing.T) {
 	}{
 		{"deployment", 3, 12, metav1.DeletePropagationBackground, "Deletes Deployment demo/web; observed dependents: Pod: 12, ReplicaSet: 3 (15 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
 		{"truncated", 3, 105, metav1.DeletePropagationForeground, "Deletes Deployment demo/web; observed dependents: Pod: 105, ReplicaSet: 3 (108 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
-		{"orphan", 1, 1, metav1.DeletePropagationOrphan, "Deletes Deployment demo/web; orphans observed dependents: Pod: 1, ReplicaSet: 1 (2 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
+		{"orphan", 1, 1, metav1.DeletePropagationOrphan, "Deletes Deployment demo/web; observed related resources (owner-reference dependents will be orphaned): Pod: 1, ReplicaSet: 1 (2 total, not exhaustive); may wait on finalizers: example.com/cleanup"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			setConnectedForTest(t)
 			previousMemo := summaryCtxTopoMemo
 			summaryCtxTopoMemo = topology.NewMemoizer(5 * time.Second)
 			t.Cleanup(func() { summaryCtxTopoMemo = previousMemo })
@@ -489,6 +495,7 @@ func TestDeletePreviewSummaryUnknownAndNamespaceFinalizers(t *testing.T) {
 }
 
 func TestDeleteResourcePreviewFinalizerFields(t *testing.T) {
+	setConnectedForTest(t)
 	for _, kind := range []string{"ConfigMap", "Namespace"} {
 		t.Run(kind, func(t *testing.T) {
 			namespace, resource := "demo", "configmaps"
@@ -519,5 +526,32 @@ func TestDeleteResourcePreviewFinalizerFields(t *testing.T) {
 				t.Fatalf("unrelated cleanup fields: %+v", got)
 			}
 		})
+	}
+}
+
+func TestDeleteResourceRefusesUntilConnected(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	dyn := setupMCPDynamicResource(t, gvr, "ConfigMapList", k8s.APIResource{Version: "v1", Kind: "ConfigMap", Name: "configmaps", Namespaced: true}).(*dynamicfake.FakeDynamicClient)
+	prev := k8s.GetConnectionStatus()
+	t.Cleanup(func() { k8s.SetConnectionStatus(prev) })
+	for _, tc := range []struct {
+		status k8s.ConnectionStatus
+		want   string
+	}{
+		{k8s.ConnectionStatus{State: k8s.StateConnecting}, "cluster_connecting: Cluster is still connecting, please retry shortly"},
+		{k8s.ConnectionStatus{State: k8s.StateDisconnected, Error: "dial tcp: i/o timeout"}, "not connected to cluster: dial tcp: i/o timeout"},
+	} {
+		k8s.SetConnectionStatus(tc.status)
+		for _, kind := range []string{"ConfigMap", "UndiscoveredKind"} {
+			for _, dryRun := range []bool{true, false} {
+				result, _, err := handleDeleteResource(context.Background(), nil, deleteResourceInput{Kind: kind, Namespace: "demo", Name: "held", DryRun: &dryRun, Confirm: "stale"})
+				if err == nil || err.Error() != tc.want || result != nil {
+					t.Fatalf("%s kind=%s dry_run=%v: result=%v err=%v, want %q", tc.status.State, kind, dryRun, result, err, tc.want)
+				}
+			}
+		}
+	}
+	if len(dyn.Actions()) != 0 {
+		t.Fatalf("disconnected delete accessed Kubernetes: %v", dyn.Actions())
 	}
 }

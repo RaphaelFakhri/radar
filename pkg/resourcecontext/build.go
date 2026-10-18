@@ -74,6 +74,9 @@ type Options struct {
 	AppReferences *AppReferences
 	// Attached only after the evidence Job and Pod pass the access gate.
 	ContainerCompletionSplit *ContainerCompletionSplit
+	// TemplateDivergence passes through unchanged; the caller authorizes the
+	// Pods and templates it compared.
+	TemplateDivergence *TemplateDivergence
 
 	// Optional kind-specific lookups. ServiceBackends is used only for
 	// Service resources to attach realized pod-selection state. The raw
@@ -127,6 +130,20 @@ type PolicyReportWithholding interface {
 
 type ServiceBackendLookup interface {
 	PodsForServiceSelector(namespace string, selector labels.Selector) ([]*corev1.Pod, error)
+}
+
+// ServiceBackendGrouper is optional on a ServiceBackendLookup, so existing
+// implementers keep compiling: it groups a Service's selected Pods by the
+// workload that runs them. Without it a Service gets no workload breakdown.
+type ServiceBackendGrouper interface {
+	GroupServiceBackends(svc *corev1.Service, pods []*corev1.Pod) ServiceBackendGrouping
+}
+
+type ServiceBackendGrouping struct {
+	Workloads []ServiceBackendWorkload
+	// MixedBackends is set when the workloads don't all serve the Service,
+	// and explains why.
+	MixedBackends string
 }
 
 // RefAccessChecker abstracts the RBAC check so this package doesn't import
@@ -351,6 +368,7 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 	rc.IssueSummary = opts.IssueSummary
 	rc.AuditSummary = opts.AuditSummary
 	rc.AppReferences = filterAppReferences(ctx, opts.AppReferences, opts.AccessChecker, omitted)
+	rc.TemplateDivergence = opts.TemplateDivergence
 
 	// 5. PolicyReports — Kyverno findings rolled up. Basic tier emits
 	// counts only (fail/warn/pass); diagnostic tier adds the top[]
@@ -640,6 +658,23 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 		refs = append(refs, ref)
 	}
 
+	if target.kind == "Secret" {
+		if ingresses, err := provider.Ingresses(); err != nil {
+			omitted.add("referencedBy", OmittedUnavailable)
+		} else {
+			for _, ing := range ingresses {
+				if ing == nil || ing.Namespace != target.namespace {
+					continue
+				}
+				for _, ref := range configrefs.IngressTLSSecretReferences(ing) {
+					if ref.Name == target.name {
+						appendRef(ReferenceUse{Kind: "Ingress", Group: "networking.k8s.io", Namespace: ing.Namespace, Name: ing.Name, Paths: []string{"spec.tls[].secretName"}})
+					}
+				}
+			}
+		}
+	}
+
 	if deployments, err := provider.Deployments(); err != nil {
 		omitted.add("referencedBy", OmittedUnavailable)
 	} else {
@@ -850,12 +885,14 @@ func buildServiceSummary(ctx context.Context, svc *corev1.Service, lookup Servic
 	// caller with Service access infer the pod count even when RBAC
 	// hides the individual Pods. Mirrors ReferencedBy.Total semantics.
 	sel := &PodSelectionSummary{}
+	visible := make([]*corev1.Pod, 0, len(pods))
 	for _, pod := range pods {
 		ref := ContextRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name}
 		if !checkRef(ctx, ac, &ref) {
 			omitted.add("serviceSummary.selectedPods", OmittedRBACDenied)
 			continue
 		}
+		visible = append(visible, pod)
 		sel.Total++
 		if isPodReady(pod) {
 			sel.Ready++
@@ -872,7 +909,34 @@ func buildServiceSummary(ctx context.Context, svc *corev1.Service, lookup Servic
 		out.Warnings = append(out.Warnings, ServiceWarningNoReadyPods)
 	}
 	out.SelectedPods = sel
+	if grouper, ok := lookup.(ServiceBackendGrouper); ok && len(visible) > 1 {
+		addServiceBackendWorkloads(ctx, out, grouper.GroupServiceBackends(svc, visible), ac, omitted)
+	}
 	return out
+}
+
+// addServiceBackendWorkloads attaches the workload breakdown only when the
+// caller may read every workload it names: a Pod's visibility doesn't extend
+// to the Deployment or Rollout behind its ReplicaSet.
+func addServiceBackendWorkloads(ctx context.Context, out *ServiceSummary, g ServiceBackendGrouping, ac RefAccessChecker, omitted *omittedTracker) {
+	if len(g.Workloads) < 2 {
+		return
+	}
+	for i := range g.Workloads {
+		if !checkRef(ctx, ac, &g.Workloads[i].ContextRef) {
+			omitted.add("serviceSummary.workloads", OmittedRBACDenied)
+			return
+		}
+	}
+	out.Workloads = g.Workloads
+	if len(out.Workloads) > maxServicePodRefs {
+		out.Workloads = out.Workloads[:maxServicePodRefs]
+		out.WorkloadsTruncated = true
+	}
+	if g.MixedBackends != "" {
+		out.MixedBackends = g.MixedBackends
+		out.Warnings = append(out.Warnings, ServiceWarningMixedBackends)
+	}
 }
 
 func appendBoundedPodRef(dst *[]ContextRef, ref ContextRef, sel *PodSelectionSummary) {
@@ -1025,8 +1089,8 @@ func buildIngressSummary(ctx context.Context, obj runtime.Object, ac RefAccessCh
 	out.BackendServices = filterRefs(ctx, ac, svcSet.refs("Service", ""), "ingressSummary.backendServices", omitted)
 
 	secretSet := newRefSet()
-	for _, tls := range ing.Spec.TLS {
-		secretSet.add(tls.SecretName, ing.Namespace)
+	for _, ref := range configrefs.IngressTLSSecretReferences(ing) {
+		secretSet.add(ref.Name, ref.Namespace)
 	}
 	out.TLSSecrets = filterRefs(ctx, ac, secretSet.refs("Secret", ""), "ingressSummary.tlsSecrets", omitted)
 

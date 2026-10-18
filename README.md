@@ -363,7 +363,7 @@ View TLS certificate details and expiry dates across all namespaces — catch ex
 
 ### GitOps
 
-Monitor, diagnose, and manage FluxCD and ArgoCD resources from a dedicated GitOps workspace.
+Monitor, diagnose, and manage FluxCD and ArgoCD resources in one place.
 
 <p align="center">
   <img src="docs/screenshots/gitops-view.png" alt="GitOps fleet view" width="800">
@@ -450,6 +450,7 @@ Proactive best-practices scanner with 44 checks across security, reliability, an
 - Check-grouped remediation queue with search and category, severity, and framework filters; expand a check to see affected resources
 - Each finding includes description and remediation guidance, with inline hide actions for a check or category
 - Configurable: ignored namespaces (with wildcard patterns), disabled checks, persisted across sessions
+- Per-resource opt-out via the `radarhq.io/ignore-checks` annotation (comma-separated check IDs) — set on the resource a finding is attributed to, so the exclusion travels with the manifest instead of living in one operator's local settings
 - Framework labels: NSA/CISA, CIS benchmarks
 - MCP tool (`get_cluster_audit`) for AI-assisted cluster analysis
 
@@ -552,7 +553,7 @@ Upgrade impact also gets list-only access to CSIStorageCapacities, FlowSchemas, 
 | **Strimzi** | [KafkaConnector failure evidence](docs/integrations.md#strimzi-kafka-connectors) (connector/task status) |
 | **Velero** | Backup, Restore, Schedule, BackupStorageLocation, VolumeSnapshotLocation |
 | **External Secrets** | ExternalSecret, ClusterExternalSecret, SecretStore, ClusterSecretStore |
-| **CloudNativePG** | Cluster, Backup, ScheduledBackup, Pooler, Database, Publication, Subscription, ImageCatalog, ClusterImageCatalog, ObjectStore — plus a [workspace](docs/cnpg.md) for fleet, protection and declaration triage |
+| **CloudNativePG** | Cluster, Backup, ScheduledBackup, Pooler, Database, Publication, Subscription, ImageCatalog, ClusterImageCatalog, ObjectStore — plus [dedicated views](docs/cnpg.md) for fleet, protection and declaration triage |
 | **Crossplane** | Managed Resources (any provider), Composite Resources, Claims, Provider, ProviderConfig, Function, Configuration, Composition, CompositionRevision, XRD |
 | **Kyverno** | Policy, ClusterPolicy, PolicyReport, ClusterPolicyReport |
 | **Sealed Secrets** | SealedSecret |

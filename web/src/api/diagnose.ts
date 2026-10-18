@@ -248,6 +248,9 @@ export interface RunSummary {
   ownedByMe?: boolean;
   canManageVisibility?: boolean;
   canContinue?: boolean;
+  /** Why a run with canContinue false can't take a follow-up, in words for
+   *  the reader, when the host knows. Absent: a generic read-only notice. */
+  continueBlockedReason?: string;
   trigger?: "interactive" | "background";
   radarUrl?: string;
 }

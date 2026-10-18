@@ -12,6 +12,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/probe"
 )
 
@@ -163,7 +164,22 @@ func reconcilePolicyFindings(t *Trace) {
 	visit := func(hops []Hop) {
 		for i := range hops {
 			h := &hops[i]
+			// A deny-all policy issue on the Service in front claims every
+			// port of its pods is blocked. Probes reach only a sample of the
+			// pods, and policies can split the pods, each with its own issue,
+			// so a data-path pass settles only a lone issue, whose policy
+			// isolates every backend.
+			if i > 0 && h.Edge == "Service->Pods" && hops[i-1].Resource.Kind == "Service" &&
+				countFindings(hops[i-1].Findings, k8s.NetworkPolicyDenyAllIngressFingerprint) == 1 &&
+				portScopedOutcome(h.Probes, 0).dataOK {
+				downgradeDenyAllIngress(&hops[i-1])
+			}
 			if h.Meta == nil || h.Meta["policyVerdict"] != "would-deny" {
+				continue
+			}
+			// The data-path probes are TCP; they say nothing about a
+			// prediction for another protocol on the same port number.
+			if proto, ok := h.Meta["policyProtocol"].(string); ok && !strings.EqualFold(proto, "TCP") {
 				continue
 			}
 			idx := findingIndexByCode(h.Findings, codePolicyWouldDeny)
@@ -211,6 +227,30 @@ func reconcilePolicyFindings(t *Trace) {
 	}
 	visit(t.Downstream)
 	visit(t.Upstreams)
+}
+
+// downgradeDenyAllIngress replaces a Service hop's NetworkPolicy deny-all
+// issues (one per policy) with a single info note once live traffic reached
+// its pods.
+func downgradeDenyAllIngress(h *Hop) {
+	idx := findingIndexByCode(h.Findings, k8s.NetworkPolicyDenyAllIngressFingerprint)
+	if idx < 0 {
+		return
+	}
+	note := Finding{
+		Code:     k8s.NetworkPolicyDenyAllIngressFingerprint,
+		Severity: SeverityInfo,
+		Message:  "Traffic got through. A NetworkPolicy here would block all inbound traffic to these pods - but either this cluster's network plugin doesn't enforce NetworkPolicy, or the static read missed an allow rule.",
+		Command:  h.Findings[idx].Command,
+	}
+	kept := h.Findings[:0]
+	for _, f := range h.Findings {
+		if f.Code != k8s.NetworkPolicyDenyAllIngressFingerprint {
+			kept = append(kept, f)
+		}
+	}
+	h.Findings = append(kept, note)
+	sortFindingsBySeverity(h.Findings)
 }
 
 type probeOutcome struct {
