@@ -1327,6 +1327,7 @@ export function WorkloadView({
                 {renderOverviewLeadForState({ kind, namespace, name })}
               </div>
             )}
+            {divergenceCard && <div className="px-4 pt-4">{divergenceCard}</div>}
             {expandedOverview}
           </div>
         ) : effectiveTab === 'spec' && specTab?.render && !resourceGone ? (

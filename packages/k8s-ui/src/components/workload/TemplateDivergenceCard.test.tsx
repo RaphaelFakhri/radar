@@ -64,6 +64,23 @@ describe('WorkloadView with a template comparison', () => {
       <WorkloadView kind="pods" namespace="shop" name="web-1" onBack={vi.fn()} resource={pod} templateDivergence={templateDivergence} />,
     )
 
+  it('shows the card above a host-supplied full-page overview (Jobs)', () => {
+    const html = renderToStaticMarkup(
+      <WorkloadView
+        kind="pods"
+        namespace="shop"
+        name="web-1"
+        onBack={vi.fn()}
+        resource={pod}
+        expanded
+        renderExpandedOverview={() => <div>host overview</div>}
+        templateDivergence={{ ...workload, examplePod: undefined }}
+      />,
+    )
+    expect(html).toContain('host overview')
+    expect(html).toContain('Live spec differs from template')
+  })
+
   it('shows the card in the drawer only when the response carries the field', () => {
     expect(render()).not.toContain('Live spec differs from template')
     expect(render({ ...workload, examplePod: undefined })).toContain('Live spec differs from template')
