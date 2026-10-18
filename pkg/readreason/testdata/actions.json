@@ -7,7 +7,6 @@
   "kind_sync_pending": "retry",
   "kind_sync_timed_out": "wait",
   "kind_unknown": "change_request",
-  "kind_watch_start_failed": "request_kind",
   "list_too_large": "change_request",
   "namespace_not_found": "change_request",
   "namespace_required": "change_request",
