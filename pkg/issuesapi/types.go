@@ -65,7 +65,7 @@ const (
 	CategoryGatewayNotReady          Category = "gateway_not_ready"
 	CategoryGatewayRouteInvalid      Category = "gateway_route_invalid"
 	CategoryDNSFailure               Category = "dns_failure"
-	CategoryNetworkPolicyBlock       Category = "network_policy_block"
+	CategoryNetworkPolicyDenied      Category = "network_policy_denied"
 	CategoryPVCPending               Category = "pvc_pending"
 	CategoryPVCLost                  Category = "pvc_lost"
 	CategoryPVFailed                 Category = "pv_failed"
@@ -145,7 +145,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryGatewayNotReady:          GroupNetworking,
 	CategoryGatewayRouteInvalid:      GroupNetworking,
 	CategoryDNSFailure:               GroupNetworking,
-	CategoryNetworkPolicyBlock:       GroupNetworking,
+	CategoryNetworkPolicyDenied:      GroupNetworking,
 	CategoryPVCPending:               GroupStorage,
 	CategoryPVCLost:                  GroupStorage,
 	CategoryPVFailed:                 GroupStorage,
