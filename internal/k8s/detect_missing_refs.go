@@ -1321,9 +1321,8 @@ func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now ti
 		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName == "" {
 			continue
 		}
-		// The class is only read to provision a volume. A Bound claim keeps
-		// its PV whether or not the class still exists (static PVs often name
-		// a class that was never created).
+		// An already-bound PVC keeps its volume even if the StorageClass
+		// no longer exists.
 		if pvc.Status.Phase == corev1.ClaimBound {
 			continue
 		}
