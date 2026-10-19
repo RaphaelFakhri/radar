@@ -1321,6 +1321,12 @@ func detectPVCMissingStorageClass(cache *ResourceCache, namespace string, now ti
 		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName == "" {
 			continue
 		}
+		// The class is only read to provision a volume. A Bound claim keeps
+		// its PV whether or not the class still exists (static PVs often name
+		// a class that was never created).
+		if pvc.Status.Phase == corev1.ClaimBound {
+			continue
+		}
 		scName := *pvc.Spec.StorageClassName
 		if _, err := scLister.Get(scName); refKnownMissing(cache, "storageclasses", "", err) {
 			det := withFix(missingRefProblem(now, "PersistentVolumeClaim", "", pvc.Namespace, pvc.Name,
