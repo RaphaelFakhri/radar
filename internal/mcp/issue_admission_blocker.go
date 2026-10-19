@@ -33,6 +33,10 @@ const admissionOrderFetchLimit = 10
 // seconds, from the controller) and Radar's receipt time for the policy change.
 const admissionOnsetSlop = 30 * time.Second
 
+// admissionListSlop covers the gap between a policy informer delivering its
+// initial list and its whole-second SyncedAt.
+const admissionListSlop = 5 * time.Second
+
 const (
 	admissionBlockerRankReason    = "the object named by the admission rejection"
 	admissionLimitRangeRankReason = "a LimitRange in the rejecting namespace (LimitRange rejections name none)"
@@ -50,6 +54,44 @@ type admissionBlockerEvidence struct {
 	// was not saturated, and RBAC hid nothing. Only then may an empty list be
 	// stated as "no recorded change".
 	complete bool
+	// listedUntil bounds the policy creations recorded from the informer's
+	// initial list rather than its watch. Such an add is recorded when listed,
+	// up to 30s after the object was created (isSyncAdd), so its time can't
+	// place it after a workload change.
+	listedUntil time.Time
+}
+
+// policyInformerSyncedAt reports when the informer for a policy kind finished
+// its initial sync: zero while it is still syncing, ok=false when it isn't run.
+var policyInformerSyncedAt = func(key string) (time.Time, bool) {
+	cache := k8s.GetResourceCache()
+	if cache == nil {
+		return time.Time{}, false
+	}
+	for _, s := range cache.GetSyncStatus().Informers {
+		if s.Key == key {
+			synced, _ := time.Parse(time.RFC3339, s.SyncedAt)
+			return synced, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func policyListedUntil(key string) time.Time {
+	synced, ok := policyInformerSyncedAt(key)
+	switch {
+	case !ok:
+		return time.Time{}
+	case synced.IsZero():
+		return time.Now() // still listing: every add so far came from the list
+	}
+	return synced.Add(admissionListSlop)
+}
+
+// creationTimeKnown reports whether a policy change's recorded time is when it
+// happened, as opposed to an add recorded from the informer's initial list.
+func (ev *admissionBlockerEvidence) creationTimeKnown(c issuesapi.RecentChange) bool {
+	return c.ChangeType != "add" || changeTime(c).After(ev.listedUntil)
 }
 
 func isAdmissionIssue(iss *issuesapi.Issue) bool {
@@ -113,6 +155,7 @@ func admissionBlockerForIssue(ctx context.Context, iss *issuesapi.Issue, window 
 	switch {
 	case blocker.Kind == "ResourceQuota":
 		ev.complete = collected("ResourceQuota")
+		ev.listedUntil = policyListedUntil("resourcequotas")
 		ev.unchanged = func(window string) string {
 			return "ResourceQuota " + blocker.Name + " has no recorded change in the last " + window
 		}
@@ -121,6 +164,7 @@ func admissionBlockerForIssue(ctx context.Context, iss *issuesapi.Issue, window 
 		}
 	case blocker.Kind == "LimitRange":
 		ev.complete = collected("LimitRange")
+		ev.listedUntil = policyListedUntil("limitranges")
 		ev.unchanged = func(window string) string {
 			return "no LimitRange in namespace " + iss.Namespace + " has a recorded change in the last " + window
 		}
@@ -226,7 +270,7 @@ func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, su
 			return fmt.Sprintf("%s and %s: Radar recorded both in the same second, so it can't tell which changed last.", describeChange(policy), describeChange(*newestSubject)), false
 		}
 		if changeTime(policy).After(changeTime(*newestSubject)) {
-			if !subjectComplete {
+			if !subjectComplete || !ev.creationTimeKnown(policy) {
 				return "", false
 			}
 			return fmt.Sprintf("%s, after %s: the %s changed last.", describeChange(policy), describeChange(*newestSubject), policy.Kind), true
@@ -235,7 +279,7 @@ func admissionChangeOrder(iss *issuesapi.Issue, ev *admissionBlockerEvidence, su
 			return "", false
 		}
 		return fmt.Sprintf("%s, after %s: the workload changed last.", describeChange(*newestSubject), describeChange(policy)), false
-	case len(ev.changes) > 0 && subjectComplete && absenceKnown:
+	case len(ev.changes) > 0 && subjectComplete && absenceKnown && ev.creationTimeKnown(ev.changes[0]):
 		policy := ev.changes[0]
 		return fmt.Sprintf("%s; %s has no recorded change in the last %s: the %s changed last.", describeChange(policy), workload, window, policy.Kind), true
 	case newestSubject != nil && ev.complete && absenceKnown:

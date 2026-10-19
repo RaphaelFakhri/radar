@@ -53,6 +53,15 @@ func initAdmissionCache(t *testing.T) {
 		t.Fatalf("InitTestResourceCache: %v", err)
 	}
 	t.Cleanup(k8s.ResetTestState)
+	// The test cache syncs now, after the changes the tests backdate.
+	setPolicyInformerSyncedAt(t, time.Now().Add(-2*time.Hour))
+}
+
+func setPolicyInformerSyncedAt(t *testing.T, at time.Time) {
+	t.Helper()
+	prev := policyInformerSyncedAt
+	policyInformerSyncedAt = func(string) (time.Time, bool) { return at, true }
+	t.Cleanup(func() { policyInformerSyncedAt = prev })
 }
 
 // The bench case: the Deployment is created, a ResourceQuota lands after it,
@@ -411,6 +420,42 @@ func TestAdmissionBlocker_YoungStore(t *testing.T) {
 		}
 		if iss.IssueTiming != "started_at_resource_creation" {
 			t.Fatalf("timing changed without an order: %q", iss.IssueTiming)
+		}
+	})
+
+	t.Run("quota listed at informer sync", func(t *testing.T) {
+		// Radar's quota informer synced after the Deployment's update and
+		// recorded a quota created just before it as an add at list time. The
+		// recorded times are inverted, so no order is stated.
+		initAdmissionCache(t)
+		store := initCorrelationStore(t)
+		timeline.SetObservationStartForTest(now.Add(-60 * time.Second))
+		updateAt, syncedAt := now.Add(-40*time.Second), now.Add(-30*time.Second)
+		setPolicyInformerSyncedAt(t, syncedAt)
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: now.Add(-50 * time.Second), Kind: "Deployment", APIVersion: "apps/v1", Namespace: "shop", Name: "search", EventType: timeline.EventTypeAdd})
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: updateAt, Kind: "Deployment", APIVersion: "apps/v1", Namespace: "shop", Name: "search", EventType: timeline.EventTypeUpdate,
+			Diff: &timeline.DiffInfo{Fields: []timeline.FieldChange{{Path: "spec.replicas", OldValue: int64(1), NewValue: int64(3)}}, Summary: "replicas 1→3"}})
+		appendChange(t, store, timeline.TimelineEvent{Timestamp: syncedAt, Kind: "ResourceQuota", APIVersion: "v1", Namespace: "shop", Name: "memory-limit-quota", EventType: timeline.EventTypeAdd})
+
+		resp := issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "search", kindMsg, syncedAt.Add(2*time.Second))}}
+		attachIssueChangeCorrelation(context.Background(), &resp)
+		iss := resp.Issues[0]
+		if len(iss.CorrelatedChanges) == 0 || iss.CorrelatedChanges[0].Kind != "ResourceQuota" {
+			t.Fatalf("want the quota ref first, got %+v", iss.CorrelatedChanges)
+		}
+		if strings.Contains(iss.TimingSummary, "changed last") {
+			t.Fatalf("ordered by a list-time record: %q", iss.TimingSummary)
+		}
+		if iss.IssueTiming != "started_at_resource_creation" {
+			t.Fatalf("timing withdrawn on a list-time record: %q", iss.IssueTiming)
+		}
+
+		// The same add arriving on the watch, after the sync, is ordered.
+		setPolicyInformerSyncedAt(t, now.Add(-55*time.Second))
+		resp = issues.ListResponse{Issues: []issuesapi.Issue{admissionIssue(issuesapi.CategoryQuotaExceeded, "Deployment", "search", kindMsg, syncedAt.Add(2*time.Second))}}
+		attachIssueChangeCorrelation(context.Background(), &resp)
+		if !strings.HasSuffix(resp.Issues[0].TimingSummary, "the ResourceQuota changed last.") {
+			t.Fatalf("watched add not ordered: %q", resp.Issues[0].TimingSummary)
 		}
 	})
 
